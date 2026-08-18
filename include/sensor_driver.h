@@ -105,10 +105,22 @@ public:
     void begin(IMUProfile imuProfile = IMU_TYPE_AUTO,
                BaroProfile baroProfile = BARO_TYPE_AUTO);
 
-    /** @brief Active ou désactive le mode simulateur (commutation à chaud) */
-    void setSimMode(bool enabled);
+    /** @brief Active ou désactive la simulation de l'IMU (MPU9250) */
+    void setSimIMU(bool enabled);
+    /** @brief Retourne true si l'IMU est en mode simulé */
+    bool isSimIMU() const;
 
-    /** @brief Retourne l'état courant du mode simulateur */
+    /** @brief Active ou désactive la simulation du baromètre (BME280/MS5803) */
+    void setSimPressure(bool enabled);
+    /** @brief Retourne true si le baromètre est en mode simulé */
+    bool isSimPressure() const;
+
+    /** @brief Active ou désactive la simulation des wattmètres (INA226) */
+    void setSimPower(bool enabled);
+    /** @brief Retourne true si les wattmètres sont en mode simulé */
+    bool isSimPower() const;
+
+    /** @brief Retourne true si AU MOINS un capteur est en mode simulé (compatibilité) */
     bool isSimMode() const;
 
     /** @brief Copie thread-safe des données IMU courantes */
@@ -210,12 +222,15 @@ public:
 
 private:
     /* -- État interne -- */
-    volatile bool   _simMode;           ///< true = simulateur actif
+    volatile bool   _simIMU;            ///< true = IMU simulée
+    volatile bool   _simPressure;       ///< true = baromètre simulé
+    volatile bool   _simPower;          ///< true = wattmètres simulés
     IMUData         _imu;               ///< Données IMU courantes
     PowerData       _power;             ///< Données puissance courantes
     PressureData    _pressure;          ///< Données pression courantes
     SensorBankStatus _status;           ///< Statut de détection par composant
     SemaphoreHandle_t _mutex;           ///< Mutex de protection des données
+    volatile bool   _i2cBusy;           ///< true = bus I2C réservé (scan/reinit)
 
     /* -- Profils actifs -- */
     IMUProfile  _activeIMU;             ///< Profil IMU résolu après détection
@@ -263,7 +278,7 @@ private:
     void _updateSimulation();
     void _simAttitude(float t);
     void _simDepth(float dt);
-    void _simPower(float t);
+    void _simPowerData(float t);
 
     /* -- Tâche FreeRTOS -- */
     static void _taskEntry(void* param);

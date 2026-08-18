@@ -443,36 +443,43 @@ void BobWebServer::_handleWifiConnect(AsyncWebServerRequest* request) {
 }
 
 /**
- * @brief Handler GET /api/mode - Lecture ou modification du mode.
+ * @brief Handler GET/POST /api/mode - Contrôle individuel simulation par capteur.
  *
- * GET : retourne {"mode":"simulateur"|"reel"}
- * POST : attend {"mode":"simulateur"|"reel"} pour basculer le mode.
+ * GET : retourne {"imu":bool,"pressure":bool,"power":bool}
+ * POST : accepte les paramètres imu, pressure, power (simulateur|reel)
  *
  * @param request Requête HTTP entrante.
  */
 void BobWebServer::_handleMode(AsyncWebServerRequest* request) {
     if (request->method() == HTTP_GET) {
-        String mode = g_sensors.isSimMode() ? "simulateur" : "reel";
-        request->send(200, "application/json",
-                       "{\"mode\":\"" + mode + "\"}");
+        String json = "{\"imu\":" + String(g_sensors.isSimIMU() ? "true" : "false")
+                    + ",\"pressure\":" + String(g_sensors.isSimPressure() ? "true" : "false")
+                    + ",\"power\":" + String(g_sensors.isSimPower() ? "true" : "false")
+                    + "}";
+        request->send(200, "application/json", json);
     } else if (request->method() == HTTP_POST) {
-        if (request->hasParam("mode", true)) {
-            String mode = request->getParam("mode", true)->value();
-            if (mode == "simulateur" || mode == "sim") {
-                g_sensors.setSimMode(true);
-            } else if (mode == "reel" || mode == "real") {
-                g_sensors.setSimMode(false);
-            } else {
-                request->send(400, "application/json",
-                               "{\"error\":\"Mode invalide (simulateur|reel)\"}");
-                return;
-            }
-            request->send(200, "application/json",
-                           "{\"status\":\"ok\",\"mode\":\"" + mode + "\"}");
-        } else {
-            request->send(400, "application/json",
-                           "{\"error\":\"Paramètre 'mode' manquant\"}");
+        /* Paramètre IMU (simulateur|reel) */
+        if (request->hasParam("imu", true)) {
+            String v = request->getParam("imu", true)->value();
+            g_sensors.setSimIMU(v == "simulateur" || v == "sim");
         }
+        /* Paramètre pression (simulateur|reel) */
+        if (request->hasParam("pressure", true)) {
+            String v = request->getParam("pressure", true)->value();
+            g_sensors.setSimPressure(v == "simulateur" || v == "sim");
+        }
+        /* Paramètre puissance (simulateur|reel) */
+        if (request->hasParam("power", true)) {
+            String v = request->getParam("power", true)->value();
+            g_sensors.setSimPower(v == "simulateur" || v == "sim");
+        }
+        /* Réponse avec l'état actuel */
+        String json = "{\"status\":\"ok\""
+                    ",\"imu\":" + String(g_sensors.isSimIMU() ? "\"simulateur\"" : "\"reel\"")
+                    + ",\"pressure\":" + String(g_sensors.isSimPressure() ? "\"simulateur\"" : "\"reel\"")
+                    + ",\"power\":" + String(g_sensors.isSimPower() ? "\"simulateur\"" : "\"reel\"")
+                    + "}";
+        request->send(200, "application/json", json);
     }
 }
 
@@ -926,8 +933,10 @@ void BobWebServer::_taskLoop() {
             if (_ws.count() > 0) {
                 JsonDocument doc;
 
-                /* Statut système */
-                doc["sim"] = g_sensors.isSimMode();
+                /* Statut simulation par capteur */
+                doc["sim_imu"]      = g_sensors.isSimIMU();
+                doc["sim_pressure"] = g_sensors.isSimPressure();
+                doc["sim_power"]    = g_sensors.isSimPower();
                 doc["wdg"] = g_serial.isWatchdogTriggered();
                 doc["physical_outputs_enabled"] = g_pwm.isPhysicalOutputsEnabled();
 

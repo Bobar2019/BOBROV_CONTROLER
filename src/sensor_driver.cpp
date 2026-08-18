@@ -96,8 +96,11 @@ static int32_t  _bme280_t_fine;  ///< Variable interne de compensation
  * ========================================================================= */
 
 SensorDriver::SensorDriver()
-    : _simMode(true)
+    : _simIMU(false)
+    , _simPressure(false)
+    , _simPower(false)
     , _mutex(nullptr)
+    , _i2cBusy(false)
     , _activeIMU(IMU_TYPE_AUTO)
     , _activeBaro(BARO_TYPE_AUTO)
     , _headingEnabled(false)
@@ -222,10 +225,22 @@ void SensorDriver::begin(IMUProfile imuProfile, BaroProfile baroProfile) {
         Serial.println("[SENSORS] PCA9685 NON détecté");
     }
 
-    /* Basculer en mode simu si aucune IMU ni baromètre */
-    if (!imu_ok && !baro_ok) {
-        Serial.println("[SENSORS] Aucun capteur principal → mode SIMULATEUR forcé");
-        _simMode = true;
+    /* Activer la simulation uniquement pour les capteurs absents */
+    if (!imu_ok) {
+        Serial.println("[SENSORS] IMU absente → simulation IMU activée");
+        _simIMU = true;
+    }
+    if (!baro_ok) {
+        Serial.println("[SENSORS] Baro absent → simulation pression activée");
+        _simPressure = true;
+    }
+    /* Vérifier INA226 : au moins un wattmètre présent */
+    bool anyIna = (_status.ina226[0] == SENSOR_CONNECTED ||
+                   _status.ina226[1] == SENSOR_CONNECTED ||
+                   _status.ina226[2] == SENSOR_CONNECTED);
+    if (!anyIna) {
+        Serial.println("[SENSORS] Aucun INA226 détecté → simulation puissance activée");
+        _simPower = true;
     }
 
     Serial.println("[SENSORS] IMU active : " + String(
@@ -368,6 +383,38 @@ static void _identifyI2CDeviceDetail(uint8_t addr, char* buf, size_t len) {
  * de registres WHO_AM_I / ID pour distinguer BME280 de MS5803.
  */
 std::vector<I2CDeviceInfo> SensorDriver::scanI2CBus() {
+    /* Bloquer l'accès I2C par la tâche capteurs pendant le scan */
+    _i2cBusy = true;
+    delay(5); /* Laisser la tâche capteurs terminer son cycle en cours */
+
+    /* Récupération de bus I2C bloqué : 9 impulsions SCL pour libérer SDA */
+    pinMode(_currentSCL, OUTPUT);
+    for (uint8_t i = 0; i < 9; i++) {
+        digitalWrite(_currentSCL, LOW);
+        delayMicroseconds(50);
+        digitalWrite(_currentSCL, HIGH);
+        delayMicroseconds(50);
+    }
+    /* Condition STOP pour libérer le bus */
+    pinMode(_currentSDA, OUTPUT);
+    digitalWrite(_currentSDA, LOW);
+    delayMicroseconds(50);
+    digitalWrite(_currentSCL, HIGH);
+    delayMicroseconds(50);
+    digitalWrite(_currentSDA, HIGH);
+    delayMicroseconds(50);
+
+    /* Réinitialiser Wire après la récupération */
+    Wire.end();
+    delay(10);
+    Wire.begin(_currentSDA, _currentSCL);
+    Wire.setClock(I2C_FREQ_HZ);
+    delay(10);
+
+    /* Réduire le timeout I2C pour accélérer le scan (défaut 50ms → 10ms) */
+    unsigned long prevTimeout = Wire.getTimeOut();
+    Wire.setTimeOut(10);
+
     /* Activer le bypass MPU9250 pour révéler l'AK8963 (SANS reset) */
     Wire.beginTransmission(MPU9250_I2C_ADDR);
     if (Wire.endTransmission() == 0) {
@@ -389,6 +436,10 @@ std::vector<I2CDeviceInfo> SensorDriver::scanI2CBus() {
             devices.push_back(info);
         }
     }
+
+    /* Restaurer le timeout d'origine */
+    Wire.setTimeOut(prevTimeout);
+    _i2cBusy = false;
     return devices;
 }
 
@@ -403,6 +454,10 @@ std::vector<I2CDeviceInfo> SensorDriver::scanI2CBus() {
  */
 void SensorDriver::reinitI2C(uint8_t sda, uint8_t scl) {
     Serial.println("[SENSORS] Réinit I2C : SDA=" + String(sda) + ", SCL=" + String(scl));
+
+    /* Bloquer l'accès I2C par la tâche capteurs */
+    _i2cBusy = true;
+    delay(10);
 
     /* Terminer le bus actuel */
     Wire.end();
@@ -424,6 +479,7 @@ void SensorDriver::reinitI2C(uint8_t sda, uint8_t scl) {
     Wire.setClock(I2C_FREQ_HZ);
     delay(100);
 
+    _i2cBusy = false;
     Serial.println("[SENSORS] Bus I2C réinitialisé (SDA=" + String(sda)
                    + ", SCL=" + String(scl) + ", 400 kHz)");
 }
@@ -432,12 +488,28 @@ void SensorDriver::reinitI2C(uint8_t sda, uint8_t scl) {
  * CONTRÔLE DU MODE SIMULATEUR
  * ========================================================================= */
 
-void SensorDriver::setSimMode(bool enabled) {
-    _simMode = enabled;
-    Serial.println(String("[SENSORS] Mode : ") + (enabled ? "SIMULATEUR" : "REEL"));
+void SensorDriver::setSimIMU(bool enabled) {
+    _simIMU = enabled;
+    Serial.println(String("[SENSORS] IMU : ") + (enabled ? "SIMULATEUR" : "REEL"));
 }
 
-bool SensorDriver::isSimMode() const { return _simMode; }
+bool SensorDriver::isSimIMU() const { return _simIMU; }
+
+void SensorDriver::setSimPressure(bool enabled) {
+    _simPressure = enabled;
+    Serial.println(String("[SENSORS] Pression : ") + (enabled ? "SIMULATEUR" : "REEL"));
+}
+
+bool SensorDriver::isSimPressure() const { return _simPressure; }
+
+void SensorDriver::setSimPower(bool enabled) {
+    _simPower = enabled;
+    Serial.println(String("[SENSORS] Puissance : ") + (enabled ? "SIMULATEUR" : "REEL"));
+}
+
+bool SensorDriver::isSimPower() const { return _simPower; }
+
+bool SensorDriver::isSimMode() const { return _simIMU || _simPressure || _simPower; }
 
 /**
  * @brief Enregistre le Yaw actuel comme référence 0° (Tare Nord).
@@ -488,7 +560,7 @@ void SensorDriver::setIMUProfile(IMUProfile profile) {
         else if (_activeIMU == IMU_TYPE_MPU9250) _status.bno085 = SENSOR_DISCONNECTED;
 
         /* Sortir du mode simu si IMU détectée */
-        if (ok) _simMode = false;
+        if (ok) _simIMU = false;
 
         xSemaphoreGive(_mutex);
         Serial.println("[SENSORS] IMU active : " + String(
@@ -525,7 +597,7 @@ void SensorDriver::setBaroProfile(BaroProfile profile) {
         if (_activeBaro == BARO_TYPE_MS5803) _status.bme280 = SENSOR_DISCONNECTED;
         else if (_activeBaro == BARO_TYPE_BME280) _status.ms5803 = SENSOR_DISCONNECTED;
 
-        if (ok) _simMode = false;
+        if (ok) _simPressure = false;
 
         xSemaphoreGive(_mutex);
         Serial.println("[SENSORS] Baro actif : " + String(
@@ -876,10 +948,10 @@ bool SensorDriver::_initBME280() {
 
     /* Configuration : humidity oversampling ×1 */
     _i2cWrite(_bme280Addr, BME280_CTRL_HUM, 0x01);
-    /* Temp ×1, Pression ×1, mode normal */
-    _i2cWrite(_bme280Addr, BME280_CTRL_MEAS, 0x25);
-    /* Standby 1000ms, filter off */
-    _i2cWrite(_bme280Addr, BME280_CONFIG_REG, 0xA0);
+    /* Temp ×1, Pression ×1, mode NORMAL (0x27 = 0b00100111) */
+    _i2cWrite(_bme280Addr, BME280_CTRL_MEAS, 0x27);
+    /* Standby 500ms, filter ×4 (IIR) pour lisser le bruit */
+    _i2cWrite(_bme280Addr, BME280_CONFIG_REG, 0x94);
 
     /* Lecture des coefficients de calibration température */
     _bme280_dig_T1 = (uint16_t)(_i2cRead8(_bme280Addr, 0x89) << 8 | _i2cRead8(_bme280Addr, 0x88));
@@ -1267,7 +1339,7 @@ void SensorDriver::_updateSimulation() {
     float dt = (float)TASK_SENSORS_PERIOD_MS / 1000.0f;
     _simAttitude(t);
     _simDepth(dt);
-    _simPower(t);
+    _simPowerData(t);
     _pressure.pressure_mbar = (int32_t)((1013.25f + _pressure.depth_m * 100.0f) * 10.0f);
     _pressure.temperature = 2050;
 }
@@ -1302,7 +1374,7 @@ void SensorDriver::_simDepth(float dt) {
     _pressure.depth_m = simDepth;
 }
 
-void SensorDriver::_simPower(float t) {
+void SensorDriver::_simPowerData(float t) {
     float discharge = (float)(millis()/1000UL) / 7200.0f;
     uint16_t batt = (uint16_t)(SIM_BATT_NOMINAL_MV - discharge*(SIM_BATT_NOMINAL_MV-SIM_BATT_MIN_MV));
     if (batt < SIM_BATT_MIN_MV) batt = SIM_BATT_MIN_MV;
@@ -1326,23 +1398,44 @@ void SensorDriver::_taskEntry(void* param) {
 void SensorDriver::_taskLoop() {
     TickType_t lastWake = xTaskGetTickCount();
     for (;;) {
-        if (!_simMode) {
-            /* Mode RÉEL : lecture capteurs avec forçage zéro si absent */
-            xSemaphoreTake(_mutex, portMAX_DELAY);
-            _readIMU();
-            _readPressure();
-            _readPower();
-            /* Forçage de cap manuel : override Yaw après lecture IMU */
-            _applyHeadingOverride();
-            xSemaphoreGive(_mutex);
-        } else {
-            /* Mode SIMULATEUR : données synthétiques */
-            xSemaphoreTake(_mutex, portMAX_DELAY);
-            _updateSimulation();
-            /* Forçage de cap manuel : override Yaw après simulation */
-            _applyHeadingOverride();
-            xSemaphoreGive(_mutex);
+        float t  = millis() / 1000.0f;
+        float dt = (float)TASK_SENSORS_PERIOD_MS / 1000.0f;
+
+        /* Si le bus I2C est réservé (scan/reinit), sauter les lectures */
+        if (_i2cBusy) {
+            vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(TASK_SENSORS_PERIOD_MS));
+            continue;
         }
+
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+
+        /* IMU : lecture réelle ou simulation */
+        if (_simIMU) {
+            _simAttitude(t);
+        } else {
+            _readIMU();
+        }
+
+        /* Pression : lecture réelle ou simulation */
+        if (_simPressure) {
+            _simDepth(dt);
+            _pressure.pressure_mbar = (int32_t)((1013.25f + _pressure.depth_m * 100.0f) * 10.0f);
+            _pressure.temperature = 2050;
+        } else {
+            _readPressure();
+        }
+
+        /* Puissance : lecture réelle ou simulation */
+        if (_simPower) {
+            _simPowerData(t);
+        } else {
+            _readPower();
+        }
+
+        /* Forçage de cap manuel : override Yaw après traitement */
+        _applyHeadingOverride();
+
+        xSemaphoreGive(_mutex);
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(TASK_SENSORS_PERIOD_MS));
     }
 }

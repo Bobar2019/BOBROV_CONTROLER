@@ -323,10 +323,14 @@ function processTelemetry(data) {
         }
     }
 
-    if (data.sim !== undefined) {
-        const el = document.getElementById('badge-mode');
-        el.textContent = data.sim ? 'SIMULATEUR' : 'RÉEL';
-        el.className = data.sim ? 'badge badge-sim' : 'badge badge-real';
+    if (data.sim_imu !== undefined) {
+        updateSimToggleBtn('imu', data.sim_imu);
+    }
+    if (data.sim_pressure !== undefined) {
+        updateSimToggleBtn('pressure', data.sim_pressure);
+    }
+    if (data.sim_power !== undefined) {
+        updateSimToggleBtn('power', data.sim_power);
     }
 
     if (data.wdg !== undefined) {
@@ -764,17 +768,55 @@ function renderWifiList(networks) {
  * ========================================================================= */
 
 function initModeToggle() {
-    document.getElementById('btn-toggle-mode').addEventListener('click', async () => {
-        const badge = document.getElementById('badge-mode');
-        const newMode = badge.textContent === 'SIMULATEUR' ? 'reel' : 'simulateur';
-        try {
-            await fetch('/api/mode', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `mode=${newMode}`
-            });
-        } catch (e) { console.error('Bascule mode:', e); }
+    document.querySelectorAll('.sim-toggle-group .btn-mode-toggle').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const sensor = btn.dataset.sensor;
+            const isSim = btn.classList.contains('mode-sim');
+            const newMode = isSim ? 'reel' : 'simulateur';
+            try {
+                const body = new URLSearchParams();
+                body.set(sensor, newMode);
+                await fetch('/api/mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString()
+                });
+            } catch (e) { console.error('Bascule mode ' + sensor + ':', e); }
+        });
     });
+}
+
+/**
+ * Met à jour un bouton toggle Simulateur/Réel pour un capteur donné.
+ * @param {string} sensor — 'imu', 'pressure' ou 'power'
+ * @param {boolean} isSim — true si mode simulateur actif pour ce capteur
+ */
+function updateSimToggleBtn(sensor, isSim) {
+    const btn = document.getElementById('btn-sim-' + sensor);
+    const label = document.getElementById('label-sim-' + sensor);
+    if (!btn || !label) return;
+
+    const names = { imu: 'MPU9250', pressure: 'BME280', power: 'INA226' };
+    const icons = { imu: '📐', pressure: '🌊', power: '⚡' };
+    const name = names[sensor] || sensor.toUpperCase();
+
+    if (isSim) {
+        btn.className = 'btn-mode-toggle mode-sim';
+        btn.querySelector('.mode-toggle-icon').textContent = '🧪';
+        label.textContent = name + ' : SIMULATEUR';
+    } else {
+        btn.className = 'btn-mode-toggle mode-real';
+        btn.querySelector('.mode-toggle-icon').textContent = icons[sensor] || '🔧';
+        label.textContent = name + ' : RÉEL';
+    }
+
+    /* Mettre à jour le badge header (sim si au moins un capteur en simu) */
+    const anySim = document.querySelector('.sim-toggle-group .mode-sim') !== null;
+    const badge = document.getElementById('badge-mode');
+    if (badge) {
+        badge.textContent = anySim ? 'SIMULATEUR' : 'RÉEL';
+        badge.className = anySim ? 'badge badge-sim' : 'badge badge-real';
+    }
 }
 
 function initSettings() {

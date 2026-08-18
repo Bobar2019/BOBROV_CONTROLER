@@ -23,7 +23,7 @@
         <div class="status-badges">
             <span id="badge-ws" class="badge badge-off">WS: Déconnecté</span>
             <span id="badge-rpi" class="badge badge-off">RPi: --</span>
-            <span id="badge-mode" class="badge badge-sim">SIMULATEUR</span>
+            <span id="badge-mode" class="badge badge-real">RÉEL</span>
             <span id="badge-wdg" class="badge badge-ok">WDG: OK</span>
         </div>
     </header>
@@ -319,7 +319,20 @@
                     <div class="card" id="power-card-2"><h3>Wattmètre 3 — Propulsion</h3><div class="power-val"><span id="p2-v">0 mV</span> / <span id="p2-i">0 mA</span></div></div>
                 </div>
                 <div class="telem-row center">
-                    <button id="btn-toggle-mode" class="btn btn-lg btn-warning">Basculer : SIMULATEUR ↔ RÉEL</button>
+                    <div class="sim-toggle-group">
+                        <button id="btn-sim-imu" class="btn-mode-toggle mode-real" data-sensor="imu">
+                            <span class="mode-toggle-icon">📐</span>
+                            <span class="mode-toggle-label" id="label-sim-imu">MPU9250 : RÉEL</span>
+                        </button>
+                        <button id="btn-sim-pressure" class="btn-mode-toggle mode-real" data-sensor="pressure">
+                            <span class="mode-toggle-icon">🌊</span>
+                            <span class="mode-toggle-label" id="label-sim-pressure">BME280 : RÉEL</span>
+                        </button>
+                        <button id="btn-sim-power" class="btn-mode-toggle mode-real" data-sensor="power">
+                            <span class="mode-toggle-icon">⚡</span>
+                            <span class="mode-toggle-label" id="label-sim-power">INA226 : RÉEL</span>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

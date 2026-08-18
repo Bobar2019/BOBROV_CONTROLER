@@ -520,7 +520,7 @@ h3 {
     background: transparent; border: 1px solid var(--accent-cyan);
     color: var(--accent-cyan); font-size: 0.82rem; font-weight: 700;
     letter-spacing: 0.5px; cursor: pointer;
-    text-align: center;
+    display: flex; align-items: center; justify-content: center;
     transition: background 0.2s, color 0.2s;
 }
 .av-tare-btn:hover { background: var(--accent-cyan); color: var(--bg-primary); }
@@ -1071,11 +1071,16 @@ footer { text-align: center; padding: 14px; font-size: 0.7rem; color: var(--text
 }
 
 /* ===== MODE DE PILOTAGE (FLIGHT MODE SELECTOR) ===== */
-.mode-selector-row { justify-content: center; }
+.mode-selector-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: center;
+}
 .mode-card {
     text-align: center;
     min-width: 340px;
-    max-width: 480px;
+    max-width: 520px;
+    width: 100%;
 }
 .mode-card h3 { color: var(--accent-cyan); }
 
@@ -1136,4 +1141,48 @@ footer { text-align: center; padding: 14px; font-size: 0.7rem; color: var(--text
     border-color: var(--accent-cyan);
     color: var(--accent-cyan);
     box-shadow: 0 0 8px rgba(0, 217, 255, 0.2);
+}
+
+/* ===== BOUTON TOGGLE SIMULATEUR/RÉEL ===== */
+.sim-toggle-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+}
+.btn-mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 28px;
+    border-radius: 30px;
+    font-size: 0.88rem;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    cursor: pointer;
+    border: 2px solid;
+    transition: all 0.3s ease;
+    font-family: 'Source Code Pro', monospace;
+}
+.btn-mode-toggle.mode-real {
+    background: rgba(76, 175, 80, 0.08);
+    border-color: #4caf50;
+    color: #4caf50;
+}
+.btn-mode-toggle.mode-real:hover {
+    background: rgba(76, 175, 80, 0.18);
+    box-shadow: 0 0 12px rgba(76, 175, 80, 0.3);
+}
+.btn-mode-toggle.mode-sim {
+    background: rgba(255, 152, 0, 0.08);
+    border-color: #ff9800;
+    color: #ff9800;
+}
+.btn-mode-toggle.mode-sim:hover {
+    background: rgba(255, 152, 0, 0.18);
+    box-shadow: 0 0 12px rgba(255, 152, 0, 0.3);
+}
+.mode-toggle-icon {
+    font-size: 1.1rem;
+    line-height: 1;
 }
