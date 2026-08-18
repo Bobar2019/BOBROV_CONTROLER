@@ -1,0 +1,26 @@
+{
+    "name": "BOBCNC",
+    "short_name": "BOBCNC",
+    "description": "Pupitre de commande CNC pour machine BOBCNC (FluidNC)",
+    "start_url": "/",
+    "scope": "/",
+    "display": "fullscreen",
+    "display_override": ["fullscreen", "standalone", "minimal-ui"],
+    "orientation": "landscape",
+    "background_color": "#0a0e14",
+    "theme_color": "#0a0e14",
+    "icons": [
+        {
+            "src": "/favicon.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any"
+        },
+        {
+            "src": "/favicon.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ]
+}

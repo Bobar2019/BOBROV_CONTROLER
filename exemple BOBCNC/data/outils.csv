@@ -1,0 +1,5 @@
+id;num_t;nom;diametre;longueur;nb_dents;avance_ebauche;avance_finition;avance_z;vitesse_broche;angle_bout;remarque
+1;1;Fraise 6mm;6.00;50.00;2;1200;800;300;12000;0;Fraise droite standard
+2;2;Fraise 3mm;3.00;40.00;2;600;400;200;15000;0;Gravure fine
+3;3;Fraise 8mm;8.00;60.00;3;1800;1200;400;10000;0;Ebauche rapide
+4;4;Foret 9mm;9.00;50.00;2;1200;600;300;24000;0;Foret pour qrcode

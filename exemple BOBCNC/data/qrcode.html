@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code Perçage - BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <!-- QR Code generator library -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <!-- THREE.js (importmap) + module QR Code 3D pour la simulation visuelle -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="qrcode3d.js?v=1"></script>
+    <style>
+        .qr-page { max-width:1100px; margin:0 auto; padding:20px; padding-top:90px; padding-bottom:60px; }
+        .qr-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+        @media(max-width:800px) { .qr-grid { grid-template-columns:1fr; } }
+
+        /* Cards */
+        .qr-card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:10px; padding:16px 18px; margin-bottom:16px; }
+        .qr-card h2 { font-size:0.9rem; color:var(--accent-cyan); display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+
+        /* Form */
+        .fg { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+        .fg label { font-size:0.68rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.3px; }
+        .fg input, .fg select, .fg textarea { padding:8px 12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-family:'Source Code Pro',monospace; font-size:0.82rem; outline:none; }
+        .fg input:focus, .fg select:focus { border-color:var(--accent-cyan); }
+        .fg-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+        .fg-row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+
+        /* Toggle */
+        .toggle-row { display:flex; align-items:center; gap:10px; }
+        .toggle-switch { position:relative; width:44px; height:22px; }
+        .toggle-switch input { opacity:0; width:0; height:0; }
+        .toggle-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:22px; transition:0.3s; }
+        .toggle-slider:before { position:absolute; content:""; height:16px; width:16px; left:2px; bottom:2px; background:var(--text-secondary); border-radius:50%; transition:0.3s; }
+        .toggle-switch input:checked + .toggle-slider { background:rgba(0,217,255,0.2); border-color:var(--accent-cyan); }
+        .toggle-switch input:checked + .toggle-slider:before { transform:translateX(22px); background:var(--accent-cyan); }
+
+        /* Buttons */
+        .btn { padding:8px 16px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg-card); color:var(--text-primary); font-family:'Source Code Pro',monospace; font-size:0.8rem; cursor:pointer; transition:all 0.2s; display:inline-flex; align-items:center; gap:6px; }
+        .btn:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,0.3); }
+        .btn-primary { background:linear-gradient(135deg,rgba(0,217,255,0.2),rgba(0,217,255,0.08)); border-color:rgba(0,217,255,0.5); color:var(--accent-cyan); }
+        .btn-success { background:linear-gradient(135deg,rgba(0,255,136,0.15),rgba(0,255,136,0.05)); border-color:rgba(0,255,136,0.4); color:#00ff88; }
+        .btn-danger { background:linear-gradient(135deg,rgba(255,51,51,0.15),rgba(255,51,51,0.05)); border-color:rgba(255,51,51,0.4); color:#ff6666; }
+        .btn-warn { background:linear-gradient(135deg,rgba(255,204,0,0.15),rgba(255,204,0,0.05)); border-color:rgba(255,204,0,0.4); color:#ffcc00; }
+        .btn-actions { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; }
+
+        /* Canvas preview */
+        .qr-canvas-wrap { display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.3); border:1px solid var(--border-color); border-radius:8px; padding:16px; min-height:320px; }
+        #qrCanvas { max-width:100%; image-rendering:pixelated; }
+
+        /* G-code output */
+        .gcode-area { width:100%; min-height:200px; max-height:400px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; color:var(--accent-cyan); font-family:'Source Code Pro',monospace; font-size:0.72rem; padding:10px; resize:vertical; outline:none; }
+        .gcode-area:focus { border-color:var(--accent-cyan); }
+
+        /* Alert */
+        .qr-alert { padding:10px 14px; border-radius:8px; font-size:0.78rem; margin-bottom:12px; display:none; }
+        .qr-alert.warn { display:block; background:rgba(255,204,0,0.1); border:1px solid rgba(255,204,0,0.4); color:#ffcc00; }
+        .qr-alert.err { display:block; background:rgba(255,51,51,0.1); border:1px solid rgba(255,51,51,0.4); color:#ff6666; }
+        .qr-alert.ok { display:block; background:rgba(0,255,136,0.1); border:1px solid rgba(0,255,136,0.4); color:#00ff88; }
+
+        /* Stats */
+        .qr-stats { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; }
+        .qr-stat { font-size:0.72rem; color:var(--text-secondary); }
+        .qr-stat strong { color:var(--accent-cyan); }
+
+        /* ====== MODAL VISU 3D (style identique à taquin) ====== */
+        .qrviz-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:#000; z-index:200; }
+        .qrviz-overlay.active { display:block; }
+        .qrviz-modal { position:absolute; inset:0; background:#101418; overflow:hidden; }
+        .qrviz-header {
+            position:absolute; top:0; left:0; right:0; z-index:30;
+            display:flex; align-items:center; justify-content:space-between; gap:8px;
+            padding:8px 14px;
+            background:linear-gradient(to bottom, rgba(15,18,23,0.85), rgba(15,18,23,0.0));
+            pointer-events:none;
+        }
+        .qrviz-header > * { pointer-events:auto; }
+        .qrviz-header h2 { color:var(--accent-cyan); font-size:0.9rem; text-shadow:0 1px 4px rgba(0,0,0,0.8); }
+        .qrviz-header-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+        .qrviz-body { position:absolute; inset:0; background:#101418; }
+        #qrVizCanvas { position:absolute; inset:0; }
+        .qrviz-info { position:absolute; left:10px; top:50px; z-index:25; font-size:0.7rem; color:rgba(255,255,255,0.85); font-family:'Source Code Pro',monospace; background:rgba(0,0,0,0.55); padding:4px 9px; border-radius:6px; }
+        .qrviz-legend { position:absolute; top:50px; right:10px; z-index:25; display:flex; gap:10px; background:rgba(0,0,0,0.55); padding:5px 10px; border-radius:6px; font-size:0.65rem; font-family:'Source Code Pro',monospace; }
+        .qrviz-legend span { color:rgba(255,255,255,0.75); }
+        .qrviz-toolbar {
+            position:absolute; left:0; right:0; bottom:0; z-index:30;
+            display:flex; align-items:center; gap:8px;
+            padding:8px 12px;
+            background:linear-gradient(to top, rgba(15,18,23,0.92), rgba(15,18,23,0.65));
+            border-top:1px solid rgba(0,217,255,0.4);
+            flex-wrap:nowrap; overflow-x:auto;
+            padding-bottom:max(8px, env(safe-area-inset-bottom));
+        }
+        .qrviz-toolbar .btn { padding:6px 10px; font-size:0.75rem; white-space:nowrap; flex-shrink:0; }
+        .qrviz-toolbar .btn.active { box-shadow:0 0 0 2px rgba(0,255,136,0.4) inset; }
+        .btn-close-x { padding:4px 9px !important; font-size:1rem !important; line-height:1; }
+        .qrviz-speed { display:flex; align-items:center; gap:6px; font-size:0.7rem; color:var(--text-secondary); flex:1; min-width:120px; flex-shrink:1; }
+        .qrviz-speed input[type=range] { flex:1; min-width:60px; accent-color:var(--accent-cyan); }
+        .qrviz-speed .speed-val { min-width:38px; text-align:right; color:var(--accent-cyan); font-family:'Source Code Pro',monospace; }
+        .qrviz-progressbar { position:absolute; left:0; right:0; bottom:100%; height:4px; background:rgba(255,255,255,0.08); overflow:hidden; }
+        .qrviz-progress { height:100%; width:0%; background:linear-gradient(90deg, var(--accent-cyan), #00ff88); transition:width 0.1s linear; }
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height='22' viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <div class="qr-page">
+        <header class="page-header"><h1>QR Code - Perçage</h1></header>
+
+        <!-- Alert -->
+        <div class="qr-alert" id="qrAlert"></div>
+
+        <div class="qr-grid">
+            <!-- COL GAUCHE : Paramètres -->
+            <div>
+                <!-- Contenu QR -->
+                <div class="qr-card">
+                    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h7v7h-7z"/></svg> Contenu QR Code</h2>
+                    <div class="fg">
+                        <label>Type</label>
+                        <select id="qrType">
+                            <option value="text">Texte</option>
+                            <option value="url">URL</option>
+                            <option value="wifi">WiFi</option>
+                        </select>
+                    </div>
+                    <div class="fg" id="qrTextInput">
+                        <label>Texte</label>
+                        <input type="text" id="qrText" placeholder="Entrez le texte..." value="BOBCNC">
+                    </div>
+                    <div class="fg" id="qrWifiInput" style="display:none;">
+                        <label>SSID</label>
+                        <input type="text" id="qrSSID" placeholder="Nom du réseau">
+                        <label style="margin-top:6px;">Mot de passe</label>
+                        <input type="text" id="qrWifiPass" placeholder="Mot de passe">
+                        <label style="margin-top:6px;">Sécurité</label>
+                        <select id="qrWifiSec"><option value="WPA">WPA/WPA2</option><option value="WEP">WEP</option><option value="nopass">Ouvert</option></select>
+                    </div>
+                    <div class="fg">
+                        <label>Niveau correction</label>
+                        <select id="qrLevel">
+                            <option value="L">L (7%)</option>
+                            <option value="M" selected>M (15%)</option>
+                            <option value="Q">Q (25%)</option>
+                            <option value="H">H (30%)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Outil -->
+                <div class="qr-card">
+                    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg> Outil</h2>
+                    <div class="fg">
+                        <label>Foret</label>
+                        <select id="qrTool"></select>
+                    </div>
+                    <div class="fg-row3" id="qrToolInfo" style="font-size:0.72rem;color:var(--text-secondary);margin-top:4px;">
+                        <span>Diam: <strong id="qrToolDiam">-</strong></span>
+                        <span>Fz: <strong id="qrToolFz">-</strong></span>
+                        <span>RPM: <strong id="qrToolRpm">-</strong></span>
+                    </div>
+                </div>
+
+                <!-- Réglages usinage -->
+                <div class="qr-card">
+                    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Réglages Usinage</h2>
+                    <div class="fg-row">
+                        <div class="fg"><label>Origine pièce</label>
+                            <select id="qrOffset">
+                                <option value="G54">G54 (P1)</option>
+                                <option value="G55">G55 (P2)</option>
+                                <option value="G56">G56 (P3)</option>
+                                <option value="G57">G57 (P4)</option>
+                            </select>
+                        </div>
+                        <div class="fg"><label>Taille QR (mm)</label><input type="number" id="qrSize" step="1" min="5" max="500" value="50"></div>
+                    </div>
+                    <div class="fg-row">
+                        <div class="fg"><label>Profondeur (mm)</label><input type="number" id="qrDepth" step="0.1" min="0.1" value="1.5"></div>
+                        <div class="fg"><label>Z Sécurité (mm)</label><input type="number" id="qrZSafe" step="0.5" min="0.5" value="5"></div>
+                    </div>
+                    <div class="fg-row">
+                        <div class="fg"><label>Passe profondeur (mm)</label><input type="number" id="qrPeckDepth" step="0.1" min="0.1" value="0.5"></div>
+                    </div>
+                    <div class="fg">
+                        <label>Débourrage</label>
+                        <div class="toggle-row">
+                            <label class="toggle-switch"><input type="checkbox" id="qrPeck" checked><span class="toggle-slider"></span></label>
+                            <span id="qrPeckLabel" style="font-size:0.75rem;color:var(--text-secondary);">OUI</span>
+                        </div>
+                    </div>
+                    <div class="fg">
+                        <label>Rétractation totale</label>
+                        <div class="toggle-row">
+                            <label class="toggle-switch"><input type="checkbox" id="qrRetractTotal"><span class="toggle-slider"></span></label>
+                            <span id="qrRetractLabel" style="font-size:0.75rem;color:var(--text-secondary);">NON</span>
+                        </div>
+                    </div>
+                    <div class="btn-actions">
+                        <button class="btn btn-primary" onclick="generateQR()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                            Générer
+                        </button>
+                        <button class="btn btn-success" onclick="openQR3DSimulation()" title="Visualisation 3D du perçage">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                            Visu 3D
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- COL DROITE : Prévisualisation + G-code -->
+            <div>
+                <!-- Canvas -->
+                <div class="qr-card">
+                    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Prévisualisation</h2>
+                    <div class="qr-stats" id="qrStats"></div>
+                    <div class="qr-canvas-wrap">
+                        <canvas id="qrCanvas" width="400" height="400"></canvas>
+                    </div>
+                </div>
+
+                <!-- G-code -->
+                <div class="qr-card">
+                    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg> G-code</h2>
+                    <textarea class="gcode-area" id="qrGcode" readonly placeholder="Cliquez Générer pour obtenir le G-code..."></textarea>
+                    <div class="btn-actions">
+                        <button class="btn btn-success" onclick="sendToCNC()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            Envoyer CNC
+                        </button>
+                        <button class="btn btn-warn" onclick="downloadGcode()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            Télécharger .nc
+                        </button>
+                        <button class="btn" onclick="copyGcode(this)">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                            Copier
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== MODAL VISU 3D ==================== -->
+    <div class="qrviz-overlay" id="qrVizModal">
+        <div class="qrviz-modal">
+            <div class="qrviz-header">
+                <h2>Simulation 3D Perçage QR Code</h2>
+                <div class="qrviz-header-actions">
+                    <button class="btn" id="qrVizIso" title="Vue isométrique">Iso</button>
+                    <button class="btn" id="qrVizTop" title="Vue de dessus">Dessus</button>
+                    <button class="btn btn-danger btn-close-x" id="qrVizCloseX" title="Quitter la Visu 3D" aria-label="Quitter">✕</button>
+                </div>
+            </div>
+            <div class="qrviz-body" id="qrVizCanvas">
+                <div class="qrviz-info">Trous <span id="qrVizHole">0 / 0</span></div>
+                <div class="qrviz-legend">
+                    <span style="color:#c8a06a">■ Plaque</span>
+                    <span style="color:#d6d6e0">● Foret</span>
+                    <span style="color:#ff6633">● Perçage</span>
+                </div>
+            </div>
+            <div class="qrviz-toolbar">
+                <button class="btn btn-success" id="qrVizPlay"  title="Démarrer / reprendre la simulation">▶ Lire</button>
+                <button class="btn btn-warn"    id="qrVizPause" title="Mettre la simulation en pause">◼ Stop</button>
+                <button class="btn"             id="qrVizReset" title="Revenir au début">⏮ Début</button>
+                <span class="qrviz-speed">
+                    Vitesse
+                    <input type="range" id="qrVizSpeed" min="0.25" max="5" step="0.05" value="1">
+                    <span class="speed-val" id="qrVizSpeedVal">1.00x</span>
+                </span>
+                <button class="btn btn-danger" id="qrVizClose" title="Fermer la Visu 3D">✕ Quitter</button>
+                <div class="qrviz-progressbar"><div class="qrviz-progress" id="qrVizProgress"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+    <script>
+    // ============================================================
+    //  ÉTAT GLOBAL
+    // ============================================================
+    let tools = [];
+    let qrMatrix = null;
+    let qrModules = 0;
+    let generatedGcode = '';
+    let machineConfig = { z_safe:5, peck_depth:2, peck_retract_total:false, limit_x:0, limit_y:0, limit_z:0 };
+
+    // ============================================================
+    //  INITIALISATION
+    // ============================================================
+    document.addEventListener('DOMContentLoaded', () => {
+        loadTools();
+        loadConfig();
+        initPageWS();
+        initUI();
+        gsap.from('.qr-card', { y:15, opacity:0, duration:0.4, stagger:0.1, ease:'power2.out' });
+    });
+
+    function initUI() {
+        // Type switch
+        document.getElementById('qrType').addEventListener('change', function() {
+            document.getElementById('qrTextInput').style.display = (this.value === 'wifi') ? 'none' : 'block';
+            document.getElementById('qrWifiInput').style.display = (this.value === 'wifi') ? 'block' : 'none';
+        });
+        // Peck toggle
+        document.getElementById('qrPeck').addEventListener('change', function() {
+            document.getElementById('qrPeckLabel').textContent = this.checked ? 'OUI' : 'NON';
+        });
+        document.getElementById('qrRetractTotal').addEventListener('change', function() {
+            document.getElementById('qrRetractLabel').textContent = this.checked ? 'OUI' : 'NON';
+        });
+        // Tool selection
+        document.getElementById('qrTool').addEventListener('change', updateToolInfo);
+    }
+
+    // ============================================================
+    //  CHARGEMENT OUTILS & CONFIG
+    // ============================================================
+    async function loadTools() {
+        try {
+            const r = await fetch('/api/tools');
+            const data = await r.json();
+            tools = Array.isArray(data) ? data : [];
+            const sel = document.getElementById('qrTool');
+            sel.innerHTML = '<option value="">-- Sélectionner --</option>';
+            tools.forEach(t => {
+                sel.innerHTML += `<option value="${t.id}">T${t.num_t||0} — ${t.nom||'Sans nom'} (∅${t.diametre||0})</option>`;
+            });
+            if (tools.length > 0) { sel.value = tools[0].id; updateToolInfo(); }
+        } catch(e) {}
+    }
+
+    function updateToolInfo() {
+        const id = parseInt(document.getElementById('qrTool').value);
+        const t = tools.find(x => x.id === id);
+        document.getElementById('qrToolDiam').textContent = t ? parseFloat(t.diametre||0).toFixed(2) + ' mm' : '-';
+        document.getElementById('qrToolFz').textContent = t ? (t.avance_z||0) + ' mm/min' : '-';
+        document.getElementById('qrToolRpm').textContent = t ? (t.vitesse_broche||0) + ' RPM' : '-';
+    }
+
+    function getSelectedTool() {
+        const id = parseInt(document.getElementById('qrTool').value);
+        return tools.find(x => x.id === id) || null;
+    }
+
+    async function loadConfig() {
+        try {
+            const r = await fetch('/api/config');
+            const c = await r.json();
+            machineConfig.z_safe = c.z_safe || 5;
+            machineConfig.peck_depth = c.peck_depth || 2;
+            machineConfig.peck_retract_total = c.peck_retract_total || false;
+            machineConfig.limit_x = c.limit_x || 0;
+            machineConfig.limit_y = c.limit_y || 0;
+            machineConfig.limit_z = c.limit_z || 0;
+            document.getElementById('qrZSafe').value = machineConfig.z_safe;
+            document.getElementById('qrPeckDepth').value = machineConfig.peck_depth;
+            document.getElementById('qrRetractTotal').checked = machineConfig.peck_retract_total;
+            document.getElementById('qrRetractLabel').textContent = machineConfig.peck_retract_total ? 'OUI' : 'NON';
+        } catch(e) {}
+    }
+
+    function initPageWS() {
+        // Utilise cncSocket de main.js (connexion unique partagee)
+        window.addCncSocketMessageHandler(function(data) {
+            try {
+                var msg = JSON.parse(data);
+                if (msg.type === 'config') {
+                    machineConfig.z_safe = msg.z_safe || machineConfig.z_safe;
+                    machineConfig.limit_x = msg.limit_x || 0;
+                    machineConfig.limit_y = msg.limit_y || 0;
+                    machineConfig.limit_z = msg.limit_z || 0;
+                }
+            } catch(e) {}
+        });
+    }
+
+    function initWS() { initPageWS(); }
+
+    // ============================================================
+    //  GÉNÉRATION QR CODE
+    // ============================================================
+    function getQrContent() {
+        const type = document.getElementById('qrType').value;
+        if (type === 'wifi') {
+            const ssid = document.getElementById('qrSSID').value;
+            const pass = document.getElementById('qrWifiPass').value;
+            const sec = document.getElementById('qrWifiSec').value;
+            return `WIFI:T:${sec};S:${ssid};P:${pass};;`;
+        }
+        return document.getElementById('qrText').value;
+    }
+
+    function generateQR() {
+        const content = getQrContent();
+        if (!content) { showAlert('Entrez un contenu pour le QR Code', 'err'); return; }
+
+        const level = document.getElementById('qrLevel').value;
+        const tool = getSelectedTool();
+
+        try {
+            // qrcode-generator library
+            const qr = qrcode(0, level);
+            qr.addData(content);
+            qr.make();
+
+            qrModules = qr.getModuleCount();
+            qrMatrix = [];
+            for (let r = 0; r < qrModules; r++) {
+                qrMatrix[r] = [];
+                for (let c = 0; c < qrModules; c++) {
+                    qrMatrix[r][c] = qr.isDark(r, c);
+                }
+            }
+        } catch(e) {
+            showAlert('Erreur génération QR: ' + e.message, 'err');
+            return;
+        }
+
+        const sizeMM = parseFloat(document.getElementById('qrSize').value) || 50;
+        const diamMM = tool ? parseFloat(tool.diametre) || 0 : 0;
+        const stepMM = sizeMM / qrModules;
+
+        // Stats
+        let holeCount = 0;
+        for (let r = 0; r < qrModules; r++)
+            for (let c = 0; c < qrModules; c++)
+                if (qrMatrix[r][c]) holeCount++;
+
+        const statsEl = document.getElementById('qrStats');
+        const timeEst = estimateTime(holeCount, stepMM, diamMM);
+        statsEl.innerHTML = `
+            <span class="qr-stat">Modules: <strong>${qrModules}x${qrModules}</strong></span>
+            <span class="qr-stat">Pas: <strong>${stepMM.toFixed(2)} mm</strong></span>
+            <span class="qr-stat">Trous: <strong>${holeCount}</strong></span>
+            <span class="qr-stat">Foret: <strong>${diamMM.toFixed(2)} mm</strong></span>
+            <span class="qr-stat">Temps: <strong style="color:#00ff88">${timeEst}</strong></span>
+        `;
+
+        // Alerte chevauchement
+        let alerts = [];
+        if (diamMM > 0 && diamMM > stepMM) {
+            alerts.push({ msg: `⚠ Chevauchement : Foret ${diamMM.toFixed(2)} mm > pas ${stepMM.toFixed(2)} mm — les trous se recouperont`, type: 'warn' });
+        } else if (diamMM > 0 && diamMM > stepMM * 0.8) {
+            alerts.push({ msg: `⚠ Foret ${diamMM.toFixed(2)} mm proche du pas ${stepMM.toFixed(2)} mm — chevauchement possible`, type: 'warn' });
+        }
+
+        // Alerte limites machine
+        if (machineConfig.limit_x > 0 && sizeMM > machineConfig.limit_x) {
+            alerts.push({ msg: `QR Code trop grand (X max: ${machineConfig.limit_x.toFixed(0)} mm)`, type: 'err' });
+        }
+        if (machineConfig.limit_y > 0 && sizeMM > machineConfig.limit_y) {
+            alerts.push({ msg: `QR Code trop grand (Y max: ${machineConfig.limit_y.toFixed(0)} mm)`, type: 'err' });
+        }
+
+        // Afficher les alertes accumulées (ne bloque pas la génération)
+        if (alerts.length > 0) {
+            const worstType = alerts.some(a => a.type === 'err') ? 'err' : 'warn';
+            showAlert(alerts.map(a => a.msg).join(' | '), worstType);
+        } else {
+            showAlert('', '');
+        }
+
+        drawPreview(stepMM, diamMM);
+        generateGcode(stepMM, diamMM);
+    }
+
+    // ============================================================
+    //  PRÉVISUALISATION CANVAS
+    // ============================================================
+    function drawPreview(stepMM, diamMM) {
+        const canvas = document.getElementById('qrCanvas');
+        const ctx = canvas.getContext('2d');
+        const size = 400;
+        canvas.width = size;
+        canvas.height = size;
+
+        const margin = 20;
+        const drawSize = size - margin * 2;
+        const cellSize = drawSize / qrModules;
+
+        // Fond
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(0, 0, size, size);
+
+        // Grille
+        for (let r = 0; r < qrModules; r++) {
+            for (let c = 0; c < qrModules; c++) {
+                const x = margin + c * cellSize;
+                const y = margin + r * cellSize;
+
+                if (qrMatrix[r][c]) {
+                    // Module noir = trou
+                    ctx.fillStyle = 'rgba(0, 217, 255, 0.3)';
+                    ctx.fillRect(x, y, cellSize, cellSize);
+
+                    // Cercle foret
+                    if (diamMM > 0) {
+                        const radius = Math.max(1, (diamMM / 2 / stepMM) * cellSize);
+                        ctx.beginPath();
+                        ctx.arc(x + cellSize/2, y + cellSize/2, radius, 0, Math.PI * 2);
+                        ctx.fillStyle = 'rgba(0, 255, 136, 0.6)';
+                        ctx.fill();
+                    }
+                } else {
+                    // Module blanc
+                    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+                    ctx.fillRect(x, y, cellSize, cellSize);
+                }
+            }
+        }
+
+        // Bordure
+        ctx.strokeStyle = 'rgba(0,217,255,0.3)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(margin, margin, drawSize, drawSize);
+
+        // Échelle
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = '10px Source Code Pro';
+        const totalMM = parseFloat(document.getElementById('qrSize').value) || 50;
+        ctx.fillText(totalMM + ' mm', margin, size - 5);
+    }
+
+    // ============================================================
+    //  GÉNÉRATION G-CODE
+    // ============================================================
+    function generateGcode(stepMM, diamMM) {
+        const tool = getSelectedTool();
+        const depth = parseFloat(document.getElementById('qrDepth').value) || 1.5;
+        const zSafe = parseFloat(document.getElementById('qrZSafe').value) || 5;
+        const peckDepth = parseFloat(document.getElementById('qrPeckDepth').value) || 0.5;
+        const usePeck = document.getElementById('qrPeck').checked;
+        const retractTotal = document.getElementById('qrRetractTotal').checked;
+        const rpm = tool ? (tool.vitesse_broche || 1000) : 1000;
+        const fz = tool ? (tool.avance_z || 100) : 100;
+        const sizeMM = parseFloat(document.getElementById('qrSize').value) || 50;
+        const offset = sizeMM / 2; // Centrer le QR en 0,0
+
+        // Compter les trous pour estimation
+        let holeCount = 0;
+        for (let r = 0; r < qrModules; r++)
+            for (let c = 0; c < qrModules; c++)
+                if (qrMatrix[r][c]) holeCount++;
+
+        let lines = [];
+        lines.push('(==========================================)');
+        lines.push('( BOBCNC - QR Code Perçage)');
+        lines.push('( Contenu: ' + getQrContent().substring(0, 40) + ')');
+        lines.push('( Modules: ' + qrModules + 'x' + qrModules + ')');
+        lines.push('( Taille: ' + sizeMM + ' mm | Profondeur: ' + depth + ' mm)');
+        lines.push('( Foret: ' + (diamMM ? diamMM.toFixed(2) : '?') + ' mm | Fz: ' + fz + ' | RPM: ' + rpm + ')');
+        const timeEst = estimateTime(holeCount, stepMM, diamMM);
+        lines.push('( Temps estimé: ' + timeEst + ')');
+        lines.push('(==========================================)');
+        lines.push('');
+        lines.push('G90 G21 G17');       // Absolu, mm, plan XY
+        const offsetCmd = document.getElementById('qrOffset').value;
+        lines.push(offsetCmd);               // Origine pièce G54-G57
+        if (tool && tool.num_t) {
+            lines.push('T' + tool.num_t + ' M6');    // Sélection outil
+            lines.push('G4 P1');                      // Pause changement outil
+        }
+        lines.push('G0 Z' + zSafe.toFixed(2)); // Remontée sécurité
+        lines.push('M3 S' + rpm);          // Démarrage broche
+        lines.push('G4 P3');                // Pause 3s broche
+        lines.push('');
+
+        let holeNum = 0;
+        // Parcours ZIGZAG (boustrophédon) : ligne paire → droite, ligne impaire ← gauche
+        // Évite le retour à X=0 à chaque changement de ligne, gain de temps significatif.
+        for (let r = 0; r < qrModules; r++) {
+            const reverse = (r & 1) === 1;
+            for (let i = 0; i < qrModules; i++) {
+                const c = reverse ? (qrModules - 1 - i) : i;
+                if (!qrMatrix[r][c]) continue;
+                holeNum++;
+                const x = (c * stepMM - offset + stepMM / 2).toFixed(3);
+                const y = (r * stepMM - offset + stepMM / 2).toFixed(3);
+
+                lines.push('(Trou #' + holeNum + ' - L' + r + ' C' + c + (reverse ? ' ←' : ' →') + ')');
+
+                if (usePeck && depth > peckDepth) {
+                    // Débourrage
+                    let currentZ = 0;
+                    let passNum = 0;
+                    while (currentZ < depth) {
+                        passNum++;
+                        const nextZ = Math.min(currentZ + peckDepth, depth);
+                        // Descente
+                        lines.push('G0 X' + x + ' Y' + y);
+                        if (passNum === 1) {
+                            lines.push('G1 Z-' + nextZ.toFixed(3) + ' F' + fz);
+                        } else {
+                            if (retractTotal) {
+                                lines.push('G0 Z' + zSafe.toFixed(2)); // Remontée totale
+                            } else {
+                                lines.push('G0 Z' + (zSafe * 0.3).toFixed(2)); // Remontée partielle
+                            }
+                            lines.push('G1 Z-' + nextZ.toFixed(3) + ' F' + fz);
+                        }
+                        currentZ = nextZ;
+                    }
+                    // Remontée
+                    lines.push('G0 Z' + zSafe.toFixed(2));
+                } else {
+                    // Perçage simple
+                    lines.push('G0 X' + x + ' Y' + y);
+                    lines.push('G1 Z-' + depth.toFixed(3) + ' F' + fz);
+                    lines.push('G0 Z' + zSafe.toFixed(2));
+                }
+                lines.push('');
+            }
+        }
+
+        lines.push('(==========================================)');
+        lines.push('( Fin - ' + holeNum + ' trous)');
+        lines.push('(==========================================)');
+        lines.push('M5');                    // Arrêt broche
+        lines.push('G0 Z' + zSafe.toFixed(2)); // Remontée
+        lines.push('G0 X0 Y0');             // Retour origine
+        lines.push('M2');                    // Fin programme
+
+        generatedGcode = wrapWithStartEndGcode(lines.join('\n'));
+        document.getElementById('qrGcode').value = generatedGcode;
+        // Conserver les alertes existantes (chevauchement, limites) ou afficher succcès
+        const currentAlert = document.getElementById('qrAlert');
+        if (currentAlert.classList.contains('warn') || currentAlert.classList.contains('err')) {
+            currentAlert.innerHTML += '<br>✓ G-code généré: ' + holeNum + ' trous — Temps: ' + timeEst;
+        } else {
+            showAlert('✓ G-code généré: ' + holeNum + ' trous — Temps estimé: ' + timeEst, 'ok');
+        }
+    }
+
+    // ============================================================
+    //  ESTIMATION TEMPS D'USINAGE
+    // ============================================================
+    function estimateTime(holeCount, stepMM, diamMM) {
+        const tool = getSelectedTool();
+        const depth = parseFloat(document.getElementById('qrDepth').value) || 1.5;
+        const zSafe = parseFloat(document.getElementById('qrZSafe').value) || 5;
+        const peckDepth = parseFloat(document.getElementById('qrPeckDepth').value) || 0.5;
+        const usePeck = document.getElementById('qrPeck').checked;
+        const retractTotal = document.getElementById('qrRetractTotal').checked;
+        const fz = tool ? (tool.avance_z || 100) : 100;      // mm/min plongée
+        const fxy = tool ? (tool.avance_ebauche || 500) : 500; // mm/min déplacement XY estimé
+        const rapidSpeed = 3000; // mm/min G0 estimé
+
+        let totalSec = 0;
+
+        // Démarrage broche (3s)
+        totalSec += 3;
+        // Changement outil (1s)
+        if (tool && tool.num_t) totalSec += 1;
+        // Remontée initiale Z Safe
+        totalSec += (zSafe / rapidSpeed) * 60;
+
+        // Distance moyenne entre deux trous en parcours ZIGZAG :
+        // les trous sont essentiellement adjacents (même ligne ou ligne suivante à côté).
+        // → distance moyenne ~ stepMM (au lieu de stepMM*1.2 en parcours classique).
+        const avgDistXY = stepMM * 1.0;
+
+        for (let i = 0; i < holeCount; i++) {
+            // Déplacement XY vers le trou (G0)
+            totalSec += (avgDistXY / rapidSpeed) * 60;
+
+            if (usePeck && depth > peckDepth) {
+                // Débourrage : nb passes
+                const numPasses = Math.ceil(depth / peckDepth);
+                // Première passe : descente uniquement
+                totalSec += (peckDepth / fz) * 60;
+                // Passes suivantes : remontée + redescente
+                for (let p = 1; p < numPasses; p++) {
+                    const retractZ = retractTotal ? zSafe : (zSafe * 0.3);
+                    // Remontée G0
+                    const depthAtPass = p * peckDepth;
+                    totalSec += ((retractZ + depthAtPass) / rapidSpeed) * 60;
+                    // Redescente G1
+                    const nextDepth = Math.min((p + 1) * peckDepth, depth);
+                    totalSec += ((retractZ + nextDepth) / fz) * 60;
+                }
+                // Remontée finale G0
+                totalSec += ((zSafe + depth) / rapidSpeed) * 60;
+            } else {
+                // Perçage simple
+                totalSec += (depth / fz) * 60;         // Descente G1
+                totalSec += ((zSafe + depth) / rapidSpeed) * 60; // Remontée G0
+            }
+        }
+
+        // Retour origine (approximation)
+        const sizeMM = parseFloat(document.getElementById('qrSize').value) || 50;
+        totalSec += (sizeMM / 2 / rapidSpeed) * 60; // G0 X0 Y0
+        totalSec += (zSafe / rapidSpeed) * 60;       // G0 Z Safe
+
+        // Formatage
+        if (totalSec < 60) return Math.round(totalSec) + ' sec';
+        const min = Math.floor(totalSec / 60);
+        const sec = Math.round(totalSec % 60);
+        if (min < 60) return min + ' min ' + (sec > 0 ? sec + ' sec' : '');
+        const hrs = Math.floor(min / 60);
+        const rmin = min % 60;
+        return hrs + 'h ' + rmin + ' min';
+    }
+
+    // ============================================================
+    //  ENVOI CNC
+    // ============================================================
+    function sendToCNC() {
+        if (!generatedGcode) { showAlert('G\u00e9n\u00e9rez le G-code d\'abord', 'err'); return; }
+        if (!cncConnected || !cncSocket || cncSocket.readyState !== WebSocket.OPEN) { showAlert('WebSocket non connect\u00e9', 'err'); return; }
+    
+        const lines = generatedGcode.split('\n');
+        let sent = 0;
+        lines.forEach((line) => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('(')) return;
+            sendCommand(trimmed);
+            sent++;
+        });
+        showAlert('G-code envoy\u00e9 (' + sent + ' cmds, flow control actif)', 'ok');
+    }
+
+    function downloadGcode() {
+        if (!generatedGcode) { showAlert('Générez le G-code d\'abord', 'err'); return; }
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([generatedGcode], { type: 'text/plain' }));
+        a.download = 'qrcode_percage.nc';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+    }
+
+    function copyGcode(btn) {
+        if (!generatedGcode) { showAlert('Rien à copier, générez le G-code d\'abord', 'err'); return; }
+        function onSuccess() {
+            showAlert('G-code copié dans le presse-papiers (' + generatedGcode.split('\n').length + ' lignes)', 'ok');
+            if (btn) {
+                const orig = btn.innerHTML;
+                btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copié !';
+                setTimeout(() => { btn.innerHTML = orig; }, 1500);
+            }
+        }
+        // Méthode 1 : Clipboard API (HTTPS / localhost)
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(generatedGcode).then(onSuccess).catch(() => {
+                fallbackCopy();
+            });
+        } else {
+            fallbackCopy();
+        }
+        // Méthode 2 : Fallback execCommand (HTTP ESP32)
+        function fallbackCopy() {
+            const ta = document.createElement('textarea');
+            ta.value = generatedGcode;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+                document.execCommand('copy');
+                onSuccess();
+            } catch(e) {
+                showAlert('Échec de la copie', 'err');
+            }
+            document.body.removeChild(ta);
+        }
+    }
+
+    // ============================================================
+    //  ALERTES
+    // ============================================================
+    function showAlert(msg, type) {
+        const el = document.getElementById('qrAlert');
+        if (!msg) { el.className = 'qr-alert'; el.textContent = ''; return; }
+        el.className = 'qr-alert ' + type;
+        el.textContent = msg;
+    }
+
+    // ============================================================
+    //  VISUALISATION 3D DU PERÇAGE
+    //  Ouvre une fenêtre plein écran avec une plaque, les trous à
+    //  percer (matrice QR) et un FORET au diamètre de l'outil
+    //  sélectionné (même logique que la visu 3D du Taquin).
+    // ============================================================
+    function buildHolesXY() {
+        if (!qrMatrix || qrModules <= 0) return null;
+        const sizeMM = parseFloat(document.getElementById('qrSize').value) || 50;
+        const stepMM = sizeMM / qrModules;
+        const offset = sizeMM / 2;
+        const holes = [];
+        // Même ordre que le G-code : parcours ZIGZAG (boustrophédon).
+        // En 3D : Y inversé pour que le QR apparaisse comme à l'écran (ligne 0 en haut).
+        for (let r = 0; r < qrModules; r++) {
+            const reverse = (r & 1) === 1;
+            for (let i = 0; i < qrModules; i++) {
+                const c = reverse ? (qrModules - 1 - i) : i;
+                if (!qrMatrix[r][c]) continue;
+                const x = c * stepMM - offset + stepMM / 2;
+                const y = -(r * stepMM - offset + stepMM / 2);
+                holes.push({ x, y });
+            }
+        }
+        return holes;
+    }
+
+    function openQR3DSimulation() {
+        if (!qrMatrix || qrModules <= 0) {
+            showAlert('Générez d’abord le QR Code pour lancer la visualisation 3D', 'err');
+            return;
+        }
+        const tool = getSelectedTool();
+        const toolDiameter = tool ? (parseFloat(tool.diametre) || 1) : 1;
+        const sizeMM   = parseFloat(document.getElementById('qrSize').value) || 50;
+        const depth    = parseFloat(document.getElementById('qrDepth').value) || 1.5;
+        const zSafe    = parseFloat(document.getElementById('qrZSafe').value) || 5;
+        const peckDepth = parseFloat(document.getElementById('qrPeckDepth').value) || 0.5;
+        const usePeck  = document.getElementById('qrPeck').checked;
+        const retractTotal = document.getElementById('qrRetractTotal').checked;
+
+        const holes = buildHolesXY();
+        if (!holes || holes.length === 0) {
+            showAlert('Aucun trou à percer dans la matrice QR', 'warn');
+            return;
+        }
+
+        const params = {
+            sizeMM, depth, zSafe, peckDepth, usePeck, retractTotal,
+            toolDiameter, holes
+        };
+
+        function launch() {
+            window.openQRCodeVisualizer(params, 'qrVizModal', 'qrVizCanvas');
+        }
+        if (typeof window.openQRCodeVisualizer === 'function') {
+            launch();
+        } else {
+            // Le module ES qrcode3d.js n'est pas encore chargé → attente.
+            window._onQRVizReady = launch;
+            showAlert('Chargement du moteur 3D...', 'warn');
+        }
+    }
+    </script>
+</body>
+</html>

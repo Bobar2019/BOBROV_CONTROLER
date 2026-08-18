@@ -1,0 +1,15 @@
+{
+    "z_safe": 5.0,
+    "peck_depth": 2.0,
+    "peck_retract_total": false,
+    "limit_x": 0.0,
+    "limit_y": 0.0,
+    "limit_z": 0.0,
+    "verbose_log": true,
+    "axes_inv_x": false,
+    "axes_inv_y": false,
+    "axes_inv_z": false,
+    "comm_mode": 0,
+    "fluidnc_host": "172.22.22.131",
+    "fluidnc_port": 23
+}

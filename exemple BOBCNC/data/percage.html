@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perçage - Fonction</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <!-- CDN GSAP pour les animations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    
+    <!-- Fichier CSS partagé -->
+    <link rel="stylesheet" href="style.css">
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <!-- ============================================
+         BOUTON RETOUR (fixe haut-droite)
+         ============================================ -->
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height='22' viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+    
+    <!-- ============================================
+         CONTENU DE LA PAGE FONCTIONNELLE
+         ============================================ -->
+    <main class="page-container">
+        <header class="page-header">
+            <h1>Perçage</h1>
+        </header>
+        
+        <!-- Zone de contenu vide pour le futur contenu -->
+        <section class="content-area">
+            <div class="content-placeholder">
+                <p>Espace réservé pour le contenu de la fonction Perçage</p>
+            </div>
+        </section>
+    </main>
+    
+    <!-- Fichier JavaScript partagé -->
+    <script src="main.js"></script>
+</body>
+</html>

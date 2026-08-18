@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entrées / Sorties — Diagnostic BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* ================================================================
+           Dashboard I/O - styles cohérents avec configuration.html
+           ================================================================ */
+        .io-section {
+            background: var(--bg-secondary, #1a1f2e);
+            border: 1px solid var(--border-color, #333);
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin-bottom: 18px;
+            position: relative;
+        }
+        .io-section h2 {
+            font-size: 0.95rem;
+            color: var(--accent-cyan, #00d9ff);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0 0 14px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color, #333);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .io-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .io-table th {
+            text-align: left;
+            color: var(--text-secondary, #888);
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            font-weight: 600;
+            padding: 6px 10px;
+            border-bottom: 1px solid var(--border-color, #333);
+        }
+        .io-table td {
+            padding: 11px 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            color: var(--text-primary, #eee);
+            vertical-align: middle;
+        }
+        .io-table tr:last-child td { border-bottom: none; }
+        .io-table tr:hover td { background: rgba(0,217,255,0.04); }
+
+        /* Indicateur LED circulaire */
+        .io-led {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #555;
+            box-shadow: inset 0 0 4px rgba(0,0,0,0.6);
+            margin-right: 10px;
+            vertical-align: middle;
+            transition: background 0.15s ease, box-shadow 0.15s ease;
+        }
+        .io-led.on {
+            background: #00ff88;
+            box-shadow: 0 0 10px rgba(0,255,136,0.7), inset 0 0 4px rgba(0,255,136,0.3);
+        }
+        .io-led.alert {
+            background: #ff3b30;
+            box-shadow: 0 0 12px rgba(255,59,48,0.85), inset 0 0 4px rgba(255,59,48,0.3);
+            animation: ioLedBlink 0.8s ease-in-out infinite;
+        }
+        @keyframes ioLedBlink {
+            0%, 100% { box-shadow: 0 0 12px rgba(255,59,48,0.85), inset 0 0 4px rgba(255,59,48,0.3); }
+            50%       { box-shadow: 0 0 20px rgba(255,59,48,1.0),  inset 0 0 6px rgba(255,59,48,0.5); }
+        }
+
+        .io-state-label {
+            display: inline-block;
+            min-width: 90px;
+            padding: 3px 10px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-radius: 4px;
+            text-align: center;
+            background: rgba(255,255,255,0.06);
+            color: var(--text-secondary, #888);
+        }
+        .io-state-label.on    { background: rgba(0,255,136,0.18);  color: #00ff88; }
+        .io-state-label.alert { background: rgba(255,59,48,0.22);  color: #ff6666; }
+
+        .io-pin {
+            font-family: 'Courier New', monospace;
+            font-size: 0.72rem;
+            color: var(--text-secondary, #888);
+        }
+
+        /* Boutons commande sortie */
+        .io-cmd-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 14px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            border-radius: 6px;
+            border: 1px solid var(--border-color, #333);
+            background: var(--bg-primary, #0d1117);
+            color: var(--text-primary, #eee);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            min-width: 110px;
+            justify-content: center;
+        }
+        .io-cmd-btn:hover:not(:disabled) {
+            border-color: var(--accent-cyan, #00d9ff);
+            background: rgba(0,217,255,0.08);
+        }
+        .io-cmd-btn:disabled { opacity: 0.55; cursor: wait; }
+        .io-cmd-btn.is-on {
+            border-color: #00ff88;
+            color: #00ff88;
+            background: rgba(0,255,136,0.10);
+        }
+        .io-cmd-btn .spin {
+            display: none;
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(255,255,255,0.2);
+            border-top-color: var(--accent-cyan, #00d9ff);
+            border-radius: 50%;
+            animation: ioSpin 0.8s linear infinite;
+        }
+        .io-cmd-btn.loading .spin { display: inline-block; }
+        .io-cmd-btn.loading .lbl  { opacity: 0.5; }
+        @keyframes ioSpin { to { transform: rotate(360deg); } }
+
+        /* Bandeau de statut machine */
+        .io-machine-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: rgba(0,217,255,0.06);
+            border-left: 3px solid var(--accent-cyan, #00d9ff);
+            border-radius: 4px;
+            margin-bottom: 14px;
+            font-size: 0.82rem;
+            flex-wrap: wrap;
+        }
+        .io-machine-bar .label  { color: var(--text-secondary, #888); text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; }
+        .io-machine-bar .value  { color: var(--accent-cyan, #00d9ff); font-weight: 700; font-family: 'Courier New', monospace; }
+        .io-machine-bar .ws-tag { margin-left: auto; font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; font-weight: 700; }
+        .io-machine-bar .ws-tag.ok   { background: rgba(0,255,136,0.18); color: #00ff88; }
+        .io-machine-bar .ws-tag.ko   { background: rgba(255,59,48,0.22); color: #ff6666; }
+
+        /* Overlay déconnexion WebSocket */
+        .io-disconnect-overlay {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.78);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .io-disconnect-overlay.show { display: flex; }
+        .io-disconnect-card {
+            background: var(--bg-secondary, #1a1f2e);
+            border: 1px solid #ff3b30;
+            border-radius: 10px;
+            padding: 26px 30px;
+            max-width: 380px;
+            text-align: center;
+            box-shadow: 0 0 30px rgba(255,59,48,0.4);
+        }
+        .io-disconnect-card h3 { color: #ff6666; font-size: 1.1rem; margin: 0 0 10px; }
+        .io-disconnect-card p  { color: var(--text-secondary, #888); font-size: 0.85rem; line-height: 1.5; margin: 0 0 16px; }
+        .io-disconnect-card .reco { color: var(--accent-cyan, #00d9ff); font-size: 0.78rem; }
+
+        @media (max-width: 600px) {
+            .io-table th:nth-child(3), .io-table td:nth-child(3) { display: none; }
+            .io-cmd-btn { min-width: 90px; padding: 6px 10px; font-size: 0.72rem; }
+            .io-state-label { min-width: 70px; }
+        }
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <main class="page-container">
+        <header class="page-header">
+            <h1>Entrées / Sorties</h1>
+            <p class="page-subtitle" style="font-size:0.82rem; color:var(--text-secondary,#888); margin-top:4px;">
+                Diagnostic temps réel des broches FluidNC et pilotage des sorties BOBCNC
+            </p>
+        </header>
+
+        <section class="content-area">
+            <!-- Bandeau machine + statut WS -->
+            <div class="io-machine-bar">
+                <span class="label">Machine :</span>
+                <span class="value" id="ioMachineState">--</span>
+                <span class="label" style="margin-left:14px;">Probe :</span>
+                <span class="value" id="ioProbeQuick">--</span>
+                <span class="ws-tag ko" id="ioWsTag">WebSocket : déconnecté</span>
+            </div>
+
+            <!-- ====================== ENTRÉES ====================== -->
+            <div class="io-section">
+                <h2>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                    Entrées (FluidNC)
+                </h2>
+                <table class="io-table">
+                    <thead>
+                        <tr>
+                            <th style="width:35%;">Composant</th>
+                            <th style="width:35%;">État</th>
+                            <th>Source</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ioInputsTbody">
+                        <tr data-pin="x_min"><td><span class="io-led" data-led></span>X Min</td><td><span class="io-state-label" data-label>OFF</span></td><td><span class="io-pin">FluidNC Pn:X</span></td></tr>
+                        <tr data-pin="x_max"><td><span class="io-led" data-led></span>X Max</td><td><span class="io-state-label" data-label>OFF</span></td><td><span class="io-pin">FluidNC Pn:X</span></td></tr>
+                        <tr data-pin="y_min"><td><span class="io-led" data-led></span>Y Min</td><td><span class="io-state-label" data-label>OFF</span></td><td><span class="io-pin">FluidNC Pn:Y</span></td></tr>
+                        <tr data-pin="y_max"><td><span class="io-led" data-led></span>Y Max</td><td><span class="io-state-label" data-label>OFF</span></td><td><span class="io-pin">FluidNC Pn:Y</span></td></tr>
+                        <tr data-pin="z_min"><td><span class="io-led" data-led></span>Z Min</td><td><span class="io-state-label" data-label>OFF</span></td><td><span class="io-pin">FluidNC Pn:Z</span></td></tr>
+                        <tr data-pin="z_max"><td><span class="io-led" data-led></span>Z Max</td><td><span class="io-state-label" data-label>OFF</span></td><td><span class="io-pin">FluidNC Pn:Z</span></td></tr>
+                        <tr data-pin="probe"><td><span class="io-led" data-led></span>Probe</td><td><span class="io-state-label" data-label>OFF</span></td><td><span class="io-pin">FluidNC Pn:P</span></td></tr>
+                        <tr data-pin="estop"><td><span class="io-led" data-led></span>E-Stop Soft</td><td><span class="io-state-label" data-label>NORMAL</span></td><td><span class="io-pin">ESP32 GPIO 6</span></td></tr>
+                    </tbody>
+                </table>
+                <p style="font-size:0.72rem; color:var(--text-secondary,#888); margin-top:10px; line-height:1.5;">
+                    💡 FluidNC ne distingue pas Min/Max dans son champ <code>Pn:</code> standard.
+                    Si <code>X</code> est triggé, les deux lignes <strong>X Min</strong> et <strong>X Max</strong> s'allument.
+                    Le rouge clignotant indique un contact actif (fin de course atteinte ou probe touchée).
+                </p>
+            </div>
+
+            <!-- ====================== SORTIES ====================== -->
+            <div class="io-section">
+                <h2>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                    Sorties (BOBCNC ESP32-S3)
+                </h2>
+                <table class="io-table">
+                    <thead>
+                        <tr>
+                            <th style="width:30%;">Composant</th>
+                            <th style="width:25%;">État</th>
+                            <th style="width:25%;">Commande</th>
+                            <th>Source</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ioOutputsTbody">
+                        <tr data-out="light">
+                            <td><span class="io-led" data-led></span>Éclairage</td>
+                            <td><span class="io-state-label" data-label>OFF</span></td>
+                            <td>
+                                <button class="io-cmd-btn" data-cmd="light">
+                                    <span class="spin"></span>
+                                    <span class="lbl">Allumer</span>
+                                </button>
+                            </td>
+                            <td><span class="io-pin">GPIO 4 + M64/M65 P1</span></td>
+                        </tr>
+                        <tr data-out="vacuum">
+                            <td><span class="io-led" data-led></span>Aspirateur</td>
+                            <td><span class="io-state-label" data-label>OFF</span></td>
+                            <td>
+                                <button class="io-cmd-btn" data-cmd="vacuum">
+                                    <span class="spin"></span>
+                                    <span class="lbl">Allumer</span>
+                                </button>
+                            </td>
+                            <td><span class="io-pin">GPIO 5 + M64/M65 P2</span></td>
+                        </tr>
+                        <tr data-out="aux">
+                            <td><span class="io-led" data-led></span>Sortie Aux</td>
+                            <td><span class="io-state-label" data-label>OFF</span></td>
+                            <td>
+                                <button class="io-cmd-btn" data-cmd="aux">
+                                    <span class="spin"></span>
+                                    <span class="lbl">Activer</span>
+                                </button>
+                            </td>
+                            <td><span class="io-pin">GPIO 7</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- Overlay déconnexion WebSocket -->
+    <div class="io-disconnect-overlay" id="ioDisconnectOverlay">
+        <div class="io-disconnect-card">
+            <h3>⚠️ Connexion BOBCNC perdue</h3>
+            <p>Le canal WebSocket avec l'ESP32-S3 est interrompu. L'état des entrées/sorties affiché peut être obsolète.</p>
+            <p class="reco">Reconnexion automatique en cours...</p>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+    <script>
+    // ============================================================
+    //  DASHBOARD I/O - Logique temps réel
+    //  - GET /api/io_status au chargement (état initial)
+    //  - WebSocket /ws : écoute des messages JSON {type: "io_status"}
+    //    et {type: "light"/"vacuum"/"aux"/"estop"} (compat existant)
+    //  - Reconnexion automatique avec back-off exponentiel
+    // ============================================================
+    (function() {
+        var state = {
+            x_limit: false, y_limit: false, z_limit: false,
+            probe: false, door: false, estop: false,
+            light: false, vacuum: false, aux: false,
+            machine_state: '--'
+        };
+        var ws = null;
+        var wsRetryMs = 1000;
+        var wsHeartbeat = 0;
+        var pendingCmds = {}; // suivi des commandes en cours pour le spinner
+
+        // -------- Mise à jour DOM --------
+        function setLed(el, on, alert) {
+            if (!el) return;
+            el.classList.toggle('on',    !!on && !alert);
+            el.classList.toggle('alert', !!alert);
+        }
+        function setLabel(el, text, cls) {
+            if (!el) return;
+            el.textContent = text;
+            el.classList.remove('on', 'alert');
+            if (cls) el.classList.add(cls);
+        }
+
+        function applyState() {
+            // Bandeau
+            var ms = document.getElementById('ioMachineState');
+            if (ms) ms.textContent = state.machine_state || '--';
+            var pq = document.getElementById('ioProbeQuick');
+            if (pq) {
+                pq.textContent = state.probe ? 'TRIGGERED' : 'libre';
+                pq.style.color = state.probe ? '#ff6666' : '';
+            }
+
+            // Entrées : X/Y/Z Min/Max alignés sur Pn:X/Y/Z (FluidNC ne distingue pas)
+            var inputs = [
+                { row: 'x_min', active: state.x_limit, alert: state.x_limit, on: 'TRIGGERED', off: 'OFF' },
+                { row: 'x_max', active: state.x_limit, alert: state.x_limit, on: 'TRIGGERED', off: 'OFF' },
+                { row: 'y_min', active: state.y_limit, alert: state.y_limit, on: 'TRIGGERED', off: 'OFF' },
+                { row: 'y_max', active: state.y_limit, alert: state.y_limit, on: 'TRIGGERED', off: 'OFF' },
+                { row: 'z_min', active: state.z_limit, alert: state.z_limit, on: 'TRIGGERED', off: 'OFF' },
+                { row: 'z_max', active: state.z_limit, alert: state.z_limit, on: 'TRIGGERED', off: 'OFF' },
+                { row: 'probe', active: state.probe,   alert: state.probe,   on: 'CONTACT',   off: 'OFF' },
+                { row: 'estop', active: state.estop,   alert: state.estop,   on: 'DÉCLENCHÉ', off: 'NORMAL' }
+            ];
+            inputs.forEach(function(it) {
+                var tr = document.querySelector('tr[data-pin="' + it.row + '"]');
+                if (!tr) return;
+                setLed(tr.querySelector('[data-led]'),  it.active, it.alert);
+                setLabel(tr.querySelector('[data-label]'), it.active ? it.on : it.off, it.alert ? 'alert' : (it.active ? 'on' : null));
+            });
+
+            // Sorties
+            ['light', 'vacuum', 'aux'].forEach(function(name) {
+                var tr  = document.querySelector('tr[data-out="' + name + '"]');
+                if (!tr) return;
+                var on  = !!state[name];
+                setLed(tr.querySelector('[data-led]'), on, false);
+                setLabel(tr.querySelector('[data-label]'), on ? 'ON' : 'OFF', on ? 'on' : null);
+                var btn = tr.querySelector('button[data-cmd]');
+                if (btn) {
+                    btn.classList.toggle('is-on', on);
+                    var lbl = btn.querySelector('.lbl');
+                    if (lbl) lbl.textContent = on ? (name === 'aux' ? 'Désactiver' : 'Éteindre') : (name === 'aux' ? 'Activer' : 'Allumer');
+                    // Si la confirmation est arrivée, on retire le loading
+                    if (pendingCmds[name] !== undefined && pendingCmds[name] === on) {
+                        btn.classList.remove('loading');
+                        btn.disabled = false;
+                        delete pendingCmds[name];
+                    }
+                }
+            });
+        }
+
+        // -------- Réception WebSocket --------
+        function handleWsMessage(msg) {
+            if (!msg || typeof msg !== 'object') return;
+            if (msg.type === 'io_status') {
+                if ('x_limit' in msg) state.x_limit = !!msg.x_limit;
+                if ('y_limit' in msg) state.y_limit = !!msg.y_limit;
+                if ('z_limit' in msg) state.z_limit = !!msg.z_limit;
+                if ('probe'   in msg) state.probe   = !!msg.probe;
+                if ('door'    in msg) state.door    = !!msg.door;
+                if ('light'   in msg) state.light   = !!msg.light;
+                if ('vacuum'  in msg) state.vacuum  = !!msg.vacuum;
+                if ('aux'     in msg) state.aux     = !!msg.aux;
+                if ('estop'   in msg) state.estop   = !!msg.estop;
+                if ('machine_state' in msg) state.machine_state = msg.machine_state;
+                applyState();
+            } else if (msg.type === 'light') {
+                state.light = (msg.state === 'on');
+                applyState();
+            } else if (msg.type === 'vacuum') {
+                state.vacuum = (msg.state === 'on');
+                applyState();
+            } else if (msg.type === 'aux') {
+                state.aux = (msg.state === 'on');
+                applyState();
+            } else if (msg.type === 'estop') {
+                state.estop = !!msg.triggered;
+                applyState();
+            }
+        }
+
+        // -------- Connexion WebSocket avec auto-reconnect --------
+        function setWsTag(connected) {
+            var tag = document.getElementById('ioWsTag');
+            if (!tag) return;
+            tag.textContent = connected ? 'WebSocket : connecté' : 'WebSocket : déconnecté';
+            tag.className = 'ws-tag ' + (connected ? 'ok' : 'ko');
+            var ovl = document.getElementById('ioDisconnectOverlay');
+            if (ovl) ovl.classList.toggle('show', !connected);
+        }
+
+        function connectWs() {
+            var proto = (location.protocol === 'https:') ? 'wss:' : 'ws:';
+            var url   = proto + '//' + location.host + '/ws';
+            try { ws = new WebSocket(url); }
+            catch (e) { setWsTag(false); setTimeout(connectWs, wsRetryMs); return; }
+
+            ws.onopen = function() {
+                wsRetryMs = 1000;
+                setWsTag(true);
+                // Demande FluidNC d'envoyer un status pour rafraîchir Pn:
+                try { ws.send('?'); } catch (e) {}
+            };
+            ws.onclose = function() {
+                setWsTag(false);
+                wsRetryMs = Math.min(wsRetryMs * 1.6, 8000);
+                setTimeout(connectWs, wsRetryMs);
+            };
+            ws.onerror = function() { try { ws.close(); } catch (e) {} };
+            ws.onmessage = function(ev) {
+                if (typeof ev.data !== 'string') return;
+                if (ev.data.charAt(0) !== '{') return; // ignore les flux FluidNC bruts
+                try { handleWsMessage(JSON.parse(ev.data)); } catch (e) { /* ignore */ }
+            };
+        }
+
+        // -------- Heartbeat : interroge FluidNC toutes les 1s --------
+        // Pousse FluidNC à émettre un status report '?' qui contient le Pn:.
+        // Sans ça, les changements de fin de course ne sont vus qu'au polling
+        // naturel de FluidNC.
+        function startHeartbeat() {
+            wsHeartbeat = setInterval(function() {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    try { ws.send('?'); } catch (e) {}
+                }
+            }, 1000);
+        }
+
+        // -------- Commandes sortie (clic bouton) --------
+        function sendOutputCommand(name, target) {
+            var map = { light: 'Light', vacuum: 'Vacuum', aux: 'Aux' };
+            var key = map[name];
+            if (!key) return;
+            var cmd = 'Message/' + key + '=' + (target ? '1' : '0');
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('WebSocket déconnecté - impossible de commander ' + name);
+                return;
+            }
+            // Spinner pendant que l'ESP32 confirme
+            var btn = document.querySelector('button[data-cmd="' + name + '"]');
+            if (btn) { btn.classList.add('loading'); btn.disabled = true; }
+            pendingCmds[name] = target;
+            try { ws.send(cmd); } catch (e) {
+                if (btn) { btn.classList.remove('loading'); btn.disabled = false; }
+                delete pendingCmds[name];
+            }
+            // Sécurité : si pas de confirmation après 2s, libère le bouton
+            setTimeout(function() {
+                if (pendingCmds[name] !== undefined && btn) {
+                    btn.classList.remove('loading');
+                    btn.disabled = false;
+                    delete pendingCmds[name];
+                }
+            }, 2000);
+        }
+
+        document.querySelectorAll('button[data-cmd]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var name   = btn.getAttribute('data-cmd');
+                var target = !state[name]; // toggle
+                sendOutputCommand(name, target);
+            });
+        });
+
+        // -------- Boot --------
+        // 1) GET initial pour charger l'état pendant que le WS établit la connexion
+        fetch('/api/io_status', { cache: 'no-store' })
+            .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+            .then(function(d) { handleWsMessage(d); })
+            .catch(function(e) { console.warn('[I/O] /api/io_status indisponible:', e); });
+        // 2) Connexion WebSocket
+        connectWs();
+        // 3) Heartbeat ?-poll FluidNC
+        startHeartbeat();
+    })();
+    </script>
+</body>
+</html>

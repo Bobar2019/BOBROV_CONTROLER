@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#131417">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOB-CONTROL">
+    <title>BOB-CONTROL — Tableau de Bord</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23131417'/><text y='72' x='50' font-family='Arial' font-size='40' font-weight='bold' fill='%2300d9ff' text-anchor='middle'>BOB</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Michroma&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Barre de statut fixe -->
+    <header id="topbar">
+        <div class="logo">BOB-CONTROL</div>
+        <div class="status-badges">
+            <span id="badge-ws" class="badge badge-off">WS: Déconnecté</span>
+            <span id="badge-rpi" class="badge badge-off">RPi: --</span>
+            <span id="badge-mode" class="badge badge-sim">SIMULATEUR</span>
+            <span id="badge-wdg" class="badge badge-ok">WDG: OK</span>
+        </div>
+    </header>
+
+    <!-- ===== VUE DASHBOARD (tuiles) ===== -->
+    <main id="dashboard" class="index-container">
+        <header class="index-header">
+            <h1>TABLEAU DE BORD</h1>
+            <p>Sélectionnez une fonction pour commencer</p>
+        </header>
+
+        <!-- Barre d'édition drag & drop -->
+        <div class="dash-edit-bar">
+            <button id="btnEditDash" class="dash-edit-btn" type="button">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
+                    <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+                    <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
+                </svg>
+                <span>Réorganiser</span>
+            </button>
+            <button id="btnSaveDash" class="dash-edit-btn dash-edit-save" type="button" style="display:none">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                <span>Terminer</span>
+            </button>
+            <span id="dashEditHint" class="dash-edit-hint" style="display:none">Glissez les tuiles pour réorganiser</span>
+        </div>
+
+        <!-- Grille de tuiles -->
+        <nav class="nav-grid" id="nav-grid">
+            <a class="nav-tile" data-tile-id="wifi" href="#section-wifi">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+                    <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+                    <circle cx="12" cy="20" r="1"/>
+                </svg>
+                <span>Wi-Fi</span>
+            </a>
+            <a class="nav-tile" data-tile-id="pwm" href="#section-pwm">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="7" width="4" height="10"/>
+                    <rect x="10" y="3" width="4" height="18"/>
+                    <rect x="18" y="9" width="4" height="6"/>
+                </svg>
+                <span>PWM Monitor</span>
+            </a>
+            <a class="nav-tile" data-tile-id="telemetry" href="#section-telemetry">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 6v6l4 2"/>
+                </svg>
+                <span>Télémétrie</span>
+            </a>
+            <a class="nav-tile" data-tile-id="testbench" href="#section-testbench">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                </svg>
+                <span>Banc de Test</span>
+            </a>
+            <a class="nav-tile" data-tile-id="settings" href="#section-settings">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span>Paramètres</span>
+            </a>
+            <a class="nav-tile" data-tile-id="wiring" href="#section-wiring">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="2" width="8" height="8" rx="1"/>
+                    <rect x="14" y="14" width="8" height="8" rx="1"/>
+                    <path d="M10 6h4"/>
+                    <path d="M6 10v4"/>
+                    <path d="M18 10v4"/>
+                    <path d="M10 18h4"/>
+                    <circle cx="10" cy="6" r="1" fill="currentColor"/>
+                    <circle cx="6" cy="10" r="1" fill="currentColor"/>
+                    <circle cx="18" cy="14" r="1" fill="currentColor"/>
+                    <circle cx="14" cy="18" r="1" fill="currentColor"/>
+                </svg>
+                <span>Câblage</span>
+            </a>
+        </nav>
+    </main>
+
+    <!-- ===== SECTIONS (masquées par défaut, affichées au clic d'une tuile) ===== -->
+
+    <!-- Bouton retour (visible quand une section est active) -->
+    <a id="btn-back" class="back-top-btn" href="#" style="display:none" aria-label="Retour au tableau de bord">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 12H5M12 19l-7-7 7-7"/>
+        </svg>
+    </a>
+
+    <!-- SECTION : Wi-Fi -->
+    <section id="section-wifi" class="section-panel" style="display:none">
+        <div class="page-container">
+            <div class="page-header"><h1>Wi-Fi &amp; Réseau</h1></div>
+            <div class="content-area">
+
+                <!-- Card : Connexion actuelle (temps réel via WebSocket) -->
+                <div class="card wifi-info-card">
+                    <h3>Connexion actuelle</h3>
+                    <div class="wifi-info-grid">
+                        <!-- STA : connexion à un réseau externe -->
+                        <div class="wifi-info-block">
+                            <div class="wifi-info-title">Réseau externe (STA)</div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Statut</span>
+                                <span class="wifi-info-value" id="wifi-sta-status">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">SSID</span>
+                                <span class="wifi-info-value" id="wifi-sta-ssid">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Adresse IP</span>
+                                <span class="wifi-info-value" id="wifi-sta-ip">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Passerelle (DHCP)</span>
+                                <span class="wifi-info-value" id="wifi-sta-gw">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Masque</span>
+                                <span class="wifi-info-value" id="wifi-sta-mask">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Signal (RSSI)</span>
+                                <span class="wifi-info-value" id="wifi-sta-rssi">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Adresse MAC</span>
+                                <span class="wifi-info-value mono" id="wifi-sta-mac">—</span>
+                            </div>
+                        </div>
+                        <!-- AP : point d'accès local -->
+                        <div class="wifi-info-block">
+                            <div class="wifi-info-title">Point d'accès (AP)</div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">SSID</span>
+                                <span class="wifi-info-value" id="wifi-ap-ssid">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Adresse IP</span>
+                                <span class="wifi-info-value" id="wifi-ap-ip">—</span>
+                            </div>
+                            <div class="wifi-info-row">
+                                <span class="wifi-info-label">Clients connectés</span>
+                                <span class="wifi-info-value" id="wifi-ap-clients">—</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="wifi-controls">
+                    <button id="btn-scan" class="btn btn-primary">Scanner les réseaux</button>
+                    <div class="wifi-status">IP : <span id="wifi-ip">—</span></div>
+                </div>
+                <div id="wifi-list" class="wifi-list">
+                    <p class="placeholder">Cliquez sur "Scanner" pour détecter les réseaux.</p>
+                </div>
+                <div id="wifi-form" class="wifi-form hidden">
+                    <h3>Connexion à <span id="wifi-selected-ssid"></span></h3>
+                    <input type="password" id="wifi-password" placeholder="Mot de passe Wi-Fi" autocomplete="off">
+                    <button id="btn-connect" class="btn btn-success">Connecter</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SECTION : PWM Monitor -->
+    <section id="section-pwm" class="section-panel" style="display:none">
+        <div class="page-container">
+            <div class="page-header"><h1>PWM Monitor — 16 Canaux</h1></div>
+
+            <!-- Bannière Mode Témoin / Dry-Run -->
+            <div class="card dryrun-banner">
+                <div class="dryrun-toggle-row">
+                    <span class="dryrun-label">SORTIES MATÉRIELLES</span>
+                    <label class="dryrun-switch">
+                        <input type="checkbox" id="chk-outputs-enabled">
+                        <span class="dryrun-slider"></span>
+                    </label>
+                    <span id="dryrun-state-text" class="dryrun-state-text off">NEUTRALISÉES (DRY-RUN)</span>
+                </div>
+                <div id="dryrun-badge" class="dryrun-badge dryrun-badge-warn">
+                    ⚠ MODE TÉMOIN — Moteurs inactifs
+                </div>
+            </div>
+
+            <div class="content-area">
+                <div class="pwm-grid"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SECTION : Télémétrie -->
+    <section id="section-telemetry" class="section-panel" style="display:none">
+        <div class="page-container">
+            <div class="page-header"><h1>Télémétrie &amp; Capteurs</h1></div>
+            <div class="content-area">
+                <!-- Bloc Diagnostic Capteurs -->
+                <div class="card sensor-diag-card">
+                    <h3>Diagnostic Capteurs</h3>
+                    <div class="sensor-grid">
+                        <div class="sensor-badge" id="sens-bno085"><span class="led led-off"></span>BNO085</div>
+                        <div class="sensor-badge" id="sens-mpu9250"><span class="led led-off"></span>MPU9250</div>
+                        <div class="sensor-badge" id="sens-ms5803"><span class="led led-off"></span>MS5803</div>
+                        <div class="sensor-badge" id="sens-bme280"><span class="led led-off"></span>BME280</div>
+                        <div class="sensor-badge" id="sens-ina0"><span class="led led-off"></span>INA226 #1</div>
+                        <div class="sensor-badge" id="sens-ina1"><span class="led led-off"></span>INA226 #2</div>
+                        <div class="sensor-badge" id="sens-ina2"><span class="led led-off"></span>INA226 #3</div>
+                        <div class="sensor-badge" id="sens-pca"><span class="led led-off"></span>PCA9685</div>
+                    </div>
+                </div>
+                <div class="telem-row">
+                    <div class="card">
+                        <h3>Attitude (IMU)</h3>
+                        <div class="euler-display">
+                            <div class="euler-item"><span class="label">Roll</span><span id="val-roll" class="value">0.0°</span></div>
+                            <div class="euler-item"><span class="label">Pitch</span><span id="val-pitch" class="value">0.0°</span></div>
+                            <div class="euler-item"><span class="label">Yaw</span><span id="val-yaw" class="value">0.0°</span></div>
+                        </div>
+                    </div>
+                    <div class="card heading-override-card">
+                        <h3>Forçage Cap Manuel</h3>
+                        <label class="heading-toggle">
+                            <input type="checkbox" id="chk-heading"> Activer le forçage
+                        </label>
+                        <div class="heading-slider-wrap">
+                            <input type="range" id="slider-heading" min="0" max="359" step="1" value="0" disabled>
+                            <div class="heading-value" id="heading-value">0°</div>
+                            <div class="heading-scale">
+                                <span>0° N</span><span>90° E</span><span>180° S</span><span>270° O</span><span>360°</span>
+                            </div>
+                        </div>
+                        <div class="heading-status">
+                            <span class="label">Cap cible</span><span id="heading-target" class="value">—</span>
+                            <span class="label">Cap actuel</span><span id="heading-current" class="value">—</span>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>Pression / Profondeur</h3>
+                        <div class="press-display">
+                            <div class="euler-item"><span class="label">Pression</span><span id="val-mbar" class="value">1013.3 mbar</span></div>
+                            <div class="euler-item"><span class="label">Profondeur</span><span id="val-depth" class="value">0.00 m</span></div>
+                            <div class="euler-item"><span class="label">Température</span><span id="val-temp" class="value">20.5 °C</span></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Instruments aviation : Horizon artificiel + HSI -->
+                <div class="telem-row instruments-row">
+                    <div class="card av-card">
+                        <h3>Horizon Artificiel</h3>
+                        <canvas id="cv-horizon" width="260" height="260"></canvas>
+                        <div class="av-readout">
+                            <span>ROLL <b id="av-roll">0.0°</b></span>
+                            <span>PITCH <b id="av-pitch">0.0°</b></span>
+                        </div>
+                    </div>
+                    <div class="card av-card">
+                        <h3>Indicateur de Cap (HSI)</h3>
+                        <canvas id="cv-hsi" width="260" height="260"></canvas>
+                        <div class="av-readout">
+                            <span>HDG <b id="av-hdg">000°</b></span>
+                        </div>
+                        <button id="btn-yaw-tare" class="btn btn-sm av-tare-btn">⟳ Tare Nord</button>
+                    </div>
+                </div>
+
+                <!-- SÉLECTEUR DE MODE DE PILOTAGE -->
+                <div class="telem-row mode-selector-row">
+                    <div class="card mode-card">
+                        <h3>Mode de Pilotage</h3>
+                        <div class="mode-badge" id="master-badge">
+                            <span id="master-icon" class="master-icon">●</span>
+                            <span id="master-label">Maître : —</span>
+                        </div>
+                        <div class="mode-btn-group">
+                            <button class="btn mode-btn active" data-mode="0" id="btn-mode-0">PASSIF</button>
+                            <button class="btn mode-btn" data-mode="1" id="btn-mode-1">AUTO ROULIS</button>
+                            <button class="btn mode-btn" data-mode="2" id="btn-mode-2">AUTO FULL</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="telem-row">
+                    <div class="card" id="power-card-0"><h3>Wattmètre 1 — RPi 5</h3><div class="power-val"><span id="p0-v">0 mV</span> / <span id="p0-i">0 mA</span></div></div>
+                    <div class="card" id="power-card-1"><h3>Wattmètre 2 — Aux/LED</h3><div class="power-val"><span id="p1-v">0 mV</span> / <span id="p1-i">0 mA</span></div></div>
+                    <div class="card" id="power-card-2"><h3>Wattmètre 3 — Propulsion</h3><div class="power-val"><span id="p2-v">0 mV</span> / <span id="p2-i">0 mA</span></div></div>
+                </div>
+                <div class="telem-row center">
+                    <button id="btn-toggle-mode" class="btn btn-lg btn-warning">Basculer : SIMULATEUR ↔ RÉEL</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SECTION : Banc de Test -->
+    <section id="section-testbench" class="section-panel" style="display:none">
+        <div class="page-container">
+            <div class="page-header"><h1>Banc de Test Manuel</h1></div>
+            <div class="content-area">
+                <div class="safety-bar">
+                    <label class="safety-toggle">
+                        <input type="checkbox" id="chk-unlock"> Déverrouiller le banc de test
+                    </label>
+                    <button id="btn-neutral" class="btn btn-danger" disabled>Tout au Neutre (1500 µs)</button>
+                </div>
+                <div class="slider-grid" id="slider-grid"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SECTION : Paramètres -->
+    <section id="section-settings" class="section-panel" style="display:none">
+        <div class="page-container">
+            <div class="page-header"><h1>Paramètres</h1></div>
+            <div class="content-area">
+                <!-- Liaison Série RPi 5 -->
+                <div class="card">
+                    <h3>Liaison Série RPi 5</h3>
+                    <p class="card-hint">Interface physique pour le protocole binaire temps réel</p>
+                    <div class="settings-grid">
+                        <label>Interface
+                            <select id="sel-comm">
+                                <option value="0">USB-CDC Natif (/dev/ttyACM0)</option>
+                                <option value="1">UART Matériel (GPIO 1 RX / GPIO 2 TX @ 921 600 bauds)</option>
+                            </select>
+                        </label>
+                    </div>
+                    <button id="btn-save-comm" class="btn btn-primary">Appliquer la liaison série</button>
+                </div>
+                <!-- Sélection Matérielle Capteurs -->
+                <div class="card">
+                    <h3>Configuration Capteurs</h3>
+                    <div class="settings-grid">
+                        <label>IMU
+                            <select id="sel-imu">
+                                <option value="0">Auto (détection)</option>
+                                <option value="1">BNO085 (0x4A)</option>
+                                <option value="2">MPU9250 / GY-91 (0x68)</option>
+                            </select>
+                        </label>
+                        <label>Pression
+                            <select id="sel-baro">
+                                <option value="0">Auto (détection)</option>
+                                <option value="1">MS5803-30BA (0x76)</option>
+                                <option value="2">BME280 / BMP280</option>
+                            </select>
+                        </label>
+                    </div>
+                    <button id="btn-save-sensors" class="btn btn-primary">Appliquer la config capteurs</button>
+                </div>
+                <!-- Configuration Broches I2C -->
+                <div class="card">
+                    <h3>Configuration Broches I2C</h3>
+                    <p class="card-hint">Broches SDA/SCL actuelles : <strong id="i2c-current-pins">—</strong></p>
+                    <div class="settings-grid">
+                        <label>SDA (GPIO)
+                            <input type="number" id="i2c-sda-pin" min="0" max="48" value="10">
+                        </label>
+                        <label>SCL (GPIO)
+                            <input type="number" id="i2c-scl-pin" min="0" max="48" value="11">
+                        </label>
+                    </div>
+                    <button id="btn-save-i2c-pins" class="btn btn-primary">Sauvegarder &amp; réinitialiser I2C</button>
+                </div>
+                <!-- Scanner I2C -->
+                <div class="card">
+                    <h3>Scanner I2C</h3>
+                    <p class="card-hint">Scan complet du bus I2C (adresses 0x01 à 0x7F)</p>
+                    <button id="btn-i2c-scan" class="btn btn-primary">
+                        <span id="i2c-scan-spinner" class="btn-spinner" style="display:none"></span>
+                        Lancer le scan I2C
+                    </button>
+                    <div id="i2c-scan-results" class="i2c-scan-results" style="display:none">
+                        <table class="i2c-scan-table">
+                            <thead>
+                                <tr>
+                                    <th>Adresse (Hex)</th>
+                                    <th>Adresse (Dec)</th>
+                                    <th>Statut</th>
+                                    <th>Périphérique détecté</th>
+                                </tr>
+                            </thead>
+                            <tbody id="i2c-scan-tbody"></tbody>
+                        </table>
+                    </div>
+                    <div id="i2c-scan-empty" class="i2c-scan-empty" style="display:none">
+                        Aucun périphérique détecté sur le bus I2C. Vérifiez le câblage SDA/SCL.
+                    </div>
+                </div>
+                <!-- PID -->
+                <div class="settings-grid">
+                    <div class="card">
+                        <h3>PID Roll</h3>
+                        <label>Kp <input type="number" id="pid-r-kp" step="0.01" value="2.0"></label>
+                        <label>Ki <input type="number" id="pid-r-ki" step="0.01" value="0.05"></label>
+                        <label>Kd <input type="number" id="pid-r-kd" step="0.01" value="0.5"></label>
+                    </div>
+                    <div class="card">
+                        <h3>PID Pitch</h3>
+                        <label>Kp <input type="number" id="pid-p-kp" step="0.01" value="2.0"></label>
+                        <label>Ki <input type="number" id="pid-p-ki" step="0.01" value="0.05"></label>
+                        <label>Kd <input type="number" id="pid-p-kd" step="0.01" value="0.5"></label>
+                    </div>
+                    <div class="card">
+                        <h3>PID Profondeur</h3>
+                        <label>Kp <input type="number" id="pid-d-kp" step="0.01" value="3.0"></label>
+                        <label>Ki <input type="number" id="pid-d-ki" step="0.01" value="0.1"></label>
+                        <label>Kd <input type="number" id="pid-d-kd" step="0.01" value="1.0"></label>
+                    </div>
+                    <div class="card">
+                        <h3>Watchdog Série</h3>
+                        <label>Timeout (ms) <input type="number" id="wdg-timeout" step="50" min="100" value="500"></label>
+                    </div>
+                </div>
+                <div class="settings-actions">
+                    <button id="btn-save-pid" class="btn btn-success">Sauvegarder les paramètres</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SECTION : Câblage & Schémas -->
+    <section id="section-wiring" class="section-panel" style="display:none">
+        <div class="page-container">
+            <div class="page-header"><h1>Câblage &amp; Schémas</h1></div>
+            <div class="content-area">
+
+                <!-- Schéma visuel de la carte -->
+                <div class="card wiring-schematic-card">
+                    <h3>Schéma ESP32-S3</h3>
+                    <div class="wiring-schematic-wrap">
+                        <img src="esp32s3.png" alt="Schéma ESP32-S3 DevKitC-1" class="wiring-schematic-img">
+                    </div>
+                </div>
+
+                <!-- Bloc 1 : Liaison RPi 5 (dynamique) -->
+                <div class="card">
+                    <h3>Liaison Série RPi 5</h3>
+                    <p class="card-hint">Mode actif : <strong id="wiring-comm-mode">—</strong></p>
+
+                    <!-- Mode USB-CDC -->
+                    <div id="wiring-usb" class="wiring-mode-block">
+                        <div class="wiring-diagram">
+                            <pre class="wiring-ascii">
+┌──────────────┐         ┌──────────────┐
+│   ESP32-S3   │         │   RPi 5      │
+│              │         │              │
+│   USB-C  ◄───┼────USB──┼─► USB-A/C    │
+│   (natif)    │  Cordon │  /dev/ttyACM0│
+│              │  direct │              │
+└──────────────┘         └──────────────┘
+                            </pre>
+                        </div>
+                        <table class="wiring-table">
+                            <thead><tr><th>ESP32-S3</th><th>→</th><th>RPi 5</th><th>Note</th></tr></thead>
+                            <tbody>
+                                <tr><td>USB-C</td><td>⟷</td><td>USB-A / USB-C</td><td>Cordon direct, sans adaptateur</td></tr>
+                                <tr><td>—</td><td>—</td><td>/dev/ttyACM0</td><td>Port série USB-CDC natif</td></tr>
+                                <tr><td>—</td><td>—</td><td>921 600 bauds</td><td>Débit du protocole binaire</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Mode UART GPIO -->
+                    <div id="wiring-uart" class="wiring-mode-block" style="display:none">
+                        <div class="wiring-diagram">
+                            <pre class="wiring-ascii">
+┌──────────────┐         ┌──────────────┐
+│   ESP32-S3   │         │   RPi 5      │
+│              │         │              │
+│  GPIO 1 (RX) ◄─────────┼── TXD (GPIO14)
+│  GPIO 2 (TX) ──────────► RXD (GPIO15)
+│  GND         ◄─────────► GND          │
+│              │         │              │
+└──────────────┘         └──────────────┘
+  Serial1 @ 921 600 bauds  /dev/ttyAMA0
+                            </pre>
+                        </div>
+                        <table class="wiring-table">
+                            <thead><tr><th>ESP32-S3</th><th>→</th><th>RPi 5</th><th>Note</th></tr></thead>
+                            <tbody>
+                                <tr><td>GPIO 1 (RX)</td><td>←</td><td>TXD (GPIO 14)</td><td>Croisé : TX→RX</td></tr>
+                                <tr><td>GPIO 2 (TX)</td><td>→</td><td>RXD (GPIO 15)</td><td>Croisé : RX←TX</td></tr>
+                                <tr><td>GND</td><td>⟷</td><td>GND</td><td>Masse commune obligatoire</td></tr>
+                                <tr><td colspan="3"></td><td>921 600 bauds, 8N1</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Bloc 2 : Bus I2C & Périphériques -->
+                <div class="card">
+                    <h3>Bus I2C &amp; Périphériques</h3>
+
+                    <table class="wiring-table wiring-table-pins">
+                        <thead><tr><th>Signal</th><th>Broche ESP32-S3</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td class="pin-sda">SDA</td><td>GPIO 10</td><td>Données I2C (tous périphériques)</td></tr>
+                            <tr><td class="pin-scl">SCL</td><td>GPIO 11</td><td>Horloge I2C (tous périphériques)</td></tr>
+                            <tr><td class="pin-3v3">3V3</td><td>3V3</td><td>Alimentation logique capteurs</td></tr>
+                            <tr><td class="pin-gnd">GND</td><td>GND</td><td>Masse commune</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h4>Modules connectés sur le bus I2C</h4>
+                    <table class="wiring-table wiring-table-i2c">
+                        <thead><tr><th>Module</th><th>Adresse I2C</th><th>Fonction</th><th>Remarque</th></tr></thead>
+                        <tbody>
+                            <tr><td>BNO085</td><td>0x4A</td><td>IMU 9-DOF (fusion inertielle)</td><td>Quaternions natifs, prioritaire</td></tr>
+                            <tr><td>GY-91 / MPU9250</td><td>0x68 (+0x0C mag)</td><td>IMU 9-DOF (Euler calculé)</td><td>Alternative si BNO085 absent</td></tr>
+                            <tr><td>MS5803-30BA</td><td>0x76</td><td>Pression / Profondeur</td><td>Résolution 0.01 mbar</td></tr>
+                            <tr><td>BME280</td><td>0x76 / 0x77</td><td>Pression + Température</td><td>Alternative au MS5803</td></tr>
+                            <tr><td>INA226 #1</td><td>0x41</td><td>Wattmètre RPi (V + I)</td><td>Tension et courant carte RPi</td></tr>
+                            <tr><td>INA226 #2</td><td>0x44</td><td>Wattmètre Auxiliaire</td><td>Éclairage, capteurs, etc.</td></tr>
+                            <tr><td>INA226 #3</td><td>0x45</td><td>Wattmètre Propulsion</td><td>Courant moteurs + ESC</td></tr>
+                            <tr><td>PCA9685</td><td>0x40</td><td>Contrôleur PWM 16 canaux</td><td>50 Hz, ESC/Servos/Gradateurs</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <span>BOB-CONTROL v1.0.0 — ESP32-S3 / FreeRTOS</span>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

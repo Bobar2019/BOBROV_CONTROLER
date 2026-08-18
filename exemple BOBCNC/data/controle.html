@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Contrôle CNC - BOBCNC</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <!-- CDN GSAP pour les animations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    
+    <!-- Fichier CSS partagé -->
+    <link rel="stylesheet" href="style.css">
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <!-- BOUTON RETOUR (fixe haut-droite) -->
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height='22' viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+    
+    <!-- ============================================
+         CONTENU PRINCIPAL - CENTRE DE PILOTAGE CNC
+         ============================================ -->
+    <main class="cnc-container">
+        
+        <!-- En-tête avec statut -->
+        <header class="cnc-header">
+            <h1>Contrôle CNC</h1>
+            <div class="status-bar">
+                <div class="status-indicator" id="wsStatus">
+                    <span class="status-led" id="statusLed"></span>
+                    <span class="status-text" id="statusText">Déconnecté</span>
+                </div>
+                <div class="machine-state" id="machineState">
+                    <span class="state-badge" id="stateBadge">OFFLINE</span>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Grille principale de contrôle -->
+        <div class="control-grid">
+            
+            <!-- === COLONNE GAUCHE : DRO & JOG === -->
+            <div class="control-column">
+                
+                <!-- Digital Read Out (DRO) - Accordéon -->
+                <section class="control-card accordion-card dro-card" data-accordion="dro">
+                    <h2 class="accordion-header" onclick="toggleAccordion('dro')">
+                        <div class="accordion-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+                            <span>Coordonnées (DRO)</span>
+                        </div>
+                        <svg class="accordion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </h2>
+                    <div class="accordion-content" id="accordion-dro">
+                        <div class="dro-grid">
+                            <div class="dro-axis">
+                                <span class="axis-label">X</span>
+                                <span class="axis-value" id="droX">0.000</span>
+                                <span class="axis-unit">mm</span>
+                            </div>
+                            <div class="dro-axis">
+                                <span class="axis-label">Y</span>
+                                <span class="axis-value" id="droY">0.000</span>
+                                <span class="axis-unit">mm</span>
+                            </div>
+                            <div class="dro-axis">
+                                <span class="axis-label">Z</span>
+                                <span class="axis-value" id="droZ">0.000</span>
+                                <span class="axis-unit">mm</span>
+                            </div>
+                            <div class="dro-axis">
+                                <span class="axis-label">A</span>
+                                <span class="axis-value" id="droA">0.000</span>
+                                <span class="axis-unit">°</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Contrôles Jog - Accordéon -->
+                <section class="control-card accordion-card jog-card" data-accordion="jog">
+                    <h2 class="accordion-header" onclick="toggleAccordion('jog')">
+                        <div class="accordion-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 9l7-7 7 7M12 2v20"/></svg>
+                            <span>Déplacement (Jog)</span>
+                        </div>
+                        <svg class="accordion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </h2>
+                    <div class="accordion-content" id="accordion-jog">
+                    
+                    <!-- Pad directionnel XY -->
+                    <div class="jog-pad">
+                        <div class="jog-row">
+                            <button class="jog-btn diagonal" data-cmd="Y+X-" title="Y+ X-">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(-90deg)"><path d="M7 17 L17 7 M17 7 H9 M17 7 V15"/></svg>
+                            </button>
+                            <button class="jog-btn" data-cmd="Y+" title="Y+">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                                <span class="jog-axis-label">Y+</span>
+                            </button>
+                            <button class="jog-btn diagonal" data-cmd="Y+X+" title="Y+ X+">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 L17 7 M17 7 H9 M17 7 V15"/></svg>
+                            </button>
+                        </div>
+                        <div class="jog-row">
+                            <button class="jog-btn" data-cmd="X-" title="X-">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                                <span class="jog-axis-label">X-</span>
+                            </button>
+                            <button class="jog-btn home-xy" data-cmd="G90 G0 X0 Y0" title="Aller à X0 Y0">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+                            </button>
+                            <button class="jog-btn" data-cmd="X+" title="X+">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                                <span class="jog-axis-label">X+</span>
+                            </button>
+                        </div>
+                        <div class="jog-row">
+                            <button class="jog-btn diagonal" data-cmd="Y-X-" title="Y- X-">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(180deg)"><path d="M7 17 L17 7 M17 7 H9 M17 7 V15"/></svg>
+                            </button>
+                            <button class="jog-btn" data-cmd="Y-" title="Y-">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+                                <span class="jog-axis-label">Y-</span>
+                            </button>
+                            <button class="jog-btn diagonal" data-cmd="Y-X+" title="Y- X+">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(90deg)"><path d="M7 17 L17 7 M17 7 H9 M17 7 V15"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Contrôles Z et A -->
+                    <div class="jog-za">
+                        <div class="za-control">
+                            <span class="za-label">Z</span>
+                            <button class="jog-btn za-btn" data-cmd="Z+" title="Z+">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                            </button>
+                            <button class="jog-btn za-btn home-z" data-cmd="G90 G0 Z0" title="Aller à Z0">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>
+                            </button>
+                            <button class="jog-btn za-btn" data-cmd="Z-" title="Z-">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+                            </button>
+                        </div>
+                        <div class="za-control">
+                            <span class="za-label">A</span>
+                            <button class="jog-btn za-btn" data-cmd="A+" title="A+">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                            </button>
+                            <button class="jog-btn za-btn home-a" data-cmd="G90 G0 A0" title="Aller à A0">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>
+                            </button>
+                            <button class="jog-btn za-btn" data-cmd="A-" title="A-">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="jog-params-box">
+                        
+                        <div class="mode-selector" style="display: flex; align-items: center; margin-bottom: 15px;">
+                            <span class="step-label" style="min-width: 50px;">Mode :</span>
+                            <div class="step-buttons" id="jogModeButtons">
+                                <button class="step-btn mode-btn active" data-mode="step">Par Pas</button>
+                                <button class="step-btn mode-btn" data-mode="continu">Continu</button>
+                            </div>
+                        </div>
+
+                        <div class="step-selector" id="stepSelectorDiv">
+                            <span class="step-label" style="min-width: 50px;">Pas :</span>
+                            <div class="step-buttons">
+                                <button class="step-btn" data-step="0.1">0.1</button>
+                                <button class="step-btn active" data-step="1">1</button>
+                                <button class="step-btn" data-step="10">10</button>
+                                <button class="step-btn" data-step="100">100</button>
+                            </div>
+                            <span class="step-unit">mm</span>
+                        </div>
+                        
+                        <div class="jog-params-divider"></div>
+                        
+                        <div class="jog-speed-control">
+                            <div class="speed-header">
+                                <span class="speed-label">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                    Vitesse Jog
+                                </span>
+                                <span class="speed-value" id="speedValue">1000</span>
+                                <span class="speed-unit">mm/min</span>
+                            </div>
+                            <div class="speed-slider-container">
+                                <input type="range" class="speed-slider" id="speedSlider" min="100" max="5000" step="100" value="1000">
+                                <div class="speed-marks">
+                                    <span>100</span>
+                                    <span>2500</span>
+                                    <span>5000</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Offsets G54-G57 - Accordéon (déplacé sous JOG) -->
+                <section class="control-card accordion-card offset-card" data-accordion="offset">
+                    <h2 class="accordion-header" onclick="toggleAccordion('offset')">
+                        <div class="accordion-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="9"/></svg>
+                            <span>Offsets (G54-G57)</span>
+                        </div>
+                        <svg class="accordion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </h2>
+                    <div class="accordion-content" id="accordion-offset">
+                        <div class="offset-tabs">
+                            <button class="offset-tab active" data-offset="G54" onclick="selectOffset('G54')">G54</button>
+                            <button class="offset-tab" data-offset="G55" onclick="selectOffset('G55')">G55</button>
+                            <button class="offset-tab" data-offset="G56" onclick="selectOffset('G56')">G56</button>
+                            <button class="offset-tab" data-offset="G57" onclick="selectOffset('G57')">G57</button>
+                        </div>
+                        <div class="offset-display">
+                            <div class="offset-axis">
+                                <span class="axis-label">X</span>
+                                <input type="number" class="offset-input" id="offsetX" step="0.001" value="0.000">
+                            </div>
+                            <div class="offset-axis">
+                                <span class="axis-label">Y</span>
+                                <input type="number" class="offset-input" id="offsetY" step="0.001" value="0.000">
+                            </div>
+                            <div class="offset-axis">
+                                <span class="axis-label">Z</span>
+                                <input type="number" class="offset-input" id="offsetZ" step="0.001" value="0.000">
+                            </div>
+                            <div class="offset-axis">
+                                <span class="axis-label">A</span>
+                                <input type="number" class="offset-input" id="offsetA" step="0.001" value="0.000">
+                            </div>
+                        </div>
+                        <div class="offset-actions">
+                            <button class="offset-btn apply-current-btn" onclick="applyCurrentPosition()" title="Appliquer position actuelle">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                                Appliquer
+                            </button>
+                            <button class="offset-btn apply-btn" onclick="confirmAndSaveOffset()" title="Sauvez et appliquez">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-left: -8px;"><polyline points="20 6 9 17 4 12"/></svg>
+                                Sauvez
+                            </button>
+                            <button class="offset-btn goto-btn" onclick="goToOffset()" title="Aller à l'offset">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                                GO TO
+                            </button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+            
+            <!-- === COLONNE DROITE : HOMING, ÉCLAIRAGE, TERMINAL === -->
+            <div class="control-column">
+                
+                <!-- Homing - Accordéon -->
+                <section class="control-card accordion-card homing-card" data-accordion="homing">
+                    <h2 class="accordion-header" onclick="toggleAccordion('homing')">
+                        <div class="accordion-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                            <span>Homing</span>
+                        </div>
+                        <svg class="accordion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </h2>
+                    <div class="accordion-content" id="accordion-homing">
+                        <div class="homing-grid">
+                            <button class="homing-btn home-all" id="btnHomeAll" title="Home All Axes - $H">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                                <span>Home All</span>
+                            </button>
+                            <div class="homing-axes">
+                                <button class="homing-btn axis-btn" data-axis="X" title="Home X - $HX">X</button>
+                                <button class="homing-btn axis-btn" data-axis="Y" title="Home Y - $HY">Y</button>
+                                <button class="homing-btn axis-btn" data-axis="Z" title="Home Z - $HZ">Z</button>
+                                <button class="homing-btn axis-btn" data-axis="A" title="Home A - $HA">A</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Contrôles Éclairage & NeoLED - Accordéon -->
+                <section class="control-card accordion-card light-card" data-accordion="light">
+                    <h2 class="accordion-header" onclick="toggleAccordion('light')">
+                        <div class="accordion-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                            <span>Éclairage & NeoLED</span>
+                        </div>
+                        <svg class="accordion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </h2>
+                    <div class="accordion-content" id="accordion-light">
+                        <div class="coolant-control">
+                            <div class="coolant-btns-row">
+
+                                <!-- Bouton Éclairage Broche (GPIO 8) -->
+                                <button class="coolant-btn spindle-light-btn" id="btnSpindleLight" data-state="off" title="Éclairage Broche (GPIO 8)">
+                                    <svg class="coolant-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="5"/>
+                                        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                                    </svg>
+                                    <span class="coolant-label" id="spindleLightLabel">Éclairage</span>
+                                    <span class="coolant-mcode">GPIO 8</span>
+                                </button>
+
+                                <!-- Bouton Message NeoLED (GPIO 11) -->
+                                <button class="coolant-btn neoled-msg-btn" id="btnNeoLedMsg" data-state="off" title="Message NeoLED (GPIO 11)">
+                                    <svg class="coolant-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="6" y="4" width="12" height="16" rx="2"/>
+                                        <circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.5"/>
+                                        <line x1="12" y1="8" x2="12" y2="9"/>
+                                        <line x1="12" y1="15" x2="12" y2="16"/>
+                                        <line x1="8" y1="12" x2="9" y2="12"/>
+                                        <line x1="15" y1="12" x2="16" y2="12"/>
+                                    </svg>
+                                    <span class="coolant-label" id="neoledMsgLabel">NeoLED</span>
+                                    <span class="coolant-mcode">GPIO 11</span>
+                                </button>
+
+                            </div>
+
+                            <!-- Slider luminosité NeoLED -->
+                            <div class="neoled-slider-row">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2"><circle cx="12" cy="12" r="5"/></svg>
+                                <input type="range" class="neoled-slider" id="neoledBrightness" min="0" max="255" value="80" title="Luminosité NeoLED">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                                <span class="neoled-brightness-val" id="neoledBrightnessVal">80</span>
+                            </div>
+
+                            <!-- Bouton info -->
+                            <div class="neoled-info-row">
+                                <button type="button" class="led-info-btn" onclick="openNeoLedInfo()" title="Informations Éclairage & NeoLED">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                                    Info
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Système de Vide (Coolant FluidNC : M8 Pompe / M7 Vanne / M9 Couper) -->
+                <section class="control-card accordion-card coolant-card" data-accordion="coolant">
+                    <h2 class="accordion-header" onclick="toggleAccordion('coolant')">
+                        <div class="accordion-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 2C6 8 4 12 4 15a8 8 0 0016 0c0-3-2-7-8-13z"/>
+                                <path d="M12 15a3 3 0 000 6"/>
+                            </svg>
+                            <span>Système de Vide</span>
+                        </div>
+                        <svg class="accordion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </h2>
+                    <div class="accordion-content" id="accordion-coolant">
+                        <div class="coolant-control">
+                            <div class="coolant-btns-row">
+
+                                <!-- Bouton Pompe (M8 = Flood) -->
+                                <button class="coolant-btn coolant-pump-btn" id="btnPump" data-state="off" title="Pompe à vide (M8)">
+                                    <svg class="coolant-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <ellipse cx="12" cy="12" rx="4" ry="4"/>
+                                        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                                    </svg>
+                                    <span class="coolant-label" id="pumpLabel">Pompe</span>
+                                    <span class="coolant-mcode">M8</span>
+                                </button>
+
+                                <!-- Bouton Vanne (électrovanne, M7 = Mist) -->
+                                <button class="coolant-btn coolant-valve-btn" id="btnValve" data-state="off" title="Électrovanne (M7)">
+                                    <svg class="coolant-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M12 2C6 8 4 12 4 15a8 8 0 0016 0c0-3-2-7-8-13z"/>
+                                        <path d="M9 17h6"/>
+                                    </svg>
+                                    <span class="coolant-label" id="valveLabel">Vanne</span>
+                                    <span class="coolant-mcode">M7</span>
+                                </button>
+
+                                <!-- Bouton TOUT COUPER (M9) -->
+                                <button class="coolant-btn coolant-off-btn" id="btnCoolantOff" title="Tout couper (M9)">
+                                    <svg class="coolant-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="9"/>
+                                        <line x1="8" y1="8" x2="16" y2="16"/>
+                                        <line x1="16" y1="8" x2="8" y2="16"/>
+                                    </svg>
+                                    <span class="coolant-label">COUPER</span>
+                                    <span class="coolant-mcode">M9</span>
+                                </button>
+
+                            </div>
+
+                            <!-- Badge d'état actif -->
+                            <div class="coolant-status-bar">
+                                <span class="coolant-status-badge" id="coolantStatusBadge">Inactif</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Terminal FluidNC - Accordéon -->
+                <section class="control-card accordion-card terminal-card" data-accordion="terminal">
+                    <h2 class="accordion-header" onclick="toggleAccordion('terminal')">
+                        <div class="accordion-title">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                            <span>Terminal FluidNC</span>
+                        </div>
+                        <svg class="accordion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </h2>
+                    <div class="accordion-content" id="accordion-terminal">
+                        <div class="terminal-container">
+                            <div class="terminal-output" id="terminalOutput">
+                                <div class="terminal-line system">=== Terminal FluidNC ===</div>
+                                <div class="terminal-line system">En attente de connexion...</div>
+                                <div class="terminal-line system">Cliquez sur une ligne pour la copier</div>
+                            </div>
+                            <div class="terminal-input-row">
+                                <span class="terminal-prompt">&gt;</span>
+                                <input type="text" class="terminal-input" id="terminalInput" placeholder="Entrez une commande G-Code..." autocomplete="off">
+                                <button class="terminal-send" id="btnSend" title="Envoyer">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="terminal-actions">
+                            <button class="terminal-action-btn terminal-clear-btn" id="btnClearTerminal" title="Effacer la console FluidNC">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 012-2h2a2 2 0 012 2v2"/></svg>
+                                Effacer
+                            </button>
+                            <button class="terminal-action-btn terminal-copy-btn" id="btnCopyTerminal" title="Copier tout le contenu de la console FluidNC">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                                Copier
+                            </button>
+                        </div>
+                    </div>
+                </section>
+                
+            </div>
+        </div>
+        
+    </main>
+    
+    <!-- === BARRE DE SÉCURITÉ FIXE EN BAS === -->
+    <div class="safety-bar" id="safetyBar">
+        <div class="safety-bar-content">
+            <span class="safety-bar-label">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01"/></svg>
+                SÉCURITÉ
+            </span>
+            <div class="safety-bar-buttons">
+                <button class="safety-bar-btn stop-btn" id="btnStop" title="Arrêt d'urgence - Abort">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><rect x="9" y="9" width="6" height="6"/></svg>
+                    <span>STOP</span>
+                </button>
+                <button class="safety-bar-btn unlock-btn" id="btnUnlock" title="Déverrouiller - $X">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                    <span>Unlock</span>
+                </button>
+                <button class="safety-bar-btn reset-btn" id="btnReset" title="Reset - $System/Reset">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    <span>Reset</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Popup de confirmation Sauvegarde Offset -->
+    <div class="popup-overlay" id="offsetPopup">
+        <div class="popup-content">
+            <h3 class="popup-title">Confirmer l'offset</h3>
+            <div class="popup-offset-info">
+                <span class="popup-offset-name" id="popupOffsetName">G54</span>
+                <div class="popup-offset-values">
+                    <span>X: <b id="popupX">0.000</b></span>
+                    <span>Y: <b id="popupY">0.000</b></span>
+                    <span>Z: <b id="popupZ">0.000</b></span>
+                    <span>A: <b id="popupA">0.000</b></span>
+                </div>
+            </div>
+            <p class="popup-message">Ces valeurs seront sauvegardées dans l'ESP32 et appliquées à FluidNC.</p>
+            <div class="popup-actions">
+                <button class="popup-btn cancel" onclick="closeOffsetPopup()">Annuler</button>
+                <button class="popup-btn confirm" onclick="executeSaveOffset()">Confirmer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Popup de confirmation GO TO -->
+    <div class="popup-overlay" id="gotoPopup">
+        <div class="popup-content">
+            <h3 class="popup-title">Confirmer le déplacement</h3>
+            <div class="popup-offset-info">
+                <span class="popup-offset-name" id="gotoPopupOffsetName">G54</span>
+                <div class="popup-offset-values">
+                    <span>X: <b id="gotoPopupX">0.000</b></span>
+                    <span>Y: <b id="gotoPopupY">0.000</b></span>
+                    <span>Z: <b id="gotoPopupZ">0.000</b></span>
+                    <span>A: <b id="gotoPopupA">0.000</b></span>
+                </div>
+            </div>
+            <p class="popup-message goto-warning">⚠️ Séquence sécurisée :<br>G90 → G53 G0 Z0 (remontée machine) → Workspace + G0 X0 Y0 → G0 Z0</p>
+            <div class="popup-actions">
+                <button class="popup-btn cancel" onclick="closeGotoPopup()">Annuler</button>
+                <button class="popup-btn goto-confirm" onclick="executeGoToOffset()">Aller à <span id="gotoConfirmOffset">G54</span></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Popup Info Eclairage & NeoLED -->
+    <div class="popup-overlay" id="neoledInfoPopup">
+        <div class="popup-content" style="max-width:420px;">
+            <h3 class="popup-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                Eclairage & NeoLED
+            </h3>
+
+            <!-- Section 1 : Eclairage Broche -->
+            <div class="led-legend-list" style="margin-top:8px;">
+                <div class="led-legend-item">
+                    <span class="led-dot" style="background:#ffcc00;box-shadow:0 0 8px rgba(255,204,0,0.6);"></span>
+                    <div class="led-legend-text">
+                        <strong>Eclairage Broche</strong>
+                        <small>Relais sur GPIO 8 — alimente l'eclairage de la zone de coupe</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section 2 : NeoLED Message (semantique LedManager) -->
+            <p style="font-size:11.5px;color:var(--text-secondary);margin:10px 0 4px;">Bandeau NeoPixel (10 LEDs, GPIO 11) — meme semantique que la LED d'etat (GPIO 48) :</p>
+            <div class="led-legend-list">
+                <div class="led-legend-item">
+                    <span class="led-dot blue-pulse"></span>
+                    <div class="led-legend-text">
+                        <strong>Bleu pulsant</strong>
+                        <small>Tentative de connexion WiFi</small>
+                    </div>
+                </div>
+                <div class="led-legend-item">
+                    <span class="led-dot" style="background:#0000c8;box-shadow:0 0 6px rgba(0,0,200,0.5);"></span>
+                    <div class="led-legend-text">
+                        <strong>Bleu fixe</strong>
+                        <small>FluidNC connecte par TELNET</small>
+                    </div>
+                </div>
+                <div class="led-legend-item">
+                    <span class="led-dot" style="background:#00b400;box-shadow:0 0 6px rgba(0,180,0,0.5);"></span>
+                    <div class="led-legend-text">
+                        <strong>Vert fixe</strong>
+                        <small>FluidNC connecte par UART</small>
+                    </div>
+                </div>
+                <div class="led-legend-item">
+                    <span class="led-dot" style="background:#fff;box-shadow:0 0 6px rgba(255,255,255,0.5);"></span>
+                    <div class="led-legend-text">
+                        <strong>Blanc flash</strong>
+                        <small>Envoi d'une trame G-code</small>
+                    </div>
+                </div>
+                <div class="led-legend-item">
+                    <span class="led-dot police"></span>
+                    <div class="led-legend-text">
+                        <strong>Bleu / Rouge police</strong>
+                        <small>Erreur ou alarme FluidNC</small>
+                    </div>
+                </div>
+                <div class="led-legend-item">
+                    <span class="led-dot red-heart"></span>
+                    <div class="led-legend-text">
+                        <strong>Rouge coeur</strong>
+                        <small>Pas de connexion FluidNC</small>
+                    </div>
+                </div>
+                <div class="led-legend-item">
+                    <span class="led-dot" style="background:#b400b4;box-shadow:0 0 6px rgba(180,0,180,0.5);"></span>
+                    <div class="led-legend-text">
+                        <strong>Violet fixe</strong>
+                        <small>E-STOP soft declenche</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section 3 : Slider -->
+            <div class="led-legend-list" style="margin-top:8px;">
+                <div class="led-legend-item">
+                    <span class="led-dot" style="background:linear-gradient(90deg,#333,#00e6ff);"></span>
+                    <div class="led-legend-text">
+                        <strong>Slider Luminosite</strong>
+                        <small>Regie la luminosite du bandeau (0-255). Actif uniquement quand le bandeau est active.</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="popup-actions" style="margin-top:16px;">
+                <button class="popup-btn confirm" onclick="closeNeoLedInfo()">Compris</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fichier JavaScript partagé -->
+    <script src="main.js"></script>
+</body>
+</html>

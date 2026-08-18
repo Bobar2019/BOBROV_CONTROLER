@@ -1,0 +1,2268 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Palpage & Lamage - BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <!-- THREE.js (importmap) pour la visualisation 3D du lamage helicoidal -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+        }
+    }
+    </script>
+    <style>
+        .probe-page { max-width: 1200px; margin: 0 auto; padding: 20px; padding-top: 80px; padding-bottom: 60px; }
+        .probe-grid { display: grid; grid-template-columns: 1fr 340px; gap: 18px; }
+        @media (max-width: 860px) { .probe-grid { grid-template-columns: 1fr; } }
+
+        /* === Cartes === */
+        .probe-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+        .probe-card h2 { font-size: 0.88rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+        .probe-card h2 svg { flex-shrink: 0; }
+
+        /* === Champs === */
+        .fg { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+        .fg label { font-size: 0.66rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
+        .fg input, .fg select { padding: 7px 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 5px; color: var(--text-primary); font-family: 'Source Code Pro', monospace; font-size: 0.8rem; outline: none; }
+        .fg input:focus, .fg select:focus { border-color: var(--accent-cyan); }
+        .fg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .fg-row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+
+        /* === DRO === */
+        .probe-dro-bar { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 12px 16px; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+        .probe-dro-axis { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+        .probe-dro-axis .axis-lbl { font-size: 0.65rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+        .probe-dro-axis .axis-val { font-size: 1.15rem; font-weight: 700; font-family: 'Source Code Pro', monospace; min-width: 85px; text-align: center; }
+        .probe-dro-axis.x .axis-val { color: var(--accent-cyan); }
+        .probe-dro-axis.y .axis-val { color: #00ff88; }
+        .probe-dro-axis.z .axis-val { color: var(--accent-magenta); }
+
+        /* === Dernier PRB === */
+        .prb-result { padding: 10px 14px; background: rgba(0,0,0,0.25); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 12px; font-family: 'Source Code Pro', monospace; font-size: 0.78rem; color: var(--text-secondary); min-height: 44px; }
+        .prb-result .prb-val { color: var(--accent-cyan); font-weight: 600; }
+        .prb-result .prb-fail { color: #ff6b6b; font-weight: 600; }
+
+        /* === Barre de progression macro === */
+        .macro-progress { margin-bottom: 12px; }
+        .macro-progress-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+        .macro-step-dot { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-primary); border: 2px solid var(--border-color); display: flex; align-items: center; justify-content: center; font-size: 0.65rem; font-weight: 700; color: var(--text-secondary); transition: all 0.3s; flex-shrink: 0; }
+        .macro-step-dot.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,217,255,0.12); box-shadow: 0 0 8px rgba(0,217,255,0.3); }
+        .macro-step-dot.done { border-color: #00ff88; color: #00ff88; background: rgba(0,255,136,0.1); }
+        .macro-step-dot.error { border-color: #ff6b6b; color: #ff6b6b; background: rgba(255,107,107,0.1); }
+        .macro-step-line { flex: 1; height: 2px; background: var(--border-color); min-width: 4px; }
+        .macro-step-line.done { background: #00ff88; }
+        .macro-status-text { font-size: 0.72rem; color: var(--text-secondary); text-align: center; margin-top: 4px; }
+        .macro-status-text.running { color: var(--accent-cyan); }
+        .macro-status-text.done { color: #00ff88; }
+        .macro-status-text.error { color: #ff6b6b; }
+
+        /* === Boutons === */
+        .btn { padding: 7px 14px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); color: var(--text-primary); font-family: 'Source Code Pro', monospace; font-size: 0.78rem; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 5px; }
+        .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn-primary { background: linear-gradient(135deg, rgba(0,217,255,0.2), rgba(0,217,255,0.08)); border-color: rgba(0,217,255,0.5); color: var(--accent-cyan); }
+        .btn-primary:hover:not(:disabled) { background: linear-gradient(135deg, rgba(0,217,255,0.35), rgba(0,217,255,0.15)); }
+        .btn-success { background: linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,255,136,0.05)); border-color: rgba(0,255,136,0.4); color: #00ff88; }
+        .btn-danger { background: linear-gradient(135deg, rgba(255,51,51,0.15), rgba(255,51,51,0.05)); border-color: rgba(255,51,51,0.4); color: #ff6666; }
+        .btn-warn { background: linear-gradient(135deg, rgba(255,204,0,0.15), rgba(255,204,0,0.05)); border-color: rgba(255,204,0,0.4); color: #ffcc00; }
+        .btn-lg { padding: 12px 22px; font-size: 0.88rem; border-radius: 8px; }
+        .btn-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+        /* === Boutons manuels palpage === */
+        .manual-probe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+        .manual-probe-btn { padding: 10px 8px; border: 1px solid rgba(0,217,255,0.3); border-radius: 8px; background: rgba(0,217,255,0.06); color: var(--accent-cyan); font-family: 'Source Code Pro', monospace; font-size: 0.78rem; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: center; }
+        .manual-probe-btn:hover:not(:disabled) { background: rgba(0,217,255,0.15); border-color: var(--accent-cyan); transform: translateY(-1px); }
+        .manual-probe-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .manual-probe-btn:active:not(:disabled) { transform: scale(0.97); }
+
+        /* === Grille coins === */
+        .corner-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+        .corner-btn { position: relative; padding: 18px 10px; border: 2px solid var(--border-color); border-radius: 10px; background: var(--bg-primary); cursor: pointer; transition: all 0.25s; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+        .corner-btn:hover { border-color: var(--accent-cyan); background: rgba(0,217,255,0.06); }
+        .corner-btn.selected { border-color: var(--accent-cyan); background: rgba(0,217,255,0.1); box-shadow: 0 0 12px rgba(0,217,255,0.2); }
+        .corner-btn .corner-icon { width: 36px; height: 36px; }
+        .corner-btn .corner-label { font-size: 0.7rem; font-weight: 600; color: var(--text-secondary); }
+        .corner-btn.selected .corner-label { color: var(--accent-cyan); }
+        .corner-btn .corner-arrows { font-size: 0.62rem; color: var(--text-secondary); font-family: 'Source Code Pro', monospace; }
+        .corner-btn.selected .corner-arrows { color: var(--accent-cyan); }
+
+        /* === Tutoriel / encart info === */
+        .probe-tutorial { margin-top: 12px; padding: 12px 14px; border-radius: 8px; background: rgba(0,217,255,0.04); border: 1px solid rgba(0,217,255,0.2); }
+        .probe-tutorial summary { cursor: pointer; user-select: none; font-size: 0.78rem; font-weight: 600; color: var(--accent-cyan); display: flex; align-items: center; gap: 6px; }
+        .probe-tutorial summary::-webkit-details-marker { color: var(--accent-cyan); }
+        .probe-tutorial ol, .probe-tutorial ul { margin: 8px 0 0; padding-left: 20px; font-size: 0.74rem; color: var(--text-secondary); line-height: 1.65; }
+        .probe-tutorial li { margin-bottom: 3px; }
+        .probe-tutorial strong { color: var(--text-primary); }
+
+        /* === Séparateur === */
+        .section-divider { height: 1px; background: var(--border-color); margin: 18px 0; opacity: 0.5; }
+
+        /* === Notification === */
+        .notification { position: fixed; top: 16px; right: 16px; padding: 10px 16px; border-radius: 8px; font-size: 0.8rem; z-index: 300; transform: translateX(120%); transition: transform 0.3s; font-family: 'Source Code Pro', monospace; }
+        .notification.show { transform: translateX(0); }
+        .notification.success { background: rgba(0,255,136,0.12); border: 1px solid rgba(0,255,136,0.4); color: #00ff88; }
+        .notification.error { background: rgba(255,51,51,0.12); border: 1px solid rgba(255,51,51,0.4); color: #ff6666; }
+        .notification.info { background: rgba(0,217,255,0.12); border: 1px solid rgba(0,217,255,0.4); color: var(--accent-cyan); }
+
+        /* === Modal bloquant === */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(4px); z-index: 200; align-items: center; justify-content: center; }
+        .modal-overlay.active { display: flex; }
+        .modal-box { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 14px; width: 90%; max-width: 440px; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); text-align: center; }
+        .modal-box h2 { color: #ff6b6b; font-size: 1rem; margin-bottom: 14px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .modal-box p { color: var(--text-secondary); font-size: 0.82rem; line-height: 1.6; margin-bottom: 18px; }
+        .modal-box .btn-actions { justify-content: center; }
+
+        /* === Section accordeon LAMAGE === */
+        details.lam-acc { padding: 0; }
+        details.lam-acc > summary { list-style: none; cursor: pointer; padding: 14px 18px; display: flex; align-items: center; gap: 10px; user-select: none; }
+        details.lam-acc > summary::-webkit-details-marker { display: none; }
+        details.lam-acc > summary h2 { font-size: 0.88rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px; margin: 0; flex: 1; }
+        details.lam-acc > summary .lam-chevron { color: var(--accent-cyan); font-size: 0.8rem; transition: transform 0.25s; }
+        details.lam-acc[open] > summary .lam-chevron { transform: rotate(180deg); }
+        details.lam-acc .lam-body { padding: 0 18px 16px; }
+
+        /* === Stats lamage === */
+        .lam-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0; padding: 10px 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--border-color); border-radius: 8px; }
+        .lam-stats .lam-stat { display: flex; flex-direction: column; gap: 2px; }
+        .lam-stats .lam-stat .lab { font-size: 0.62rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
+        .lam-stats .lam-stat .val { font-size: 0.85rem; color: var(--accent-cyan); font-family: 'Source Code Pro', monospace; font-weight: 600; }
+
+        /* === Toggle simple oui/non === */
+        .lam-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+        .lam-switch input { display: none; }
+        .lam-switch .lam-slider { width: 36px; height: 20px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 10px; position: relative; transition: all 0.2s; }
+        .lam-switch .lam-slider::after { content: ''; position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; border-radius: 50%; background: var(--text-secondary); transition: all 0.2s; }
+        .lam-switch input:checked + .lam-slider { background: rgba(0,217,255,0.18); border-color: var(--accent-cyan); }
+        .lam-switch input:checked + .lam-slider::after { left: 18px; background: var(--accent-cyan); }
+        .lam-switch .lam-label { font-size: 0.78rem; color: var(--text-primary); }
+
+        /* === Tool info chips === */
+        .lam-toolinfo { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-size: 0.72rem; color: var(--text-secondary); margin: 4px 0 8px; }
+        .lam-toolinfo strong { color: var(--accent-cyan); }
+
+        /* === Textarea G-code === */
+        .lam-gcode { width: 100%; min-height: 120px; max-height: 260px; padding: 8px 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-family: 'Source Code Pro', monospace; font-size: 0.72rem; resize: vertical; outline: none; }
+        .lam-gcode:focus { border-color: var(--accent-cyan); }
+
+        /* === Modal Visu 3D Lamage === */
+        .lamviz-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #000; z-index: 250; }
+        .lamviz-overlay.active { display: block; }
+        .lamviz-modal { position: absolute; inset: 0; background: #101418; overflow: hidden; }
+        .lamviz-header { position: absolute; top: 0; left: 0; right: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; background: linear-gradient(to bottom, rgba(15,18,23,0.85), rgba(15,18,23,0.0)); pointer-events: none; }
+        .lamviz-header > * { pointer-events: auto; }
+        .lamviz-header h2 { color: var(--accent-cyan); font-size: 0.9rem; text-shadow: 0 1px 4px rgba(0,0,0,0.8); margin: 0; }
+        .lamviz-header-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .lamviz-body { position: absolute; inset: 0; background: #101418; }
+        #lamVizCanvas { position: absolute; inset: 0; }
+        .lamviz-info { position: absolute; left: 10px; top: 50px; z-index: 25; font-size: 0.7rem; color: rgba(255,255,255,0.85); font-family: 'Source Code Pro', monospace; background: rgba(0,0,0,0.55); padding: 4px 9px; border-radius: 6px; }
+        .lamviz-legend { position: absolute; top: 50px; right: 10px; z-index: 25; display: flex; gap: 10px; background: rgba(0,0,0,0.55); padding: 5px 10px; border-radius: 6px; font-size: 0.65rem; font-family: 'Source Code Pro', monospace; }
+        .lamviz-legend span { color: rgba(255,255,255,0.75); }
+        .lamviz-toolbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: linear-gradient(to top, rgba(15,18,23,0.92), rgba(15,18,23,0.65)); border-top: 1px solid rgba(0,217,255,0.4); flex-wrap: nowrap; overflow-x: auto; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+        .lamviz-toolbar .btn { padding: 6px 10px; font-size: 0.75rem; white-space: nowrap; flex-shrink: 0; }
+        .lamviz-toolbar .btn.active { box-shadow: 0 0 0 2px rgba(0,255,136,0.4) inset; }
+        .lamviz-speed { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: var(--text-secondary); flex: 1; min-width: 120px; flex-shrink: 1; }
+        .lamviz-speed input[type=range] { flex: 1; min-width: 60px; accent-color: var(--accent-cyan); }
+        .lamviz-speed .speed-val { min-width: 38px; text-align: right; color: var(--accent-cyan); font-family: 'Source Code Pro', monospace; }
+        .lamviz-progressbar { position: absolute; left: 0; right: 0; bottom: 100%; height: 4px; background: rgba(255,255,255,0.08); overflow: hidden; }
+        .lamviz-progress { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-cyan), #00ff88); transition: width 0.1s linear; }
+
+        /* === Bouton (i) d'aide visuelle === */
+        .help-btn { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,217,255,0.55); background: rgba(0,217,255,0.08); color: var(--accent-cyan); font-size: 0.72rem; font-weight: 700; font-family: Georgia, 'Times New Roman', serif; font-style: italic; cursor: pointer; padding: 0; line-height: 1; transition: all 0.2s; flex-shrink: 0; margin-left: auto; }
+        .help-btn:hover { background: rgba(0,217,255,0.2); border-color: var(--accent-cyan); transform: scale(1.12); box-shadow: 0 0 8px rgba(0,217,255,0.45); }
+        .help-btn:active { transform: scale(0.95); }
+
+        /* === Popup simulation palpage === */
+        .help-popup { display: none; position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.72); backdrop-filter: blur(3px); align-items: center; justify-content: center; padding: 16px; }
+        .help-popup.active { display: flex; }
+        .help-popup-box { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px 16px 16px; width: 100%; max-width: 360px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); animation: helpPopIn 0.18s ease-out; }
+        @keyframes helpPopIn { from { transform: scale(0.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        .help-popup-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
+        .help-popup-head h3 { margin: 0; font-size: 0.88rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px; }
+        .help-popup-close { background: none; border: none; color: var(--text-secondary); font-size: 1.4rem; cursor: pointer; padding: 0 8px; border-radius: 4px; line-height: 1; }
+        .help-popup-close:hover { background: rgba(255,255,255,0.08); color: #fff; }
+        #probeSimContainer { width: 300px; height: 300px; max-width: 100%; margin: 0 auto; background: #0c1014; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; position: relative; }
+        #probeSimContainer canvas { display: block; }
+        .help-popup-caption { margin-top: 10px; font-size: 0.72rem; color: var(--text-secondary); text-align: center; line-height: 1.45; min-height: 2.6em; }
+        .help-popup-caption strong { color: var(--accent-cyan); }
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <!-- Notification -->
+    <div class="notification" id="notification"></div>
+
+    <!-- Modal bloquant : palpeur non configuré -->
+    <div class="modal-overlay" id="probeWarnModal">
+        <div class="modal-box">
+            <h2>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Palpeur non configuré
+            </h2>
+            <p>Le palpeur 3D n'a pas été configuré. Vous devez d'abord définir le diamètre de bille et les offsets dans la page Configuration (section ATC).</p>
+            <div class="btn-actions">
+                <button class="btn btn-primary" onclick="location.href='configuration.html'">Aller configurer</button>
+                <button class="btn" onclick="closeProbeWarn()">Continuer quand même</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Popup d'aide visuelle - Simulation 3D du mouvement de palpage -->
+    <div class="help-popup" id="probeHelpPopup" onclick="if(event.target===this)closeProbeHelp()" role="dialog" aria-modal="true" aria-labelledby="probeHelpTitle">
+        <div class="help-popup-box">
+            <div class="help-popup-head">
+                <h3 id="probeHelpTitle">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    Animation de palpage
+                </h3>
+                <button class="help-popup-close" type="button" onclick="closeProbeHelp()" aria-label="Fermer">&times;</button>
+            </div>
+            <div id="probeSimContainer"></div>
+            <div class="help-popup-caption" id="probeHelpCaption">L'outil suit la séquence automatique du palpeur.</div>
+        </div>
+    </div>
+
+    <div class="probe-page">
+        <header class="page-header" style="text-align:center; margin-bottom:24px;">
+            <h1>Palpage & Lamage</h1>
+            <div id="wsStatusBar" style="display:inline-flex; align-items:center; gap:6px; margin-top:6px; padding:4px 12px; border-radius:12px; font-size:0.72rem; font-family:'Source Code Pro',monospace; background:rgba(255,51,51,0.12); border:1px solid rgba(255,51,51,0.3); color:#ff6666; transition:all 0.3s;">
+                <span id="wsLed" style="width:8px;height:8px;border-radius:50%;background:#ff4444;display:inline-block;transition:background 0.3s;"></span>
+                <span id="wsLabel">WS Deconnecte</span>
+            </div>
+        </header>
+
+        <div class="probe-grid">
+            <!-- ==================== COLONNE GAUCHE : Paramètres ==================== -->
+            <div>
+                <!-- ====== SECTION A : Recherche de Centre ====== -->
+                <div class="probe-card">
+                    <h2>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+                        Recherche de Centre
+                        <button class="help-btn" type="button" onclick="openProbeHelp('hole')" title="Voir l'animation du palpage de trou" aria-label="Aide visuelle">i</button>
+                    </h2>
+
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Diam. trou approx. (mm)</label>
+                            <input type="number" id="centerHoleDiam" step="0.1" min="1" value="20">
+                        </div>
+                        <div class="fg">
+                            <label>Repère</label>
+                            <select id="centerCoordSys">
+                                <option value="1">G54</option>
+                                <option value="2">G55</option>
+                                <option value="3">G56</option>
+                                <option value="4" selected>G57</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Vitesse rapide (mm/min)</label>
+                            <input type="number" id="centerFastSpeed" step="10" min="10" value="200">
+                        </div>
+                        <div class="fg">
+                            <label>Vitesse lente (mm/min)</label>
+                            <input type="number" id="centerSlowSpeed" step="5" min="5" value="30">
+                        </div>
+                    </div>
+
+                    <!-- Bouton AUTO -->
+                    <div class="btn-actions" style="margin-top:14px;">
+                        <button class="btn btn-primary btn-lg" id="btnCenterAuto" onclick="runCenterMacro()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            AUTO
+                        </button>
+                        <button class="btn btn-danger btn-lg" id="btnAbortCenter" onclick="abortProbeMacro()" style="display:none;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                            ARRETER
+                        </button>
+                    </div>
+
+                    <!-- Mode manuel -->
+                    <div style="margin-top:14px;">
+                        <div style="font-size:0.72rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:6px;">Palpage manuel (un coup par clic)</div>
+                        <div class="manual-probe-grid">
+                            <button class="manual-probe-btn" id="btnManXminus" onclick="manualProbe('X-')">X- ◀</button>
+                            <button class="manual-probe-btn" id="btnManXplus" onclick="manualProbe('X+')">▶ X+</button>
+                            <button class="manual-probe-btn" id="btnManYminus" onclick="manualProbe('Y-')">Y- ▼</button>
+                            <button class="manual-probe-btn" id="btnManYplus" onclick="manualProbe('Y+')">▲ Y+</button>
+                        </div>
+                    </div>
+
+                    <!-- Tutoriel -->
+                    <details class="probe-tutorial">
+                        <summary>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                            Comment utiliser la recherche de centre
+                        </summary>
+                        <ol>
+                            <li>Placez la bille du palpeur <strong>au centre approximatif</strong> du trou</li>
+                            <li>Abaissez Z a la hauteur de palpage desiree</li>
+                            <li>Indiquez le <strong>diametre approximatif du trou</strong> (pour calculer la distance d'approche)</li>
+                            <li>Cliquez <strong>AUTO</strong> : la macro palpe les 4 parois (X-, X+, Y-, Y+)</li>
+                            <li>Le centre calculé est automatiquement écrit dans le repere selectionne (G54-G57)</li>
+                        </ol>
+                        <p style="margin-top:8px; font-size:0.7rem;">En mode manuel, chaque bouton envoie un seul G38.2. Vous pouvez construire votre propre sequence.</p>
+                    </details>
+                </div>
+
+                <div class="section-divider"></div>
+
+                <!-- ====== SECTION B : Palpage de Coins ====== -->
+                <div class="probe-card">
+                    <h2>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>
+                        Palpage de Coins (Origine Pièce)
+                        <button class="help-btn" type="button" onclick="openProbeHelp('corner')" title="Voir l'animation du palpage d'origine" aria-label="Aide visuelle">i</button>
+                    </h2>
+
+                    <!-- Grille visuelle 4 coins -->
+                    <div class="corner-grid">
+                        <!-- Avant-Gauche -->
+                        <div class="corner-btn" id="cornerBL" onclick="selectCorner('BL')" data-corner="BL">
+                            <svg class="corner-icon" viewBox="0 0 40 40">
+                                <rect x="0" y="0" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+                                <line x1="8" y1="32" x2="8" y2="8" stroke="#00ff88" stroke-width="1.5" marker-end="url(#arrG)"/>
+                                <line x1="8" y1="32" x2="32" y2="32" stroke="var(--accent-cyan)" stroke-width="1.5" marker-end="url(#arrU)"/>
+                                <circle cx="8" cy="32" r="3" fill="#ff6b6b"/>
+                            </svg>
+                            <span class="corner-label">Avant-Gauche</span>
+                            <span class="corner-arrows">X- / Y-</span>
+                        </div>
+                        <!-- Avant-Droite -->
+                        <div class="corner-btn" id="cornerBR" onclick="selectCorner('BR')" data-corner="BR">
+                            <svg class="corner-icon" viewBox="0 0 40 40">
+                                <rect x="0" y="0" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+                                <line x1="32" y1="32" x2="32" y2="8" stroke="#00ff88" stroke-width="1.5" marker-end="url(#arrG)"/>
+                                <line x1="32" y1="32" x2="8" y2="32" stroke="var(--accent-cyan)" stroke-width="1.5" marker-end="url(#arrU)"/>
+                                <circle cx="32" cy="32" r="3" fill="#ff6b6b"/>
+                            </svg>
+                            <span class="corner-label">Avant-Droite</span>
+                            <span class="corner-arrows">X+ / Y-</span>
+                        </div>
+                        <!-- Arriere-Gauche -->
+                        <div class="corner-btn" id="cornerTL" onclick="selectCorner('TL')" data-corner="TL">
+                            <svg class="corner-icon" viewBox="0 0 40 40">
+                                <rect x="0" y="0" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+                                <line x1="8" y1="8" x2="8" y2="32" stroke="#00ff88" stroke-width="1.5" marker-end="url(#arrG)"/>
+                                <line x1="8" y1="8" x2="32" y2="8" stroke="var(--accent-cyan)" stroke-width="1.5" marker-end="url(#arrU)"/>
+                                <circle cx="8" cy="8" r="3" fill="#ff6b6b"/>
+                            </svg>
+                            <span class="corner-label">Arriere-Gauche</span>
+                            <span class="corner-arrows">X- / Y+</span>
+                        </div>
+                        <!-- Arriere-Droite -->
+                        <div class="corner-btn" id="cornerTR" onclick="selectCorner('TR')" data-corner="TR">
+                            <svg class="corner-icon" viewBox="0 0 40 40">
+                                <rect x="0" y="0" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+                                <line x1="32" y1="8" x2="32" y2="32" stroke="#00ff88" stroke-width="1.5" marker-end="url(#arrG)"/>
+                                <line x1="32" y1="8" x2="8" y2="8" stroke="var(--accent-cyan)" stroke-width="1.5" marker-end="url(#arrU)"/>
+                                <circle cx="32" cy="8" r="3" fill="#ff6b6b"/>
+                            </svg>
+                            <span class="corner-label">Arriere-Droite</span>
+                            <span class="corner-arrows">X+ / Y+</span>
+                        </div>
+                    </div>
+
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Distance d'approche (mm)</label>
+                            <input type="number" id="cornerTravel" step="1" min="1" value="50">
+                        </div>
+                        <div class="fg">
+                            <label>Repère</label>
+                            <select id="cornerCoordSys">
+                                <option value="1">G54</option>
+                                <option value="2">G55</option>
+                                <option value="3">G56</option>
+                                <option value="4" selected>G57</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Vitesse rapide (mm/min)</label>
+                            <input type="number" id="cornerFastSpeed" step="10" min="10" value="200">
+                        </div>
+                        <div class="fg">
+                            <label>Vitesse lente (mm/min)</label>
+                            <input type="number" id="cornerSlowSpeed" step="5" min="5" value="30">
+                        </div>
+                    </div>
+
+                    <!-- Bouton AUTO coin -->
+                    <div class="btn-actions" style="margin-top:14px;">
+                        <button class="btn btn-primary btn-lg" id="btnCornerAuto" onclick="runCornerMacro()" disabled>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            AUTO
+                        </button>
+                        <button class="btn btn-danger btn-lg" id="btnAbortCorner" onclick="abortProbeMacro()" style="display:none;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                            ARRETER
+                        </button>
+                    </div>
+
+                    <!-- Tutoriel -->
+                    <details class="probe-tutorial">
+                        <summary>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                            Comment utiliser le palpage de coins
+                        </summary>
+                        <ol>
+                            <li>Selectionnez le <strong>coin</strong> a palper dans la grille visuelle</li>
+                            <li>Placez le palpeur a proximite du coin, a la bonne hauteur Z</li>
+                            <li>Indiquez la <strong>distance d'approche</strong> (course de palpage)</li>
+                            <li>Cliquez <strong>AUTO</strong> : la macro palpe X puis Y</li>
+                            <li>Le coin calculé est ecrit dans le repere selectionne (G10 L2)</li>
+                        </ol>
+                        <p style="margin-top:8px; font-size:0.7rem;">Le rayon de la bille et l'offset du palpeur sont automatiquement compenses dans le calcul.</p>
+                    </details>
+                </div>
+
+                <div class="section-divider"></div>
+
+                <!-- ====== SECTION C : LAMAGE HELICOIDAL (accordeon) ====== -->
+                <details class="probe-card lam-acc" id="lamageAcc">
+                    <summary>
+                        <h2>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+                            LAMAGE helicoidal
+                        </h2>
+                        <span class="lam-chevron">▾</span>
+                    </summary>
+                    <div class="lam-body">
+                        <div class="fg">
+                            <label>Outil (fraise)</label>
+                            <select id="lamTool"></select>
+                        </div>
+                        <div class="lam-toolinfo" id="lamToolInfo">
+                            <span>Diam: <strong id="lamToolDiam">-</strong></span>
+                            <span>Avance: <strong id="lamToolFz">-</strong></span>
+                            <span>RPM: <strong id="lamToolRpm">-</strong></span>
+                        </div>
+                        <div class="fg-row">
+                            <div class="fg">
+                                <label>Diametre du lamage (mm)</label>
+                                <input type="number" id="lamDiam" step="0.1" min="1" value="20">
+                            </div>
+                            <div class="fg">
+                                <label>Profondeur du lamage (mm)</label>
+                                <input type="number" id="lamDepth" step="0.1" min="0.1" value="5">
+                            </div>
+                        </div>
+                        <div class="fg-row">
+                            <div class="fg">
+                                <label>Profondeur par tour (mm)</label>
+                                <input type="number" id="lamPitch" step="0.05" min="0.05" value="0.5">
+                            </div>
+                            <div class="fg">
+                                <label>Z securite (mm)</label>
+                                <input type="number" id="lamZSafe" step="0.5" min="1" value="5">
+                            </div>
+                        </div>
+                        <div class="fg-row">
+                            <div class="fg">
+                                <label>Avance forcee (mm/min)</label>
+                                <input type="number" id="lamFeed" step="10" min="0" placeholder="0 = auto outil" value="0">
+                            </div>
+                            <div class="fg">
+                                <label>Broche forcee (RPM)</label>
+                                <input type="number" id="lamRpm" step="100" min="0" placeholder="0 = auto outil" value="0">
+                            </div>
+                        </div>
+                        <div class="fg-row">
+                            <div class="fg">
+                                <label>Repere d'origine piece</label>
+                                <select id="lamCoordSys">
+                                    <option value="1">G54</option>
+                                    <option value="2">G55</option>
+                                    <option value="3">G56</option>
+                                    <option value="4" selected>G57</option>
+                                </select>
+                            </div>
+                            <div class="fg">
+                                <label>Passe de finition</label>
+                                <label class="lam-switch">
+                                    <input type="checkbox" id="lamFinish">
+                                    <span class="lam-slider"></span>
+                                    <span class="lam-label" id="lamFinishLabel">NON</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="lam-stats">
+                            <div class="lam-stat"><span class="lab">Tours</span><span class="val" id="lamStatTurns">-</span></div>
+                            <div class="lam-stat"><span class="lab">Rayon trajectoire</span><span class="val" id="lamStatRadius">-</span></div>
+                            <div class="lam-stat"><span class="lab">Temps estime</span><span class="val" id="lamStatTime">-</span></div>
+                        </div>
+                        <div class="btn-actions">
+                            <button class="btn btn-primary" onclick="generateLamageGcode()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                                Generer G-code
+                            </button>
+                            <button class="btn btn-success" onclick="openLamage3DSimulation()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                                Visu 3D
+                            </button>
+                        </div>
+                        <div class="fg" style="margin-top:10px;">
+                            <label>G-code genere</label>
+                            <textarea class="lam-gcode" id="lamGcode" readonly placeholder="Cliquez sur Generer G-code..."></textarea>
+                        </div>
+                        <div class="btn-actions">
+                            <button class="btn btn-success" onclick="sendLamageToCNC()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                Envoyer CNC
+                            </button>
+                            <button class="btn btn-warn" onclick="downloadLamageGcode()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                Telecharger .nc
+                            </button>
+                            <button class="btn" onclick="copyLamageGcode(this)">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                Copier
+                            </button>
+                        </div>
+                        <details class="probe-tutorial">
+                            <summary>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                                Comment utiliser le lamage helicoidal
+                            </summary>
+                            <ol>
+                                <li>Placez la <strong>fraise au centre</strong> du lamage souhaite (origine X0 Y0 du repere actif)</li>
+                                <li>Z0 = surface superieure de la piece</li>
+                                <li>Selectionnez la <strong>fraise</strong> (le diametre est utilise pour calculer le rayon de trajectoire)</li>
+                                <li>Saisissez le <strong>diametre</strong> et la <strong>profondeur</strong> du lamage</li>
+                                <li>La <strong>profondeur par tour</strong> determine la pente helicoidale (0.3 a 1.0 mm typique)</li>
+                                <li>Si <strong>Avance</strong> ou <strong>RPM</strong> = 0, les valeurs de la table outils sont utilisees</li>
+                                <li>Cliquez <strong>Generer G-code</strong> puis <strong>Visu 3D</strong> pour controle, enfin <strong>Envoyer CNC</strong></li>
+                            </ol>
+                            <p style="margin-top:8px; font-size:0.7rem;">La trajectoire est une <strong>helice descendante</strong> (G3) suivie d'un cercle de finition au fond. La passe de finition optionnelle ajoute un dernier tour a la cote.</p>
+                        </details>
+                    </div>
+                </details>
+            </div>
+
+            <!-- ==================== COLONNE DROITE : Statut temps réel ==================== -->
+            <div>
+                <!-- Mini DRO -->
+                <div class="probe-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+                        Position Machine
+                    </h2>
+                    <div class="probe-dro-bar">
+                        <div class="probe-dro-axis x"><span class="axis-lbl">X</span><span class="axis-val" id="probeDroX">0.000</span></div>
+                        <div class="probe-dro-axis y"><span class="axis-lbl">Y</span><span class="axis-val" id="probeDroY">0.000</span></div>
+                        <div class="probe-dro-axis z"><span class="axis-lbl">Z</span><span class="axis-val" id="probeDroZ">0.000</span></div>
+                    </div>
+                </div>
+
+                <!-- Dernier PRB -->
+                <div class="probe-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                        Dernier Palpage
+                    </h2>
+                    <div class="prb-result" id="prbResultDisplay">Aucun palpage effectue</div>
+                </div>
+
+                <!-- Progression Macro -->
+                <div class="probe-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+                        Progression
+                    </h2>
+                    <div class="macro-progress" id="macroProgressArea">
+                        <div class="macro-progress-bar" id="macroProgressBar"></div>
+                        <div class="macro-status-text" id="macroStatusText">En attente</div>
+                    </div>
+                    <!-- Bouton ARRET global -->
+                    <div style="margin-top:8px;">
+                        <button class="btn btn-danger" id="btnGlobalAbort" onclick="abortProbeMacro()" style="width:100%;justify-content:center;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                            ARRETER LA MACRO
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Resultat calcul -->
+                <div class="probe-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        Dernier Resultat
+                    </h2>
+                    <div class="prb-result" id="calcResultDisplay">Aucun calcul</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== MODAL VISU 3D LAMAGE ==================== -->
+    <div class="lamviz-overlay" id="lamVizModal">
+        <div class="lamviz-modal">
+            <div class="lamviz-header">
+                <h2>Simulation 3D - Lamage helicoidal</h2>
+                <div class="lamviz-header-actions">
+                    <button class="btn" id="lamVizIso" title="Vue isometrique">Iso</button>
+                    <button class="btn" id="lamVizTop" title="Vue de dessus">Dessus</button>
+                    <button class="btn btn-danger btn-close-x" id="lamVizCloseX" title="Quitter la Visu 3D" aria-label="Quitter">✕</button>
+                </div>
+            </div>
+            <div class="lamviz-body" id="lamVizCanvas">
+                <div class="lamviz-info">Tour <span id="lamVizTurn">0 / 0</span></div>
+                <div class="lamviz-legend">
+                    <span style="color:#c8a06a">■ Plaque</span>
+                    <span style="color:#d6d6e0">● Outil</span>
+                    <span style="color:#ffaa00">··· Approche G0</span>
+                    <span style="color:#00d9ff">● Trajectoire usinage</span>
+                    <span style="color:#ff5555">— X</span>
+                    <span style="color:#55ff55">— Y</span>
+                    <span style="color:#66aaff">— Z</span>
+                    <span style="color:#ffaa00">● Zero machine</span>
+                    <span style="color:#00ff88">● Zero piece</span>
+                </div>
+            </div>
+            <div class="lamviz-toolbar">
+                <button class="btn btn-success" id="lamVizPlay"  title="Demarrer / reprendre la simulation">▶ Lire</button>
+                <button class="btn btn-warn"    id="lamVizPause" title="Mettre la simulation en pause">◼ Stop</button>
+                <button class="btn"             id="lamVizReset" title="Revenir au debut">⏮ Debut</button>
+                <span class="lamviz-speed">
+                    Vitesse
+                    <input type="range" id="lamVizSpeed" min="0.25" max="5" step="0.05" value="1">
+                    <span class="speed-val" id="lamVizSpeedVal">1.00x</span>
+                </span>
+                <button class="btn btn-danger" id="lamVizClose" title="Fermer la Visu 3D">✕ Quitter</button>
+                <div class="lamviz-progressbar"><div class="lamviz-progress" id="lamVizProgress"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+    <script>
+    // ============================================================
+    //  PAGE PALPAGE & LAMAGE
+    // ============================================================
+
+    // --- Etat local ---
+    let selectedCorner = null;
+    let currentMacroSteps = 0;
+
+    // --- Initialisation ---
+    document.addEventListener('DOMContentLoaded', async function() {
+        // Charger la config du palpeur et verifier si elle est vide
+        await fetchProbeConfig();
+        if (probeConfig.ball_diameter === 0 && probeConfig.offset_x === 0 &&
+            probeConfig.offset_y === 0 && probeConfig.offset_z === 0) {
+            document.getElementById('probeWarnModal').classList.add('active');
+        }
+        // Animation GSAP
+        if (typeof gsap !== 'undefined') {
+            gsap.from('.probe-card', { y: 12, opacity: 0, duration: 0.35, stagger: 0.1, ease: 'power2.out' });
+        }
+    });
+
+    function closeProbeWarn() {
+        document.getElementById('probeWarnModal').classList.remove('active');
+    }
+
+    // --- Notification ---
+    function notify(msg, type) {
+        var el = document.getElementById('notification');
+        if (!el) return;
+        el.textContent = msg;
+        el.className = 'notification ' + type + ' show';
+        setTimeout(function() { el.classList.remove('show'); }, 2500);
+    }
+
+    // --- Indicateur de connexion WebSocket ---
+    function updateWsIndicator(connected) {
+        var bar = document.getElementById('wsStatusBar');
+        var led = document.getElementById('wsLed');
+        var lbl = document.getElementById('wsLabel');
+        if (!bar || !led || !lbl) return;
+        if (connected) {
+            bar.style.background = 'rgba(0,255,136,0.12)';
+            bar.style.borderColor = 'rgba(0,255,136,0.4)';
+            bar.style.color = '#00ff88';
+            led.style.background = '#00ff88';
+            lbl.textContent = 'WS Connecte';
+        } else {
+            bar.style.background = 'rgba(255,51,51,0.12)';
+            bar.style.borderColor = 'rgba(255,51,51,0.3)';
+            bar.style.color = '#ff6666';
+            led.style.background = '#ff4444';
+            lbl.textContent = 'WS Deconnecte';
+        }
+    }
+
+    // Enregistrer le handler d'etat WebSocket
+    (function initWsIndicator() {
+        // Etat initial
+        if (typeof cncConnected !== 'undefined' && cncConnected) {
+            updateWsIndicator(true);
+        }
+        // Handler pour changements d'etat
+        if (typeof window.addCncSocketStateHandler === 'function') {
+            window.addCncSocketStateHandler(function(connected) {
+                updateWsIndicator(connected);
+            });
+        }
+    })();
+
+    // Rafraichir le DRO avec les donnees de main.js
+    // Source de vérité : window.workPosition (WPos = position pièce, WCS courant)
+    // exposée par main.js. Mise à jour toutes les 200 ms (le heartbeat WS
+    // est de 250 ms côté main.js, on suit la même cadence).
+    setInterval(function() {
+        var wp = window.workPosition;
+        if (!wp) return;
+        var elX = document.getElementById('probeDroX');
+        var elY = document.getElementById('probeDroY');
+        var elZ = document.getElementById('probeDroZ');
+        var x = (typeof wp.X === 'number' && !isNaN(wp.X)) ? wp.X : 0;
+        var y = (typeof wp.Y === 'number' && !isNaN(wp.Y)) ? wp.Y : 0;
+        var z = (typeof wp.Z === 'number' && !isNaN(wp.Z)) ? wp.Z : 0;
+        if (elX) elX.textContent = x.toFixed(3);
+        if (elY) elY.textContent = y.toFixed(3);
+        if (elZ) elZ.textContent = z.toFixed(3);
+    }, 200);
+
+    // --- Affichage du dernier PRB ---
+    setInterval(function() {
+        if (typeof _lastProbeResult !== 'undefined' && _lastProbeResult) {
+            var el = document.getElementById('prbResultDisplay');
+            if (el) {
+                if (_lastProbeResult.success) {
+                    el.innerHTML = '<span class="prb-val">X: ' + _lastProbeResult.x.toFixed(3) +
+                        '  Y: ' + _lastProbeResult.y.toFixed(3) +
+                        '  Z: ' + _lastProbeResult.z.toFixed(3) + '</span>';
+                } else {
+                    el.innerHTML = '<span class="prb-fail">Echec - pas de contact</span>';
+                }
+            }
+        }
+    }, 300);
+
+    // ============================================================
+    //  BARRE DE PROGRESSION MACRO
+    // ============================================================
+    function updateMacroProgress(step, total) {
+        currentMacroSteps = total;
+        var bar = document.getElementById('macroProgressBar');
+        var text = document.getElementById('macroStatusText');
+        if (!bar || !text) return;
+
+        if (total === 0) {
+            // Reset
+            bar.innerHTML = '';
+            text.textContent = 'En attente';
+            text.className = 'macro-status-text';
+            return;
+        }
+
+        // Construire les dots si pas encore faits ou si le nombre a change
+        if (bar.children.length !== total * 2 - 1) {
+            var html = '';
+            for (var i = 0; i < total; i++) {
+                if (i > 0) html += '<div class="macro-step-line"></div>';
+                html += '<div class="macro-step-dot" data-step="' + (i + 1) + '">' + (i + 1) + '</div>';
+            }
+            bar.innerHTML = html;
+        }
+
+        // Mettre a jour les etats
+        var dots = bar.querySelectorAll('.macro-step-dot');
+        var lines = bar.querySelectorAll('.macro-step-line');
+        for (var j = 0; j < dots.length; j++) {
+            var n = j + 1;
+            dots[j].classList.remove('active', 'done', 'error');
+            if (n < step) dots[j].classList.add('done');
+            else if (n === step) dots[j].classList.add('active');
+        }
+        for (var k = 0; k < lines.length; k++) {
+            lines[k].classList.remove('done');
+            if (k < step - 1) lines[k].classList.add('done');
+        }
+
+        text.textContent = 'Etape ' + step + ' / ' + total;
+        text.className = 'macro-status-text running';
+    }
+
+    function setMacroDone(success) {
+        var bar = document.getElementById('macroProgressBar');
+        var text = document.getElementById('macroStatusText');
+        if (!text) return;
+        if (success) {
+            text.textContent = 'Termine avec succes';
+            text.className = 'macro-status-text done';
+            var dots = bar.querySelectorAll('.macro-step-dot');
+            dots.forEach(function(d) { d.classList.remove('active', 'error'); d.classList.add('done'); });
+            var lines = bar.querySelectorAll('.macro-step-line');
+            lines.forEach(function(l) { l.classList.add('done'); });
+        } else {
+            text.textContent = 'Interrompu / Erreur';
+            text.className = 'macro-status-text error';
+        }
+    }
+
+    // ============================================================
+    //  SELECTION DE COIN
+    // ============================================================
+    var CORNER_MAP = {
+        'BL': { probeX: 'X-', probeY: 'Y-', signX: -1, signY: -1 },
+        'BR': { probeX: 'X+', probeY: 'Y-', signX:  1, signY: -1 },
+        'TL': { probeX: 'X-', probeY: 'Y+', signX: -1, signY:  1 },
+        'TR': { probeX: 'X+', probeY: 'Y+', signX:  1, signY:  1 }
+    };
+
+    function selectCorner(id) {
+        selectedCorner = id;
+        document.querySelectorAll('.corner-btn').forEach(function(b) {
+            b.classList.toggle('selected', b.getAttribute('data-corner') === id);
+        });
+        document.getElementById('btnCornerAuto').disabled = false;
+    }
+
+    // ============================================================
+    //  MACRO : RECHERCHE DE CENTRE
+    // ============================================================
+    async function runCenterMacro() {
+        if (typeof _probeMacroRunning !== 'undefined' && _probeMacroRunning) return;
+
+        var holeDiam = parseFloat(document.getElementById('centerHoleDiam').value) || 20;
+        var coordSys = parseInt(document.getElementById('cornerCoordSys').value) || 1;
+        var fastFeed = parseInt(document.getElementById('centerFastSpeed').value) || 200;
+        var slowFeed = parseInt(document.getElementById('centerSlowSpeed').value) || 30;
+
+        // Distance d'approche : rayon du trou - rayon bille - marge
+        var ballRadius = (probeConfig.ball_diameter || 0) / 2;
+        var approach = Math.max(holeDiam / 2 - ballRadius - 1, 2);
+
+        // Verifier connexion
+        if (typeof cncSocket === 'undefined' || !cncSocket || cncSocket.readyState !== WebSocket.OPEN) {
+            notify('WebSocket non connecte', 'error');
+            return;
+        }
+
+        // UI : mode running
+        document.getElementById('btnCenterAuto').style.display = 'none';
+        document.getElementById('btnAbortCenter').style.display = '';
+        disableAllManualBtns(true);
+
+        var X1, X2, Y1, Y2;
+
+        var steps = [
+            // Etape 1 : Palper X- rapide
+            async function() {
+                var prb = await sendProbeCommand('G91 G38.2 X-' + approach.toFixed(3) + ' F' + fastFeed);
+                if (!prb.success) throw 'Pas de contact X- (rapide)';
+                X1 = prb.x;
+            },
+            // Etape 2 : Retract 1mm + Palper X- lent
+            async function() {
+                await sendMoveCommand('G91 G1 X1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 X-2 F' + slowFeed);
+                if (!prb.success) throw 'Pas de contact X- (lent)';
+                X1 = prb.x;
+            },
+            // Etape 3 : Retract + Palper X+ rapide
+            async function() {
+                await sendMoveCommand('G91 G1 X1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 X' + (approach * 2).toFixed(3) + ' F' + fastFeed);
+                if (!prb.success) throw 'Pas de contact X+ (rapide)';
+                X2 = prb.x;
+            },
+            // Etape 4 : Retract + Palper X+ lent
+            async function() {
+                await sendMoveCommand('G91 G1 X-1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 X+2 F' + slowFeed);
+                if (!prb.success) throw 'Pas de contact X+ (lent)';
+                X2 = prb.x;
+            },
+            // Etape 5 : Retract + Palper Y- rapide
+            async function() {
+                await sendMoveCommand('G91 G1 X1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 Y-' + approach.toFixed(3) + ' F' + fastFeed);
+                if (!prb.success) throw 'Pas de contact Y- (rapide)';
+                Y1 = prb.y;
+            },
+            // Etape 6 : Retract + Palper Y- lent
+            async function() {
+                await sendMoveCommand('G91 G1 Y1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 Y-2 F' + slowFeed);
+                if (!prb.success) throw 'Pas de contact Y- (lent)';
+                Y1 = prb.y;
+            },
+            // Etape 7 : Retract + Palper Y+ rapide
+            async function() {
+                await sendMoveCommand('G91 G1 Y-1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 Y' + (approach * 2).toFixed(3) + ' F' + fastFeed);
+                if (!prb.success) throw 'Pas de contact Y+ (rapide)';
+                Y2 = prb.y;
+            },
+            // Etape 8 : Retract + Palper Y+ lent + Calcul + Application
+            async function() {
+                await sendMoveCommand('G91 G1 Y-1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 Y+2 F' + slowFeed);
+                if (!prb.success) throw 'Pas de contact Y+ (lent)';
+                Y2 = prb.y;
+            }
+        ];
+
+        try {
+            await runProbeMacro(steps);
+
+            // Calcul du centre (coordonnees machine)
+            var centerX = (X1 + X2) / 2 + (probeConfig.offset_x || 0);
+            var centerY = (Y1 + Y2) / 2 + (probeConfig.offset_y || 0);
+
+            // Appliquer dans le repere
+            await sendMoveCommand('G90');
+            await sendMoveCommand('G10 L2 P' + coordSys + ' X' + centerX.toFixed(4) + ' Y' + centerY.toFixed(4));
+            await sendMoveCommand('G5' + (3 + coordSys)); // G54, G55, G56, G57
+
+            // Afficher le resultat
+            var calcEl = document.getElementById('calcResultDisplay');
+            if (calcEl) {
+                calcEl.innerHTML = '<span class="prb-val">Centre : X=' + centerX.toFixed(4) + '  Y=' + centerY.toFixed(4) +
+                    '</span><br><span style="font-size:0.68rem;color:var(--text-secondary);">Ecrit dans G5' + (3 + coordSys) +
+                    ' | X1=' + X1.toFixed(3) + ' X2=' + X2.toFixed(3) +
+                    ' Y1=' + Y1.toFixed(3) + ' Y2=' + Y2.toFixed(3) + '</span>';
+            }
+            setMacroDone(true);
+            notify('Centre trouve et applique', 'success');
+        } catch (e) {
+            setMacroDone(false);
+            notify('Macro centre : ' + e, 'error');
+        }
+
+        // Retablir UI
+        document.getElementById('btnCenterAuto').style.display = '';
+        document.getElementById('btnAbortCenter').style.display = 'none';
+        disableAllManualBtns(false);
+    }
+
+    // ============================================================
+    //  MACRO : PALPAGE DE COIN
+    // ============================================================
+    async function runCornerMacro() {
+        if (typeof _probeMacroRunning !== 'undefined' && _probeMacroRunning) return;
+        if (!selectedCorner) { notify('Selectionnez un coin', 'error'); return; }
+
+        var travel = parseFloat(document.getElementById('cornerTravel').value) || 50;
+        var coordSys = parseInt(document.getElementById('cornerCoordSys').value) || 1;
+        var fastFeed = parseInt(document.getElementById('cornerFastSpeed').value) || 200;
+        var slowFeed = parseInt(document.getElementById('cornerSlowSpeed').value) || 30;
+
+        var c = CORNER_MAP[selectedCorner];
+        var dirX = c.probeX === 'X+' ? '+' : '-';
+        var dirY = c.probeY === 'Y+' ? '+' : '-';
+
+        // Verifier connexion
+        if (typeof cncSocket === 'undefined' || !cncSocket || cncSocket.readyState !== WebSocket.OPEN) {
+            notify('WebSocket non connecte', 'error');
+            return;
+        }
+
+        // UI : mode running
+        document.getElementById('btnCornerAuto').style.display = 'none';
+        document.getElementById('btnAbortCorner').style.display = '';
+        disableAllManualBtns(true);
+
+        var X_contact, Y_contact;
+
+        var steps = [
+            // Etape 1 : Palper X rapide
+            async function() {
+                var prb = await sendProbeCommand('G91 G38.2 X' + dirX + travel.toFixed(3) + ' F' + fastFeed);
+                if (!prb.success) throw 'Pas de contact X' + dirX + ' (rapide)';
+                X_contact = prb.x;
+            },
+            // Etape 2 : Retract + Palper X lent
+            async function() {
+                await sendMoveCommand('G91 G1 X' + (dirX === '+' ? '-' : '+') + '1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 X' + dirX + '2 F' + slowFeed);
+                if (!prb.success) throw 'Pas de contact X' + dirX + ' (lent)';
+                X_contact = prb.x;
+            },
+            // Etape 3 : Retract + Palper Y rapide
+            async function() {
+                await sendMoveCommand('G91 G1 X' + (dirX === '+' ? '-' : '+') + '1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 Y' + dirY + travel.toFixed(3) + ' F' + fastFeed);
+                if (!prb.success) throw 'Pas de contact Y' + dirY + ' (rapide)';
+                Y_contact = prb.y;
+            },
+            // Etape 4 : Retract + Palper Y lent + Calcul + Application
+            async function() {
+                await sendMoveCommand('G91 G1 Y' + (dirY === '+' ? '-' : '+') + '1 F' + fastFeed);
+                var prb = await sendProbeCommand('G91 G38.2 Y' + dirY + '2 F' + slowFeed);
+                if (!prb.success) throw 'Pas de contact Y' + dirY + ' (lent)';
+                Y_contact = prb.y;
+            }
+        ];
+
+        try {
+            await runProbeMacro(steps);
+
+            // Calcul du coin (coordonnees machine)
+            var ballRadius = (probeConfig.ball_diameter || 0) / 2;
+            var cornerX = X_contact + (probeConfig.offset_x || 0) + (c.signX * ballRadius);
+            var cornerY = Y_contact + (probeConfig.offset_y || 0) + (c.signY * ballRadius);
+
+            // Appliquer dans le repere
+            await sendMoveCommand('G90');
+            await sendMoveCommand('G10 L2 P' + coordSys + ' X' + cornerX.toFixed(4) + ' Y' + cornerY.toFixed(4));
+            await sendMoveCommand('G5' + (3 + coordSys));
+
+            // Afficher le resultat
+            var calcEl = document.getElementById('calcResultDisplay');
+            if (calcEl) {
+                calcEl.innerHTML = '<span class="prb-val">Coin : X=' + cornerX.toFixed(4) + '  Y=' + cornerY.toFixed(4) +
+                    '</span><br><span style="font-size:0.68rem;color:var(--text-secondary);">Ecrit dans G5' + (3 + coordSys) +
+                    ' | Xc=' + X_contact.toFixed(3) + ' Yc=' + Y_contact.toFixed(3) +
+                    ' | bille=' + ballRadius.toFixed(2) + ' signX=' + c.signX + ' signY=' + c.signY + '</span>';
+            }
+            setMacroDone(true);
+            notify('Coin trouve et applique', 'success');
+        } catch (e) {
+            setMacroDone(false);
+            notify('Macro coin : ' + e, 'error');
+        }
+
+        // Retablir UI
+        document.getElementById('btnCornerAuto').style.display = '';
+        document.getElementById('btnAbortCorner').style.display = 'none';
+        disableAllManualBtns(false);
+    }
+
+    // ============================================================
+    //  PALPAGE MANUEL (un seul G38.2 par clic)
+    // ============================================================
+    async function manualProbe(direction) {
+        if (typeof _probeMacroRunning !== 'undefined' && _probeMacroRunning) return;
+        if (typeof cncSocket === 'undefined' || !cncSocket || cncSocket.readyState !== WebSocket.OPEN) {
+            notify('WebSocket non connecte', 'error');
+            return;
+        }
+        var fastFeed = parseInt(document.getElementById('centerFastSpeed').value) || 200;
+        var travel = 50; // course par defaut pour mode manuel
+
+        var axis = direction.charAt(0); // X ou Y
+        var sign = direction.charAt(1); // + ou -
+
+        disableAllManualBtns(true);
+        try {
+            var prb = await sendProbeCommand('G91 G38.2 ' + axis + sign + travel + ' F' + fastFeed);
+            if (prb.success) {
+                notify('Contact ' + direction + ' : ' + axis + '=' + prb[axis.toLowerCase()].toFixed(3), 'success');
+            } else {
+                notify('Pas de contact ' + direction, 'error');
+            }
+        } catch (e) {
+            notify('Erreur palpage : ' + e, 'error');
+        }
+        disableAllManualBtns(false);
+    }
+
+    // ============================================================
+    //  UTILITAIRES UI
+    // ============================================================
+    function disableAllManualBtns(disabled) {
+        var btns = document.querySelectorAll('.manual-probe-btn, #btnCenterAuto, #btnCornerAuto');
+        btns.forEach(function(b) { b.disabled = disabled; });
+    }
+
+    // ============================================================
+    //  ============ LAMAGE HELICOIDAL ============
+    // ============================================================
+    let lamTools = [];
+    let lamGeneratedGcode = '';
+    let lamLastParams = null;
+
+    async function loadLamageTools() {
+        try {
+            const r = await fetch('/api/tools');
+            const data = await r.json();
+            lamTools = Array.isArray(data) ? data : [];
+            const sel = document.getElementById('lamTool');
+            if (!sel) return;
+            sel.innerHTML = '<option value="">-- Selectionner --</option>';
+            lamTools.forEach(function(t) {
+                sel.innerHTML += '<option value="' + t.id + '">T' + (t.num_t || 0) + ' - ' + (t.nom || 'Sans nom') + ' (D' + (t.diametre || 0) + ')</option>';
+            });
+            if (lamTools.length > 0) { sel.value = lamTools[0].id; updateLamToolInfo(); }
+        } catch (e) {}
+    }
+
+    function updateLamToolInfo() {
+        const id = parseInt(document.getElementById('lamTool').value);
+        const t = lamTools.find(function(x) { return x.id === id; });
+        document.getElementById('lamToolDiam').textContent = t ? parseFloat(t.diametre || 0).toFixed(2) + ' mm' : '-';
+        document.getElementById('lamToolFz').textContent   = t ? (t.avance_ebauche || t.avance_z || 0) + ' mm/min' : '-';
+        document.getElementById('lamToolRpm').textContent  = t ? (t.vitesse_broche || 0) + ' RPM' : '-';
+        recomputeLamageStats();
+    }
+
+    function getLamSelectedTool() {
+        const id = parseInt(document.getElementById('lamTool').value);
+        return lamTools.find(function(x) { return x.id === id; }) || null;
+    }
+
+    function formatLamTime(min) {
+        if (!isFinite(min) || min < 0) return '-';
+        const sec = Math.round(min * 60);
+        if (sec < 60) return sec + ' s';
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        if (m < 60) return m + ' min ' + (s < 10 ? '0' : '') + s + ' s';
+        const h = Math.floor(m / 60);
+        const mm = m % 60;
+        return h + ' h ' + (mm < 10 ? '0' : '') + mm + ' min';
+    }
+
+    function recomputeLamageStats() {
+        const tool = getLamSelectedTool();
+        const D    = parseFloat(document.getElementById('lamDiam').value) || 0;
+        const dpth = parseFloat(document.getElementById('lamDepth').value) || 0;
+        const pitch= parseFloat(document.getElementById('lamPitch').value) || 0;
+        const finish = document.getElementById('lamFinish').checked;
+        const feedOv = parseFloat(document.getElementById('lamFeed').value) || 0;
+
+        if (!tool || D <= 0 || dpth <= 0 || pitch <= 0) {
+            document.getElementById('lamStatTurns').textContent = '-';
+            document.getElementById('lamStatRadius').textContent = '-';
+            document.getElementById('lamStatTime').textContent = '-';
+            return;
+        }
+        const d = parseFloat(tool.diametre) || 0;
+        if (d <= 0 || d >= D) {
+            document.getElementById('lamStatTurns').textContent = '-';
+            document.getElementById('lamStatRadius').textContent = 'erreur outil';
+            document.getElementById('lamStatTime').textContent = '-';
+            return;
+        }
+        const R = (D - d) / 2;
+        const turns = Math.ceil(dpth / pitch);
+        const turnLen = Math.sqrt(Math.pow(2 * Math.PI * R, 2) + Math.pow(pitch, 2));
+        const helixLen = turnLen * turns;
+        const finishLen = finish ? (2 * Math.PI * R) : 0;
+        const bottomLen = (2 * Math.PI * R);
+
+        const feed = feedOv > 0 ? feedOv : (parseFloat(tool.avance_ebauche) || parseFloat(tool.avance_z) || 300);
+        const feedFinish = parseFloat(tool.avance_finition) || feed * 0.6;
+        let timeMin = (helixLen + bottomLen) / feed;
+        if (finish) timeMin += finishLen / feedFinish;
+        timeMin += 0.1;
+
+        document.getElementById('lamStatTurns').textContent = turns + (finish ? ' + fin.' : '');
+        document.getElementById('lamStatRadius').textContent = R.toFixed(2) + ' mm';
+        document.getElementById('lamStatTime').textContent = formatLamTime(timeMin);
+    }
+
+    function generateLamageGcode() {
+        const tool = getLamSelectedTool();
+        if (!tool) { notify('Selectionnez un outil', 'error'); return; }
+        const D     = parseFloat(document.getElementById('lamDiam').value) || 0;
+        const dpth  = parseFloat(document.getElementById('lamDepth').value) || 0;
+        const pitch = parseFloat(document.getElementById('lamPitch').value) || 0;
+        const zSafe = parseFloat(document.getElementById('lamZSafe').value) || 5;
+        const finish = document.getElementById('lamFinish').checked;
+        const feedOv = parseFloat(document.getElementById('lamFeed').value) || 0;
+        const rpmOv  = parseInt(document.getElementById('lamRpm').value) || 0;
+        const wcsSelEl = document.getElementById('lamCoordSys');
+        const wcsP   = wcsSelEl ? (parseInt(wcsSelEl.value) || 4) : 4;
+        const wcsCmd = 'G' + (53 + wcsP); // P1->G54, P2->G55, P3->G56, P4->G57
+
+        const d = parseFloat(tool.diametre) || 0;
+        if (d <= 0) { notify('Diametre outil invalide', 'error'); return; }
+        if (D <= d) { notify('Diametre lamage doit etre > diametre outil', 'error'); return; }
+        if (dpth <= 0) { notify('Profondeur invalide', 'error'); return; }
+        if (pitch <= 0) { notify('Profondeur par tour invalide', 'error'); return; }
+
+        const R = (D - d) / 2;
+        const feed = feedOv > 0 ? feedOv : (parseFloat(tool.avance_ebauche) || parseFloat(tool.avance_z) || 300);
+        const feedZ = parseFloat(tool.avance_z) || (feed * 0.5);
+        const feedFinish = parseFloat(tool.avance_finition) || (feed * 0.6);
+        const rpm  = rpmOv  > 0 ? rpmOv  : (parseInt(tool.vitesse_broche) || 12000);
+
+        const turns = Math.ceil(dpth / pitch);
+        const lines = [];
+        const stamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+        lines.push('(== LAMAGE HELICOIDAL - BOBCNC ==)');
+        lines.push('(Genere le ' + stamp + ')');
+        lines.push('(Outil  : T' + (tool.num_t || 0) + ' - ' + (tool.nom || '') + ')');
+        lines.push('(Diam outil   : ' + d.toFixed(2) + ' mm)');
+        lines.push('(Diam lamage  : ' + D.toFixed(2) + ' mm)');
+        lines.push('(Profondeur   : ' + dpth.toFixed(2) + ' mm)');
+        lines.push('(Pas/tour     : ' + pitch.toFixed(3) + ' mm)');
+        lines.push('(Tours helice : ' + turns + ')');
+        lines.push('(Rayon traj.  : ' + R.toFixed(3) + ' mm)');
+        lines.push('(Avance       : ' + feed + ' mm/min)');
+        lines.push('(Broche       : ' + rpm + ' RPM)');
+        lines.push('(Finition     : ' + (finish ? 'OUI' : 'NON') + ')');
+        lines.push('(Repere       : ' + wcsCmd + ')');
+        lines.push('(Origine X0 Y0 Z0 = centre lamage / surface piece)');
+        lines.push('');
+        lines.push('G90 G21 G17 G94 ' + wcsCmd);
+        lines.push('G10 L20 P' + wcsP + ' Z0');
+        lines.push('T' + (tool.num_t || 1) + ' M6');
+        lines.push('G0 Z' + zSafe.toFixed(3));
+        lines.push('M3 S' + rpm);
+        lines.push('G4 P2.0');
+        lines.push('G0 X' + R.toFixed(4) + ' Y0.0000');
+        lines.push('G0 Z1.000');
+        lines.push('G1 Z0.000 F' + feedZ.toFixed(0));
+        lines.push('');
+        lines.push('(--- Helice descendante ---)');
+        let zCurr = 0;
+        for (let i = 1; i <= turns; i++) {
+            zCurr = -Math.min(i * pitch, dpth);
+            lines.push('G3 X' + R.toFixed(4) + ' Y0.0000 I' + (-R).toFixed(4) + ' J0.0000 Z' + zCurr.toFixed(4) + ' F' + feed.toFixed(0));
+        }
+        lines.push('');
+        lines.push('(--- Cercle de planage au fond ---)');
+        lines.push('G3 X' + R.toFixed(4) + ' Y0.0000 I' + (-R).toFixed(4) + ' J0.0000 F' + feed.toFixed(0));
+        if (finish) {
+            lines.push('');
+            lines.push('(--- Passe de finition ---)');
+            lines.push('G3 X' + R.toFixed(4) + ' Y0.0000 I' + (-R).toFixed(4) + ' J0.0000 F' + feedFinish.toFixed(0));
+        }
+        lines.push('');
+        lines.push('(--- Retraction ---)');
+        lines.push('G1 X0.0000 Y0.0000 F' + feed.toFixed(0));
+        lines.push('G0 Z' + zSafe.toFixed(3));
+        lines.push('M5');
+        lines.push('M2');
+
+        lamGeneratedGcode = wrapWithStartEndGcode(lines.join('\n'));
+        document.getElementById('lamGcode').value = lamGeneratedGcode;
+        lamLastParams = { D: D, d: d, depth: dpth, pitch: pitch, R: R, turns: turns, feed: feed, rpm: rpm, finish: finish, zSafe: zSafe };
+        recomputeLamageStats();
+        notify('G-code lamage genere (' + lines.length + ' lignes)', 'success');
+    }
+
+    function downloadLamageGcode() {
+        if (!lamGeneratedGcode) { notify('Generez d\'abord le G-code', 'error'); return; }
+        const blob = new Blob([lamGeneratedGcode], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'lamage_helico.nc';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        notify('Fichier telecharge', 'success');
+    }
+
+    function copyLamageGcode(btn) {
+        if (!lamGeneratedGcode) { notify('Generez d\'abord le G-code', 'error'); return; }
+        navigator.clipboard.writeText(lamGeneratedGcode).then(function() {
+            const orig = btn.innerHTML;
+            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copie!';
+            setTimeout(function() { btn.innerHTML = orig; }, 1500);
+        }).catch(function() { notify('Echec copie', 'error'); });
+    }
+
+    function sendLamageToCNC() {
+        if (!lamGeneratedGcode) { notify('Generez d\'abord le G-code', 'error'); return; }
+        if (typeof cncConnected === 'undefined' || !cncConnected ||
+            typeof cncSocket === 'undefined' || !cncSocket || cncSocket.readyState !== WebSocket.OPEN) {
+            notify('WebSocket non connecte - attendez la connexion', 'error'); return;
+        }
+        const lines = lamGeneratedGcode.split('\n');
+        var cmds = [];
+        lines.forEach(function(line) {
+            var trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('(')) cmds.push(trimmed);
+        });
+        if (cmds.length === 0) { notify('Aucune commande a envoyer', 'error'); return; }
+        if (!confirm('Envoyer ' + cmds.length + ' commandes G-code a la CNC?\n\nVerifiez que la fraise est positionnee au centre du lamage, surface a Z0.')) return;
+        // Utilise sendCommand() de main.js (flow control avec queue et attente 'ok')
+        for (var i = 0; i < cmds.length; i++) {
+            sendCommand(cmds[i]);
+        }
+        notify('Envoi de ' + cmds.length + ' commandes (flow control actif)', 'success');
+    }
+
+    function openLamage3DSimulation() {
+        if (!lamGeneratedGcode || !lamLastParams) {
+            notify('Generez d\'abord le G-code', 'error');
+            return;
+        }
+        // Tenter de recuperer la position machine actuelle (depuis main.js)
+        // Le 'zero machine' represente l'offset entre l'origine machine (MPos=0,0,0)
+        // et l'origine piece (WCS courant). Si MPos est connu et qu'on travaille
+        // a WPos = 0, alors offset_visu = -MPos (le zero machine est a -MPos par
+        // rapport au zero piece).
+        // Source de vérité : window.machinePosition (alimente par parseMachineStatus).
+        let mOffset = null;
+        try {
+            var mp = window.machinePosition;
+            if (mp && typeof mp.X === 'number' && typeof mp.Y === 'number' && typeof mp.Z === 'number') {
+                mOffset = {
+                    x: -(mp.X || 0),
+                    y: -(mp.Y || 0),
+                    z: -(mp.Z || 0)
+                };
+            }
+        } catch(e) { mOffset = null; }
+        function launch() {
+            window.openLamageVisualizer(lamLastParams, 'lamVizModal', 'lamVizCanvas', mOffset);
+        }
+        if (typeof window.openLamageVisualizer === 'function') {
+            launch();
+        } else {
+            window._onLamVizReady = launch;
+            notify('Chargement du moteur 3D...', 'info');
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        loadLamageTools();
+        const lf = document.getElementById('lamFinish');
+        if (lf) {
+            lf.addEventListener('change', function() {
+                document.getElementById('lamFinishLabel').textContent = this.checked ? 'OUI' : 'NON';
+                recomputeLamageStats();
+            });
+        }
+        ['lamDiam', 'lamDepth', 'lamPitch', 'lamFeed', 'lamRpm'].forEach(function(id) {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('input', recomputeLamageStats);
+        });
+        const lt = document.getElementById('lamTool');
+        if (lt) lt.addEventListener('change', updateLamToolInfo);
+        // Charger le z_safe depuis /api/config si dispo
+        fetch('/api/config').then(function(r) { return r.json(); }).then(function(c) {
+            if (c && c.z_safe) {
+                const z = document.getElementById('lamZSafe');
+                if (z && !z.dataset.userTouched) z.value = c.z_safe;
+            }
+        }).catch(function() {});
+        const zSafeEl = document.getElementById('lamZSafe');
+        if (zSafeEl) zSafeEl.addEventListener('input', function() { this.dataset.userTouched = '1'; });
+    });
+    </script>
+
+    <!-- ==================== MODULE THREE.JS POUR VISU 3D LAMAGE ==================== -->
+    <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls;
+    let toolMesh, plateMesh, helixLine, holeMesh, fondMesh;
+    let plateGroup = null;          // Groupe de la plaque (top trouee + bottom plein)
+    let approachLine = null;        // Ligne du trajet zero machine -> piece (orange)
+    let rulerGroup = null, machineGroup = null;
+    let helixPoints = [];
+    let approachCount = 0;          // Nombre de points d'approche au debut de helixPoints
+    let machineZeroVec = null;      // Position du zero machine dans la scene
+    let animIndex = 0;
+    let animPlaying = false;
+    let animSpeed = 1.0;
+    let animRAF = null;
+    let totalSegments = 0;
+    let currentParams = null;
+    let resizeObs = null;
+    let machineOffset = null;
+    let lastRemovedDepth = -1;
+
+    function computeMachineZero(p, mOffset) {
+        if (mOffset && (Math.abs(mOffset.x) > 0.01 || Math.abs(mOffset.y) > 0.01 || Math.abs(mOffset.z) > 0.01)) {
+            return new THREE.Vector3(mOffset.x, mOffset.y, mOffset.z);
+        }
+        // Offset pedagogique par defaut : coin arriere-gauche, surelevee
+        const halfMax = Math.max(p.D * 1.4, 25);
+        return new THREE.Vector3(-halfMax - 8, -halfMax - 8, (p.zSafe || 5) + 8);
+    }
+
+    function buildHelixPoints(p, mZero) {
+        const pts = [];
+        const segPerTurn = 64;
+        const totalTurns = p.turns;
+        const totalSeg = segPerTurn * totalTurns;
+        approachCount = 0;
+
+        // === PHASE 0 : Trajet zero machine -> point d'approche au-dessus de l'helice ===
+        if (mZero) {
+            const start = mZero.clone();
+            const aboveStart = new THREE.Vector3(p.R, 0, Math.max(p.zSafe || 5, 5));
+            const N = 50; // segments du deplacement rapide G0
+            for (let i = 0; i <= N; i++) {
+                const t = i / N;
+                pts.push(new THREE.Vector3(
+                    start.x + (aboveStart.x - start.x) * t,
+                    start.y + (aboveStart.y - start.y) * t,
+                    start.z + (aboveStart.z - start.z) * t
+                ));
+                approachCount++;
+            }
+            // Descente verticale d'approche du zSafe vers Z=0 au point de depart
+            const NZ = 18;
+            for (let i = 1; i <= NZ; i++) {
+                const t = i / NZ;
+                pts.push(new THREE.Vector3(p.R, 0, (p.zSafe || 5) * (1 - t)));
+                approachCount++;
+            }
+        } else {
+            pts.push(new THREE.Vector3(p.R, 0, 0));
+            approachCount = 1;
+        }
+
+        // === PHASE 1 : Helice descendante ===
+        for (let i = 0; i <= totalSeg; i++) {
+            const a = (i / segPerTurn) * Math.PI * 2;
+            const z = -Math.min((i / segPerTurn) * p.pitch, p.depth);
+            const x = p.R * Math.cos(a);
+            const y = p.R * Math.sin(a);
+            pts.push(new THREE.Vector3(x, y, z));
+        }
+        // === PHASE 2 : Cercle de planage au fond ===
+        for (let i = 1; i <= segPerTurn; i++) {
+            const a = (i / segPerTurn) * Math.PI * 2;
+            const x = p.R * Math.cos(a);
+            const y = p.R * Math.sin(a);
+            pts.push(new THREE.Vector3(x, y, -p.depth));
+        }
+        // === PHASE 3 : Finition optionnelle (1 tour de plus) ===
+        if (p.finish) {
+            for (let i = 1; i <= segPerTurn; i++) {
+                const a = (i / segPerTurn) * Math.PI * 2;
+                const x = p.R * Math.cos(a);
+                const y = p.R * Math.sin(a);
+                pts.push(new THREE.Vector3(x, y, -p.depth));
+            }
+        }
+        return pts;
+    }
+
+    function buildScene(canvasEl, p) {
+        // Nettoyage
+        if (renderer) { try { renderer.dispose(); } catch(e){} }
+        canvasEl.querySelectorAll('canvas').forEach(function(c) { c.remove(); });
+
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x101418);
+
+        const w = canvasEl.clientWidth || 800;
+        const h = canvasEl.clientHeight || 600;
+        camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 2000);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(w, h);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        canvasEl.appendChild(renderer.domElement);
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controls.target.set(0, 0, -p.depth / 2);
+
+        // Lumieres
+        const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+        scene.add(ambient);
+        const dir = new THREE.DirectionalLight(0xffffff, 0.85);
+        dir.position.set(40, 60, 80);
+        scene.add(dir);
+        const dir2 = new THREE.DirectionalLight(0x88ccff, 0.4);
+        dir2.position.set(-40, -60, 40);
+        scene.add(dir2);
+
+        // === Calcul du zero machine ===
+        machineZeroVec = computeMachineZero(p, machineOffset);
+
+        // Plaque (carre de cote = 2.5*D) : groupe avec top trouee + bottom plein
+        const plateSize = Math.max(p.D * 2.5, 60);
+        const plateThickness = Math.max(p.depth * 1.5 + 5, 12);
+        const plateMat = new THREE.MeshStandardMaterial({ color: 0xc8a06a, roughness: 0.85, metalness: 0.05 });
+        if (plateGroup) { scene.remove(plateGroup); }
+        plateGroup = new THREE.Group();
+        plateGroup.userData = {
+            plateSize: plateSize,
+            plateThickness: plateThickness,
+            material: plateMat,
+            lastDepth: -1
+        };
+        scene.add(plateGroup);
+        plateMesh = plateGroup; // pour compat
+        // Construction initiale (plaque pleine, profondeur 0)
+        rebuildPlate(p, 0);
+
+        // Cercle bord superieur (visuel)
+        const ringGeom = new THREE.RingGeometry(p.D / 2 - 0.05, p.D / 2 + 0.05, 64);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x444a55, side: THREE.DoubleSide });
+        const ring = new THREE.Mesh(ringGeom, ringMat);
+        ring.position.set(0, 0, 0.05);
+        scene.add(ring);
+
+        // Cercle bord inferieur (fond) - DYNAMIQUE : suit la profondeur usinee
+        const fondGeom = new THREE.CircleGeometry(p.D / 2, 64);
+        const fondMat = new THREE.MeshStandardMaterial({ color: 0x3a4452, roughness: 0.7, metalness: 0.05 });
+        fondMesh = new THREE.Mesh(fondGeom, fondMat);
+        fondMesh.position.set(0, 0, -0.01);
+        fondMesh.visible = false;
+        scene.add(fondMesh);
+
+        // holeMesh n'est plus necessaire (la cavite est faite via la plaque trouee)
+        holeMesh = null;
+
+        // Reset profondeur de matiere enlevee
+        lastRemovedDepth = -1;
+
+        // Regle millimetree (graduations X, Y, Z)
+        if (rulerGroup) { scene.remove(rulerGroup); }
+        rulerGroup = buildRuler(p);
+        scene.add(rulerGroup);
+
+        // Trajet zero machine -> zero piece (offset WCS)
+        if (machineGroup) { scene.remove(machineGroup); }
+        machineGroup = buildMachineZeroArrow(p, machineOffset);
+        scene.add(machineGroup);
+
+        // === Trajectoire complete (avec phase d'approche depuis zero machine) ===
+        helixPoints = buildHelixPoints(p, machineZeroVec);
+
+        // Trajectoire d'approche en orange (du zero machine vers point de depart)
+        if (approachLine) { scene.remove(approachLine); }
+        if (approachCount > 1) {
+            const approachPts = helixPoints.slice(0, approachCount);
+            const approachGeom = new THREE.BufferGeometry().setFromPoints(approachPts);
+            const approachMat = new THREE.LineDashedMaterial({ color: 0xffaa00, dashSize: 1.5, gapSize: 0.8, linewidth: 2 });
+            approachLine = new THREE.Line(approachGeom, approachMat);
+            approachLine.computeLineDistances();
+            scene.add(approachLine);
+        }
+
+        // Trajectoire d'usinage en cyan
+        const machinePts = helixPoints.slice(approachCount - 1);
+        const helixGeom = new THREE.BufferGeometry().setFromPoints(machinePts);
+        const helixMat = new THREE.LineBasicMaterial({ color: 0x00d9ff, linewidth: 2 });
+        helixLine = new THREE.Line(helixGeom, helixMat);
+        scene.add(helixLine);
+
+        // Outil cylindrique
+        const toolH = Math.max(p.depth * 2 + 10, 30);
+        const toolGeom = new THREE.CylinderGeometry(p.d / 2, p.d / 2, toolH, 32);
+        const toolMat = new THREE.MeshStandardMaterial({ color: 0xd6d6e0, metalness: 0.7, roughness: 0.25 });
+        toolMesh = new THREE.Mesh(toolGeom, toolMat);
+        toolMesh.rotation.x = Math.PI / 2;
+        scene.add(toolMesh);
+        // Petite pointe en bas de l'outil
+        const tipGeom = new THREE.ConeGeometry(p.d / 2, p.d * 0.3, 32);
+        const tipMat = new THREE.MeshStandardMaterial({ color: 0xff6633, metalness: 0.5, roughness: 0.4 });
+        const tipMesh = new THREE.Mesh(tipGeom, tipMat);
+        tipMesh.rotation.x = Math.PI;
+        tipMesh.position.set(0, 0, -p.d * 0.15);
+        toolMesh.add(tipMesh);
+
+        positionTool(0);
+
+        // Vue iso
+        setIsoView(p);
+
+        totalSegments = helixPoints.length - 1;
+        animIndex = 0;
+        updateProgressDisplay();
+    }
+
+    function positionTool(idx) {
+        if (!toolMesh || !helixPoints[idx]) return;
+        const pt = helixPoints[idx];
+        // L'outil se positionne avec sa base au point de coupe
+        const toolH = toolMesh.geometry.parameters.height;
+        toolMesh.position.set(pt.x, pt.y, pt.z + toolH / 2);
+    }
+
+    function setIsoView(p) {
+        const D = (p && p.D) || (currentParams && currentParams.D) || 30;
+        // Si on a un zero machine, agrandir la distance pour englober tout le trajet d'approche
+        let extra = 0;
+        if (machineZeroVec) {
+            extra = Math.max(Math.abs(machineZeroVec.x), Math.abs(machineZeroVec.y), machineZeroVec.z);
+        }
+        const dist = Math.max(D * 2.2, 80, extra * 1.6);
+        camera.position.set(dist, -dist, dist * 0.9);
+        camera.up.set(0, 0, 1);
+        camera.lookAt(0, 0, -((p && p.depth) || 5) / 2);
+        controls.target.set(0, 0, -((p && p.depth) || 5) / 2);
+        controls.update();
+    }
+
+    function setTopView(p) {
+        const D = (p && p.D) || (currentParams && currentParams.D) || 30;
+        let extra = 0;
+        if (machineZeroVec) {
+            extra = Math.max(Math.abs(machineZeroVec.x), Math.abs(machineZeroVec.y));
+        }
+        const dist = Math.max(D * 1.8, 60, extra * 1.6);
+        camera.position.set(0, 0, dist);
+        camera.up.set(0, 1, 0);
+        camera.lookAt(0, 0, 0);
+        controls.target.set(0, 0, 0);
+        controls.update();
+    }
+
+    function updateProgressDisplay() {
+        const pct = totalSegments > 0 ? (animIndex / totalSegments) * 100 : 0;
+        const bar = document.getElementById('lamVizProgress');
+        if (bar) bar.style.width = pct.toFixed(1) + '%';
+        const turnEl = document.getElementById('lamVizTurn');
+        if (turnEl && currentParams) {
+            // Phase d'approche : afficher "Approche"
+            if (animIndex < approachCount - 1) {
+                turnEl.textContent = 'Approche';
+                return;
+            }
+            const segPerTurn = 64;
+            const localIdx = Math.max(0, animIndex - (approachCount - 1));
+            const totalLamTurns = currentParams.turns + 1 + (currentParams.finish ? 1 : 0);
+            const curTurn = Math.min(Math.floor(localIdx / segPerTurn) + 1, totalLamTurns);
+            turnEl.textContent = curTurn + ' / ' + totalLamTurns;
+        }
+    }
+
+    function animLoop() {
+        animRAF = requestAnimationFrame(animLoop);
+        if (animPlaying && animIndex < totalSegments) {
+            animIndex += animSpeed;
+            if (animIndex > totalSegments) animIndex = totalSegments;
+            positionTool(Math.floor(animIndex));
+            updateProgressDisplay();
+            if (animIndex >= totalSegments) animPlaying = false;
+        }
+        // Mise a jour de l'enlevement progressif de matiere a chaque frame
+        updateMaterialRemoval(currentParams, Math.floor(animIndex));
+        if (controls) controls.update();
+        if (renderer && scene && camera) renderer.render(scene, camera);
+    }
+
+    function bindLamVizUI() {
+        const $ = function(id) { return document.getElementById(id); };
+        $('lamVizPlay').onclick  = function() { if (animIndex >= totalSegments) animIndex = 0; animPlaying = true; };
+        $('lamVizPause').onclick = function() { animPlaying = false; };
+        $('lamVizReset').onclick = function() { animIndex = 0; animPlaying = false; positionTool(0); updateProgressDisplay(); };
+        $('lamVizIso').onclick   = function() { setIsoView(currentParams); };
+        $('lamVizTop').onclick   = function() { setTopView(currentParams); };
+        $('lamVizClose').onclick = closeLamViz;
+        $('lamVizCloseX').onclick= closeLamViz;
+        const sp = $('lamVizSpeed');
+        sp.oninput = function() { animSpeed = parseFloat(this.value); $('lamVizSpeedVal').textContent = animSpeed.toFixed(2) + 'x'; };
+    }
+
+    function closeLamViz() {
+        const ov = document.getElementById('lamVizModal');
+        if (ov) ov.classList.remove('active');
+        animPlaying = false;
+        if (animRAF) { cancelAnimationFrame(animRAF); animRAF = null; }
+        if (resizeObs) { try { resizeObs.disconnect(); } catch(e){} resizeObs = null; }
+    }
+
+    function onResize() {
+        const canvasEl = document.getElementById('lamVizCanvas');
+        if (!canvasEl || !renderer || !camera) return;
+        const w = canvasEl.clientWidth, h = canvasEl.clientHeight;
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+    }
+
+    // ==================== ENLEVEMENT PROGRESSIF DE MATIERE ====================
+    // Reconstruit la plaque comme 2 couches : top (avec trou cylindrique de hauteur=currentDepth) + bottom (pleine)
+    function rebuildPlate(p, currentDepth) {
+        if (!plateGroup) return;
+        // Throttle : reconstruire seulement si delta >= 0.25 mm OU profondeur extreme (0 ou max)
+        const lastD = plateGroup.userData.lastDepth;
+        const isExtreme = (currentDepth < 0.02) || (currentDepth >= p.depth - 0.02);
+        const wasExtreme = (lastD < 0.02) || (lastD >= p.depth - 0.02);
+        if (!isExtreme && !wasExtreme && Math.abs(currentDepth - lastD) < 0.25) return;
+        plateGroup.userData.lastDepth = currentDepth;
+
+        // Vider le groupe et liberer la memoire des geometries precedentes
+        while (plateGroup.children.length) {
+            const c = plateGroup.children[0];
+            plateGroup.remove(c);
+            if (c.geometry) { try { c.geometry.dispose(); } catch(e){} }
+        }
+
+        const ps = plateGroup.userData.plateSize;
+        const pt = plateGroup.userData.plateThickness;
+        const mat = plateGroup.userData.material;
+
+        // Bottom : couche pleine sous la cavite
+        const remaining = pt - currentDepth;
+        if (remaining > 0.01) {
+            const botGeom = new THREE.BoxGeometry(ps, ps, remaining);
+            const botMesh = new THREE.Mesh(botGeom, mat);
+            botMesh.position.set(0, 0, -currentDepth - remaining / 2);
+            plateGroup.add(botMesh);
+        }
+
+        // Top : couche avec trou cylindrique central, hauteur = currentDepth
+        if (currentDepth > 0.01) {
+            const shape = new THREE.Shape();
+            shape.moveTo(-ps / 2, -ps / 2);
+            shape.lineTo(ps / 2, -ps / 2);
+            shape.lineTo(ps / 2, ps / 2);
+            shape.lineTo(-ps / 2, ps / 2);
+            shape.lineTo(-ps / 2, -ps / 2);
+            const hole = new THREE.Path();
+            hole.absarc(0, 0, p.D / 2, 0, Math.PI * 2, true);
+            shape.holes.push(hole);
+            const topGeom = new THREE.ExtrudeGeometry(shape, {
+                depth: currentDepth,
+                bevelEnabled: false,
+                curveSegments: 48
+            });
+            // ExtrudeGeometry extrude depuis Z=0 vers Z=+depth.
+            // On positionne le mesh a Z=-currentDepth pour que la base soit a -currentDepth et le sommet a 0.
+            const topMesh = new THREE.Mesh(topGeom, mat);
+            topMesh.position.set(0, 0, -currentDepth);
+            plateGroup.add(topMesh);
+        }
+    }
+
+    function updateMaterialRemoval(p, idx) {
+        if (!p || !helixPoints.length) return;
+        // Profondeur courante : Z minimal atteint par l'outil entre [approachCount-1, idx]
+        // (on n'enleve pas de matiere pendant la phase d'approche)
+        let zMin = 0;
+        const startIdx = Math.max(0, approachCount - 1);
+        const limit = Math.min(idx, helixPoints.length - 1);
+        for (let i = startIdx; i <= limit; i++) {
+            if (helixPoints[i].z < zMin) zMin = helixPoints[i].z;
+        }
+        const currentDepth = Math.min(-zMin, p.depth);
+
+        // Reconstruire la plaque trouee si la profondeur a change
+        rebuildPlate(p, currentDepth);
+
+        // Mise a jour du fond de cavite (ne s'affiche qu'apres le debut de l'usinage)
+        if (fondMesh) {
+            if (currentDepth < 0.02) {
+                fondMesh.visible = false;
+            } else {
+                fondMesh.visible = true;
+                fondMesh.position.set(0, 0, -currentDepth - 0.01);
+            }
+        }
+        lastRemovedDepth = currentDepth;
+    }
+
+    // ==================== ETIQUETTE TEXTUELLE (sprite SANS cadre) ====================
+    function makeLabel(text, position, colorHex, scale) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, 128, 64);
+        // Pas de fond, pas de cadre : juste le texte avec contour noir pour lisibilite
+        ctx.font = 'bold 30px Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        // Contour noir epais pour lisibilite sur tout fond
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+        ctx.lineJoin = 'round';
+        ctx.miterLimit = 2;
+        ctx.strokeText(text, 64, 34);
+        // Texte colore par-dessus
+        ctx.fillStyle = '#' + ((colorHex || 0xffffff) >>> 0).toString(16).padStart(6, '0');
+        ctx.fillText(text, 64, 34);
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
+        sprite.position.copy(position);
+        const s = scale || 1.0;
+        sprite.scale.set(6 * s, 3 * s, 1);
+        sprite.renderOrder = 999;
+        return sprite;
+    }
+
+    // ==================== REGLE MILLIMETREE ====================
+    function buildRuler(p) {
+        const grp = new THREE.Group();
+        const halfMax = Math.max(p.D * 1.4, 25);
+        const step = halfMax > 40 ? 10 : 5;   // graduation principale
+        const halfStep = step / 2;
+
+        const matAxisX = new THREE.LineBasicMaterial({ color: 0xff5555 });
+        const matAxisY = new THREE.LineBasicMaterial({ color: 0x55ff55 });
+        const matAxisZ = new THREE.LineBasicMaterial({ color: 0x66aaff });
+        const matTick  = new THREE.LineBasicMaterial({ color: 0x888888 });
+        const matTickMid = new THREE.LineBasicMaterial({ color: 0xbbbbbb });
+
+        // Axe X (rouge) - leve de 0.06 pour passer au-dessus de la plaque
+        const zAx = 0.06;
+        grp.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-halfMax, 0, zAx), new THREE.Vector3(halfMax, 0, zAx)]),
+            matAxisX));
+        // Axe Y (vert)
+        grp.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -halfMax, zAx), new THREE.Vector3(0, halfMax, zAx)]),
+            matAxisY));
+        // Axe Z (bleu) du dessus de la plaque vers fond + zSafe
+        const zTop = (p.zSafe || 5) + 2;
+        const zBot = -p.depth - 3;
+        grp.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, zTop), new THREE.Vector3(0, 0, zBot)]),
+            matAxisZ));
+
+        // Graduations X et Y - tous les 1 mm
+        for (let v = -Math.floor(halfMax); v <= Math.floor(halfMax); v++) {
+            if (v === 0) continue;
+            const isMain = (v % step === 0);
+            const isMid  = (v % halfStep === 0);
+            const len = isMain ? 1.8 : (isMid ? 1.0 : 0.4);
+            const mat = isMain ? matTickMid : matTick;
+            // Tick X (vers Y negatif)
+            grp.add(new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(v, 0, zAx), new THREE.Vector3(v, -len, zAx)]),
+                mat));
+            // Tick Y (vers X negatif)
+            grp.add(new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, v, zAx), new THREE.Vector3(-len, v, zAx)]),
+                mat));
+            if (isMain) {
+                grp.add(makeLabel(v + '', new THREE.Vector3(v, -3.5, zAx + 0.5), 0xff8888, 0.55));
+                grp.add(makeLabel(v + '', new THREE.Vector3(-3.5, v, zAx + 0.5), 0x88ff88, 0.55));
+            }
+        }
+
+        // Graduations Z - tous les 1 mm
+        for (let z = Math.ceil(zBot); z <= Math.floor(zTop); z++) {
+            if (z === 0) continue;
+            const isMain = (z % step === 0) || (Math.abs(z) === Math.floor(p.depth));
+            const isMid  = (z % halfStep === 0);
+            const len = isMain ? 1.5 : (isMid ? 0.8 : 0.3);
+            const mat = isMain ? matTickMid : matTick;
+            grp.add(new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, z), new THREE.Vector3(len, 0, z)]),
+                mat));
+            if (isMain) {
+                grp.add(makeLabel('Z' + z, new THREE.Vector3(4.5, 0, z), 0x88bbff, 0.5));
+            }
+        }
+
+        // Etiquettes axes
+        grp.add(makeLabel('X+', new THREE.Vector3(halfMax + 2.5, 0, zAx), 0xff5555, 0.7));
+        grp.add(makeLabel('Y+', new THREE.Vector3(0, halfMax + 2.5, zAx), 0x55ff55, 0.7));
+        grp.add(makeLabel('Z+', new THREE.Vector3(0, 0, zTop + 2), 0x66aaff, 0.7));
+        // Origine piece
+        grp.add(makeLabel('0,0,0', new THREE.Vector3(2, 2, zAx + 0.3), 0xffff66, 0.55));
+
+        return grp;
+    }
+
+    // ==================== TRAJET ZERO MACHINE -> ZERO PIECE ====================
+    function buildMachineZeroArrow(p, mOffset) {
+        const grp = new THREE.Group();
+        // Si pas d'offset connu, utiliser un offset pedagogique arbitraire
+        // visualisant le concept (coin arriere-gauche au-dessus de la plaque)
+        let off;
+        if (mOffset && (Math.abs(mOffset.x) > 0.01 || Math.abs(mOffset.y) > 0.01 || Math.abs(mOffset.z) > 0.01)) {
+            off = { x: mOffset.x, y: mOffset.y, z: mOffset.z };
+        } else {
+            const halfMax = Math.max(p.D * 1.4, 25);
+            off = { x: -halfMax - 8, y: -halfMax - 8, z: (p.zSafe || 5) + 8 };
+        }
+        const machineZero = new THREE.Vector3(off.x, off.y, off.z);
+        const pieceZero = new THREE.Vector3(0, 0, 0);
+
+        // Sphere 'Zero machine' (orange)
+        const sphM = new THREE.Mesh(
+            new THREE.SphereGeometry(1.4, 20, 16),
+            new THREE.MeshBasicMaterial({ color: 0xffaa00 }));
+        sphM.position.copy(machineZero);
+        grp.add(sphM);
+
+        // Petite croix sur le zero machine
+        const crossMat = new THREE.LineBasicMaterial({ color: 0xffaa00 });
+        grp.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(machineZero.x - 3, machineZero.y, machineZero.z),
+                new THREE.Vector3(machineZero.x + 3, machineZero.y, machineZero.z)]),
+            crossMat));
+        grp.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(machineZero.x, machineZero.y - 3, machineZero.z),
+                new THREE.Vector3(machineZero.x, machineZero.y + 3, machineZero.z)]),
+            crossMat));
+
+        // Sphere 'Zero piece' (vert)
+        const sphP = new THREE.Mesh(
+            new THREE.SphereGeometry(1.1, 20, 16),
+            new THREE.MeshBasicMaterial({ color: 0x00ff88 }));
+        sphP.position.copy(pieceZero);
+        grp.add(sphP);
+
+        // Fleche 3D du zero machine vers le zero piece
+        const dir = new THREE.Vector3().subVectors(pieceZero, machineZero);
+        const len = dir.length();
+        if (len > 0.1) {
+            const arrow = new THREE.ArrowHelper(dir.clone().normalize(), machineZero, len, 0xffaa00, Math.min(len * 0.18, 4), Math.min(len * 0.09, 2.2));
+            grp.add(arrow);
+        }
+
+        // Etiquettes
+        grp.add(makeLabel('Zero Machine', new THREE.Vector3(machineZero.x, machineZero.y - 4, machineZero.z + 3.5), 0xffaa00, 0.65));
+        grp.add(makeLabel('Offset WCS (G54)', new THREE.Vector3(machineZero.x / 2, machineZero.y / 2, machineZero.z / 2 + 2.5), 0xffcc66, 0.6));
+        grp.add(makeLabel('Zero Piece', new THREE.Vector3(0, -4, 3.5), 0x00ff88, 0.6));
+
+        return grp;
+    }
+
+    window.openLamageVisualizer = function(params, overlayId, canvasId, mOffset) {
+        currentParams = params;
+        machineOffset = mOffset || null;
+        const ov = document.getElementById(overlayId);
+        const canvasEl = document.getElementById(canvasId);
+        if (!ov || !canvasEl) return;
+        ov.classList.add('active');
+
+        // Construire la scene apres affichage (pour mesurer le canvas)
+        setTimeout(function() {
+            buildScene(canvasEl, params);
+            bindLamVizUI();
+            if (resizeObs) { try { resizeObs.disconnect(); } catch(e){} }
+            resizeObs = new ResizeObserver(onResize);
+            resizeObs.observe(canvasEl);
+            window.addEventListener('resize', onResize);
+            if (animRAF) cancelAnimationFrame(animRAF);
+            animLoop();
+        }, 50);
+    };
+
+    // Si la page a deja appele openLamage3DSimulation avant le chargement du module
+    if (typeof window._onLamVizReady === 'function') {
+        const cb = window._onLamVizReady;
+        window._onLamVizReady = null;
+        setTimeout(cb, 0);
+    }
+    </script>
+
+    <!-- ==================== MODULE THREE.JS : ANIMATION D'AIDE PALPAGE ==================== -->
+    <!--
+      Mini-simulation 3D montrant le mouvement physique du palpeur.
+      - Scène unique partagée entre les deux types ('hole' et 'corner').
+      - rAF + GSAP timeline en boucle (yoyo:false, repeat:-1).
+      - cancelAnimationFrame() + timeline.kill() à la fermeture pour économiser CPU/batterie.
+    -->
+    <script type="module">
+    import * as THREE from 'three';
+
+    // État du module (singleton, lazy-init au 1er openProbeHelp)
+    const PH = {
+        initialized: false,
+        scene: null, camera: null, renderer: null,
+        tool: null,                     // Cylindre palpeur (rouge métallique)
+        toolBall: null,                 // Bille du palpeur (sphère cyan en bout)
+        plateGroup: null,               // Groupe contenant la pièce courante
+        rafId: null,                    // ID requestAnimationFrame
+        timeline: null,                 // GSAP timeline en cours
+        running: false,                 // True quand le popup est ouvert
+        currentType: null,              // 'hole' | 'corner'
+        captionEl: null
+    };
+
+    // Constantes géométriques (mm, mais purement visuel)
+    const TOOL_R = 1.4;
+    const TOOL_H = 22;
+    const BALL_R = 1.6;
+    const PLATE_W = 30, PLATE_D = 30, PLATE_H = 6;
+    const HOLE_R  = 7;
+
+    function initScene() {
+        if (PH.initialized) return true;
+        const cont = document.getElementById('probeSimContainer');
+        if (!cont) return false;
+
+        const w = cont.clientWidth || 300;
+        const h = cont.clientHeight || 300;
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0c1014);
+
+        // Caméra perspective légèrement isométrique
+        const camera = new THREE.PerspectiveCamera(38, w / h, 0.1, 200);
+        camera.position.set(38, 30, 38);
+        camera.lookAt(0, 2, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setSize(w, h);
+        cont.innerHTML = '';
+        cont.appendChild(renderer.domElement);
+
+        // Lumières : ambiante + key directionnelle + fill froid
+        scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+        const key = new THREE.DirectionalLight(0xffffff, 0.95);
+        key.position.set(20, 30, 15);
+        scene.add(key);
+        const fill = new THREE.DirectionalLight(0x88aaff, 0.35);
+        fill.position.set(-15, 12, -10);
+        scene.add(fill);
+
+        // Grille de sol douce
+        const grid = new THREE.GridHelper(60, 12, 0x2a3441, 0x1a2028);
+        grid.position.y = -PLATE_H - 0.01;
+        scene.add(grid);
+
+        // Outil palpeur : cylindre rouge métallique + bille cyan en bout
+        const toolMat  = new THREE.MeshStandardMaterial({ color: 0xd03030, metalness: 0.65, roughness: 0.3 });
+        const ballMat  = new THREE.MeshStandardMaterial({ color: 0x00d9ff, metalness: 0.4,  roughness: 0.25, emissive: 0x004055, emissiveIntensity: 0.4 });
+        const toolGeom = new THREE.CylinderGeometry(TOOL_R, TOOL_R, TOOL_H, 24);
+        const tool     = new THREE.Mesh(toolGeom, toolMat);
+        // Origine du Mesh = centre du cylindre. On veut que la pointe (bille) soit à tool.position.y
+        // donc on translate la géométrie pour que la base soit à y=0 dans le repère local.
+        toolGeom.translate(0, TOOL_H / 2 + BALL_R, 0);
+        const ball     = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 24, 16), ballMat);
+        ball.position.set(0, 0, 0);
+        const toolGroup = new THREE.Group();
+        toolGroup.add(tool);
+        toolGroup.add(ball);
+        scene.add(toolGroup);
+
+        PH.scene = scene;
+        PH.camera = camera;
+        PH.renderer = renderer;
+        PH.tool = toolGroup;
+        PH.toolBall = ball;
+        PH.captionEl = document.getElementById('probeHelpCaption');
+        PH.initialized = true;
+        return true;
+    }
+
+    function clearPlate() {
+        if (PH.plateGroup) {
+            PH.scene.remove(PH.plateGroup);
+            PH.plateGroup.traverse(function(o) {
+                if (o.geometry) o.geometry.dispose();
+                if (o.material) {
+                    if (Array.isArray(o.material)) o.material.forEach(function(m){m.dispose();});
+                    else o.material.dispose();
+                }
+            });
+            PH.plateGroup = null;
+        }
+    }
+
+    function buildHolePlate() {
+        // Plaque carrée bleue avec un trou cylindrique central
+        const shape = new THREE.Shape();
+        shape.moveTo(-PLATE_W / 2, -PLATE_D / 2);
+        shape.lineTo( PLATE_W / 2, -PLATE_D / 2);
+        shape.lineTo( PLATE_W / 2,  PLATE_D / 2);
+        shape.lineTo(-PLATE_W / 2,  PLATE_D / 2);
+        shape.lineTo(-PLATE_W / 2, -PLATE_D / 2);
+        const hole = new THREE.Path();
+        hole.absarc(0, 0, HOLE_R, 0, Math.PI * 2, false);
+        shape.holes.push(hole);
+
+        const geom = new THREE.ExtrudeGeometry(shape, { depth: PLATE_H, bevelEnabled: false, curveSegments: 36 });
+        // Extrude part de Z=0 vers Z=+PLATE_H. On veut le bloc avec sa face supérieure à Y=0.
+        geom.rotateX(-Math.PI / 2);             // Plan XY -> XZ (horizontal)
+        geom.translate(0, 0, 0);                // après rotation: top à Y=0, bottom à Y=-PLATE_H
+
+        const mat = new THREE.MeshStandardMaterial({ color: 0x3b6ea5, metalness: 0.15, roughness: 0.75 });
+        const plate = new THREE.Mesh(geom, mat);
+
+        // Bord du trou légèrement surligné pour mieux visualiser
+        const ringGeom = new THREE.TorusGeometry(HOLE_R, 0.18, 12, 64);
+        const ringMat = new THREE.MeshStandardMaterial({ color: 0x00d9ff, emissive: 0x00485a, emissiveIntensity: 0.5, metalness: 0.4, roughness: 0.4 });
+        const ring = new THREE.Mesh(ringGeom, ringMat);
+        ring.rotation.x = Math.PI / 2;
+        ring.position.y = 0.01;
+        const ringBot = ring.clone();
+        ringBot.position.y = -PLATE_H - 0.01;
+
+        const grp = new THREE.Group();
+        grp.add(plate);
+        grp.add(ring);
+        grp.add(ringBot);
+        return grp;
+    }
+
+    function buildCornerPlate() {
+        // Bloc cubique bleu, top à Y=0, coin avant-gauche à (X=-PLATE_W/2, Z=+PLATE_D/2)
+        const geom = new THREE.BoxGeometry(PLATE_W, PLATE_H, PLATE_D);
+        geom.translate(0, -PLATE_H / 2, 0);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x3b6ea5, metalness: 0.15, roughness: 0.75 });
+        const plate = new THREE.Mesh(geom, mat);
+
+        // Surligne le coin avant-gauche (X-, Z+) avec deux arêtes cyan
+        const edgeMat = new THREE.LineBasicMaterial({ color: 0x00d9ff });
+        const edgePoints = [
+            new THREE.Vector3(-PLATE_W / 2, 0.02,  PLATE_D / 2 + 0.01),
+            new THREE.Vector3( PLATE_W / 2 - 4, 0.02,  PLATE_D / 2 + 0.01),
+            new THREE.Vector3(-PLATE_W / 2 - 0.01, 0.02,  PLATE_D / 2),
+            new THREE.Vector3(-PLATE_W / 2 - 0.01, 0.02, -PLATE_D / 2 + 4)
+        ];
+        const edge1 = new THREE.BufferGeometry().setFromPoints([edgePoints[0], edgePoints[1]]);
+        const edge2 = new THREE.BufferGeometry().setFromPoints([edgePoints[2], edgePoints[3]]);
+
+        const grp = new THREE.Group();
+        grp.add(plate);
+        grp.add(new THREE.Line(edge1, edgeMat));
+        grp.add(new THREE.Line(edge2, edgeMat));
+        return grp;
+    }
+
+    // Séquence : palpage centre de trou (toolGroup.position est la POINTE = bille)
+    function buildHoleTimeline() {
+        const tl = gsap.timeline({ repeat: -1, defaults: { ease: 'power2.inOut' } });
+        const t = PH.tool.position;
+        // Position initiale : au-dessus du trou
+        gsap.set(t, { x: 0, y: 14, z: 0 });
+        const yIn = -PLATE_H / 2;     // profondeur de palpage à mi-hauteur de la plaque
+        const wallX = HOLE_R - BALL_R - 0.05;
+        const cap = function(text) {
+            return function() { if (PH.captionEl) PH.captionEl.innerHTML = text; };
+        };
+
+        tl.add(cap('<strong>1.</strong> Descente dans le trou')).to(t, { y: yIn, duration: 0.9 })
+          .add(cap('<strong>2.</strong> Palpage paroi <strong>X+</strong>')).to(t, { x:  wallX, duration: 0.7 })
+          .to(t, { x: 0, duration: 0.5 })
+          .add(cap('<strong>3.</strong> Palpage paroi <strong>X−</strong>')).to(t, { x: -wallX, duration: 0.7 })
+          .to(t, { x: 0, duration: 0.5 })
+          .add(cap('<strong>4.</strong> Palpage paroi <strong>Y+</strong>')).to(t, { z: -wallX, duration: 0.7 })
+          .to(t, { z: 0, duration: 0.5 })
+          .add(cap('<strong>5.</strong> Palpage paroi <strong>Y−</strong>')).to(t, { z:  wallX, duration: 0.7 })
+          .to(t, { z: 0, duration: 0.5 })
+          .add(cap('<strong>6.</strong> Remontée en sécurité')).to(t, { y: 14, duration: 0.8 })
+          .to({}, { duration: 0.6 });
+        return tl;
+    }
+
+    // Séquence : palpage coin avant-gauche (BL = X- / Y-)
+    function buildCornerTimeline() {
+        const tl = gsap.timeline({ repeat: -1, defaults: { ease: 'power2.inOut' } });
+        const t = PH.tool.position;
+        // Approche : extérieur à gauche-avant-haut.
+        // On part LARGE (« 12 mm hors du bord ») pour que la course de palpage
+        // soit bien visible à l'échelle du canvas 300×300.
+        const xStart = -PLATE_W / 2 - 12;
+        const zStart =  PLATE_D / 2 + 12;
+        const yUp    = 14;
+        const yProbe = -PLATE_H / 2;
+        const xWall  = -PLATE_W / 2 - BALL_R - 0.05;
+        const zWall  =  PLATE_D / 2 + BALL_R + 0.05;
+        gsap.set(t, { x: xStart, y: yUp, z: zStart });
+
+        const cap = function(text) {
+            return function() { if (PH.captionEl) PH.captionEl.innerHTML = text; };
+        };
+
+        tl.add(cap('<strong>1.</strong> Approche au coin avant-gauche')).to(t, { duration: 0.6 })
+          .add(cap('<strong>2.</strong> Descente Z')).to(t, { y: yProbe, duration: 0.9 })
+          .add(cap('<strong>3.</strong> Palpage <strong>X+</strong> jusqu’au bord gauche')).to(t, { x: xWall, duration: 1.0 })
+          .add(cap('Recul après contact')).to(t, { x: xStart, duration: 0.6 })
+          .add(cap('<strong>4.</strong> Palpage <strong>Y−</strong> jusqu’au bord avant')).to(t, { x: xStart + 4, z: zWall, duration: 1.0 })
+          .add(cap('Recul après contact')).to(t, { z: zStart, duration: 0.6 })
+          .add(cap('<strong>5.</strong> Remontée en sécurité')).to(t, { x: xStart, y: yUp, z: zStart, duration: 0.8 })
+          .to({}, { duration: 0.7 });
+        return tl;
+    }
+
+    function renderLoop() {
+        if (!PH.running) return;
+        // Légère rotation auto pour donner du relief (peut être désactivé si trop)
+        // PH.scene.rotation.y += 0.002;
+        PH.renderer.render(PH.scene, PH.camera);
+        PH.rafId = requestAnimationFrame(renderLoop);
+    }
+
+    function startSimulation(type) {
+        if (!initScene()) return;
+        // Resize au cas où le conteneur a changé (responsive)
+        const cont = document.getElementById('probeSimContainer');
+        const w = cont.clientWidth || 300, h = cont.clientHeight || 300;
+        PH.renderer.setSize(w, h, false);
+        PH.camera.aspect = w / h;
+        PH.camera.updateProjectionMatrix();
+
+        // Stoppe l'éventuelle timeline en cours
+        if (PH.timeline) { try { PH.timeline.kill(); } catch(e){} PH.timeline = null; }
+        clearPlate();
+
+        const titleEl = document.getElementById('probeHelpTitle');
+        if (type === 'hole') {
+            PH.plateGroup = buildHolePlate();
+            PH.scene.add(PH.plateGroup);
+            if (titleEl) titleEl.lastChild.textContent = ' Palpage de centre de trou';
+            // Cadrage centré sur le trou
+            PH.camera.position.set(38, 30, 38);
+            PH.camera.lookAt(0, 2, 0);
+            PH.timeline = buildHoleTimeline();
+        } else {
+            PH.plateGroup = buildCornerPlate();
+            PH.scene.add(PH.plateGroup);
+            if (titleEl) titleEl.lastChild.textContent = ' Palpage d’origine (coin avant-gauche)';
+            // Cadrage focalisé sur le coin avant-gauche (X=-15, Z=+15) :
+            // caméra placée en face de ce coin pour bien voir le mouvement
+            // d'approche X+ et Y- du palpeur.
+            PH.camera.position.set(-32, 26, 42);
+            PH.camera.lookAt(-10, -2, 12);
+            PH.timeline = buildCornerTimeline();
+        }
+        PH.camera.updateProjectionMatrix();
+        PH.currentType = type;
+        PH.running = true;
+        PH.timeline.play(0);
+        if (!PH.rafId) renderLoop();
+    }
+
+    function stopSimulation() {
+        PH.running = false;
+        if (PH.rafId) { cancelAnimationFrame(PH.rafId); PH.rafId = null; }
+        if (PH.timeline) { try { PH.timeline.pause(0); } catch(e){} }
+    }
+
+    // === API publique attachée à window pour les onclick HTML ===
+    window.openProbeHelp = function(type) {
+        const ov = document.getElementById('probeHelpPopup');
+        if (!ov) return;
+        ov.classList.add('active');
+        // Init / update après display:flex pour que clientWidth soit non nul
+        setTimeout(function() { startSimulation(type); }, 30);
+    };
+
+    window.closeProbeHelp = function() {
+        const ov = document.getElementById('probeHelpPopup');
+        if (ov) ov.classList.remove('active');
+        stopSimulation();
+    };
+
+    // Touche Échap pour fermer
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            const ov = document.getElementById('probeHelpPopup');
+            if (ov && ov.classList.contains('active')) window.closeProbeHelp();
+        }
+    });
+    </script>
+</body>
+</html>

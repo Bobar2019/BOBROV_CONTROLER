@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tableau de Bord - BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <!-- Police non-bloquante : charge en arrière-plan, fallback monospace si hors-ligne -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <!-- Contenu principal -->
+    <main class="index-container">
+        <header class="index-header">
+            <h1>TABLEAU DE BORD</h1>
+            <p>Sélectionnez une fonction pour commencer</p>
+        </header>
+
+        <!-- Barre d'édition pour le réagencement par glisser-déposer -->
+        <div class="dash-edit-bar">
+            <button id="btnEditDash" class="dash-edit-btn" type="button" aria-label="Réorganiser les tuiles">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
+                    <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+                    <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
+                </svg>
+                <span>Réorganiser</span>
+            </button>
+            <button id="btnSaveDash" class="dash-edit-btn dash-edit-save" type="button" style="display:none" aria-label="Terminer la réorganisation">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                <span>Terminer</span>
+            </button>
+            <span id="dashEditHint" class="dash-edit-hint" style="display:none">Glissez les tuiles pour réorganiser</span>
+        </div>
+
+        <nav class="nav-grid">
+            <a href="mobile.html" class="nav-tile" data-tile-id="mobile">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+                    <line x1="12" y1="18" x2="12" y2="18"/>
+                </svg>
+                <span>Mobile</span>
+            </a>
+            <a href="controle.html" class="nav-tile" data-tile-id="controle">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 6v6l4 2"/>
+                </svg>
+                <span>Contrôle</span>
+            </a>
+            <a href="percage.html" class="nav-tile" data-tile-id="percage">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2v20M2 12h20"/>
+                </svg>
+                <span>Perçage</span>
+            </a>
+            <a href="Palpage_Lamage.html" class="nav-tile" data-tile-id="lamage">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="8"/>
+                    <circle cx="12" cy="12" r="4"/>
+                </svg>
+                <span>Palpage & Lamage</span>
+            </a>
+            <a href="decoupe.html" class="nav-tile" data-tile-id="decoupe">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 3h12l-3 9h-6l-3-9z"/>
+                    <path d="M12 12v9"/>
+                </svg>
+                <span>Découpe</span>
+            </a>
+            <a href="surfacage.html" class="nav-tile" data-tile-id="surfacage">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <path d="M3 9h18"/>
+                </svg>
+                <span>Surfaçage</span>
+            </a>
+            <a href="poche.html" class="nav-tile" data-tile-id="poche">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="4" y="6" width="16" height="14" rx="2"/>
+                    <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                <span>Poche</span>
+            </a>
+            <a href="entrees_sorties.html" class="nav-tile" data-tile-id="entrees_sorties">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M9 14L4 9l5-5"/>
+                    <path d="M4 9h16"/>
+                    <path d="M15 10l5 5-5 5"/>
+                    <path d="M20 15H4"/>
+                </svg>
+                <span>Entrées/Sorties</span>
+            </a>
+            <a href="configuration.html" class="nav-tile" data-tile-id="configuration" style="position:relative;">
+                <span id="otaUpdateBadge" title="Mise à jour disponible" style="display:none; position:absolute; top:8px; right:8px; background:#ff3b30; color:#fff; font-size:0.65rem; font-weight:700; padding:2px 6px; border-radius:10px; box-shadow:0 0 8px rgba(255,59,48,0.7); letter-spacing:0.5px; z-index:2;">MAJ</span>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span>Configuration</span>
+            </a>
+            <a href="qrcode.html" class="nav-tile" data-tile-id="qrcode">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7"/>
+                    <rect x="14" y="3" width="7" height="7"/>
+                    <rect x="3" y="14" width="7" height="7"/>
+                    <path d="M14 14h7v7h-7z"/>
+                </svg>
+                <span>QR Code</span>
+            </a>
+            <a href="taquin.html" class="nav-tile" data-tile-id="taquin">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="3" height="3"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="3" height="3"/>
+                </svg>
+                <span>Taquin</span>
+            </a>
+            <a href="info.html" class="nav-tile" data-tile-id="info">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.9.4-1.5 1.2-1.5 2.2V14"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <span>Info</span>
+            </a>
+        </nav>
+    </main>
+    
+    <script src="main.js"></script>
+
+    <!-- Style du popup de bienvenue (animé) -->
+    <style>
+        #welcomeModal {
+            display:none; position:fixed; inset:0;
+            background:rgba(0,0,0,0.78); backdrop-filter:blur(8px);
+            z-index:600; align-items:center; justify-content:center;
+            animation: welcomeFadeIn 0.4s ease-out;
+        }
+        #welcomeModal.fade-out { animation: welcomeFadeOut 0.5s ease-in forwards; }
+        .welcome-card {
+            background:linear-gradient(135deg, #0d2436, #163450);
+            border:1px solid var(--accent-cyan, #00d9ff);
+            border-radius:16px; padding:32px 40px; text-align:center;
+            box-shadow:0 0 40px rgba(0, 217, 255, 0.4), 0 20px 60px rgba(0,0,0,0.5);
+            max-width:460px; width:90%;
+            transform:scale(0.7); opacity:0;
+            animation: welcomePop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s forwards;
+        }
+        .welcome-icon-ring {
+            width:80px; height:80px; margin:0 auto 18px;
+            border-radius:50%;
+            background:radial-gradient(circle, rgba(0,217,255,0.25) 0%, transparent 70%);
+            display:flex; align-items:center; justify-content:center;
+            position:relative;
+        }
+        .welcome-icon-ring::before, .welcome-icon-ring::after {
+            content:''; position:absolute; inset:-4px;
+            border:2px solid var(--accent-cyan, #00d9ff);
+            border-radius:50%; opacity:0;
+            animation: welcomeRing 1.6s ease-out infinite;
+        }
+        .welcome-icon-ring::after { animation-delay:0.8s; }
+        .welcome-icon-ring svg {
+            color:var(--accent-cyan, #00d9ff);
+            filter:drop-shadow(0 0 10px rgba(0,217,255,0.8));
+        }
+        .welcome-title {
+            color:var(--accent-cyan, #00d9ff);
+            font-family:'Source Code Pro', monospace;
+            font-size:1.4rem; font-weight:700;
+            margin:0 0 8px;
+            letter-spacing:1px;
+            text-shadow:0 0 12px rgba(0,217,255,0.6);
+        }
+        .welcome-subtitle {
+            color:var(--text-secondary, #b0b8c5);
+            font-size:0.9rem; margin:0 0 18px;
+            line-height:1.5;
+        }
+        .welcome-progress {
+            height:3px; width:100%;
+            background:rgba(0,217,255,0.15);
+            border-radius:2px; overflow:hidden;
+        }
+        .welcome-progress-bar {
+            height:100%; width:0;
+            background:linear-gradient(90deg, #00d9ff, #00ffaa);
+            box-shadow:0 0 10px rgba(0,217,255,0.6);
+            animation: welcomeProgress 3s linear forwards;
+        }
+        @keyframes welcomeFadeIn  { from{opacity:0;} to{opacity:1;} }
+        @keyframes welcomeFadeOut { from{opacity:1;} to{opacity:0;} }
+        @keyframes welcomePop {
+            0%   { transform:scale(0.7); opacity:0; }
+            60%  { transform:scale(1.05); opacity:1; }
+            100% { transform:scale(1); opacity:1; }
+        }
+        @keyframes welcomeRing {
+            0%   { transform:scale(0.8); opacity:0.8; }
+            100% { transform:scale(1.6); opacity:0; }
+        }
+        @keyframes welcomeProgress {
+            from { width:0; }
+            to   { width:100%; }
+        }
+    </style>
+
+    <!-- Modal : Bienvenue (3 sec, connexion FluidNC OK) -->
+    <div id="welcomeModal" role="dialog" aria-label="Bienvenue">
+        <div class="welcome-card">
+            <div class="welcome-icon-ring">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                    <polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+            </div>
+            <h2 class="welcome-title">Bienvenue sur BOBCNC</h2>
+            <p class="welcome-subtitle">
+                Liaison FluidNC <strong style="color:#00ffaa;">active</strong>.<br>
+                Système prêt à l'emploi.
+            </p>
+            <div class="welcome-progress"><div class="welcome-progress-bar"></div></div>
+        </div>
+    </div>
+
+    <!-- Modal : Pas de connexion FluidNC -->
+    <div id="noFluidModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.75); backdrop-filter:blur(6px); z-index:500; align-items:center; justify-content:center;">
+        <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:14px; max-width:440px; width:90%; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,0.5); text-align:center;">
+            <div style="margin-bottom:16px;">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ff6666" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+            </div>
+            <h2 style="color:#ff6666; font-size:1.1rem; margin-bottom:10px;">Pas de connexion a FluidNC</h2>
+            <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:20px; line-height:1.5;">
+                BOBCNC n'a pas detecte de liaison active avec FluidNC.<br>
+                Verifiez le cablage ou la configuration reseau.
+            </p>
+            <div style="display:flex; gap:10px; justify-content:center;">
+                <button onclick="document.getElementById('noFluidModal').style.display='none'" style="padding:10px 22px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg-card); color:var(--text-primary); font-family:'Source Code Pro',monospace; font-size:0.85rem; cursor:pointer;">NON</button>
+                <a href="configuration.html" style="padding:10px 22px; border:1px solid rgba(0,217,255,0.5); border-radius:8px; background:linear-gradient(135deg, rgba(0,217,255,0.2), rgba(0,217,255,0.08)); color:var(--accent-cyan); font-family:'Source Code Pro',monospace; font-size:0.85rem; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    OUI, ouvrir la configuration
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // Vérification de la connexion FluidNC au démarrage
+    (function() {
+        // Lire les préférences utilisateur (configuration.html)
+        function getWelcomePrefs() {
+            var enabled = localStorage.getItem('welcomeEnabled');
+            var duration = localStorage.getItem('welcomeDuration');
+            var en = (enabled === null) ? true : (enabled === '1' || enabled === 'true');
+            var dur = (duration === null) ? 3 : parseFloat(duration);
+            if (isNaN(dur) || dur < 0) dur = 0;
+            // Durée nulle => popup désactivée
+            if (dur === 0) en = false;
+            return { enabled: en, duration: dur };
+        }
+
+        function showWelcome() {
+            var prefs = getWelcomePrefs();
+            if (!prefs.enabled) return; // popup désactivée par l'utilisateur
+            var modal = document.getElementById('welcomeModal');
+            if (!modal) return;
+            // Synchroniser la durée de la barre de progression CSS avec la préférence
+            var bar = modal.querySelector('.welcome-progress-bar');
+            if (bar) bar.style.animationDuration = prefs.duration + 's';
+            modal.style.display = 'flex';
+            // Auto-fermeture après la durée configurée avec fondu
+            setTimeout(function() {
+                modal.classList.add('fade-out');
+                setTimeout(function() {
+                    modal.style.display = 'none';
+                    modal.classList.remove('fade-out');
+                }, 500);
+            }, prefs.duration * 1000);
+        }
+
+        // Délai de 1.5s pour laisser l'ESP32 répondre
+        setTimeout(function() {
+            var ctrl = new AbortController();
+            var tid = setTimeout(function() { ctrl.abort(); }, 5000);
+            fetch('/api/comm_status', { cache: 'no-store', signal: ctrl.signal })
+                .then(function(r) { return r.json(); })
+                .then(function(s) {
+                    clearTimeout(tid);
+                    if (!s.connected) {
+                        document.getElementById('noFluidModal').style.display = 'flex';
+                    } else {
+                        // Connexion OK -> popup de bienvenue (selon préférence)
+                        showWelcome();
+                    }
+                })
+                .catch(function() {
+                    clearTimeout(tid);
+                    // Si l'API ne répond pas -> pas de connexion
+                    document.getElementById('noFluidModal').style.display = 'flex';
+                });
+        }, 1500);
+
+        // Badge "MAJ" sur la tuile Configuration : interroge /api/ota/status.
+        // L'auto-check OTA côté firmware déclenche un GET version.json ~30 s
+        // après boot, donc on ré-interroge plusieurs fois pour rafraîchir.
+        function refreshOtaBadge() {
+            fetch('/api/ota/status', { cache: 'no-store' })
+                .then(function(r) { return r.json(); })
+                .then(function(s) {
+                    var b = document.getElementById('otaUpdateBadge');
+                    if (!b) return;
+                    b.style.display = (s && s.available) ? 'inline-block' : 'none';
+                })
+                .catch(function() { /* silencieux */ });
+        }
+        // 1er appel immédiat, puis ré-interrogation à 35 s (après l'auto-check
+        // boot du firmware) et toutes les 5 minutes ensuite.
+        setTimeout(refreshOtaBadge,  2000);
+        setTimeout(refreshOtaBadge, 35000);
+        setInterval(refreshOtaBadge, 5 * 60 * 1000);
+    })();
+    </script>
+</body>
+</html>

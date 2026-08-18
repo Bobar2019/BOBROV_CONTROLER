@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Info - BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .info-page {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 30px 22px 80px;
+        }
+
+        /* === LOGO HEADER === */
+        .info-logo-wrap {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 26px;
+            animation: infoLogoIn 0.7s ease-out;
+        }
+        .info-logo-wrap img {
+            max-width: 100%;
+            width: 360px;
+            height: auto;
+            border-radius: 14px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,217,255,0.15);
+            background: var(--bg-secondary);
+            padding: 8px;
+        }
+        @keyframes infoLogoIn {
+            from { opacity: 0; transform: translateY(-20px) scale(0.96); }
+            to   { opacity: 1; transform: translateY(0)     scale(1);    }
+        }
+
+        /* === TITLES === */
+        .info-title {
+            text-align: center;
+            font-size: 1.6rem;
+            color: var(--accent-cyan);
+            margin-bottom: 4px;
+            letter-spacing: 1.2px;
+        }
+        .info-subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 28px;
+        }
+
+        /* === CARDS === */
+        .info-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px 22px;
+            margin-bottom: 18px;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.25);
+        }
+        .info-card h2 {
+            color: var(--accent-cyan);
+            font-size: 1rem;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .info-card p {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            line-height: 1.55;
+            margin-bottom: 10px;
+        }
+        .info-card ul {
+            list-style: none;
+            padding: 0;
+            margin: 8px 0 0;
+        }
+        .info-card ul li {
+            position: relative;
+            padding: 6px 0 6px 24px;
+            color: var(--text-primary);
+            font-size: 0.88rem;
+            line-height: 1.5;
+            border-bottom: 1px dashed rgba(255,255,255,0.06);
+        }
+        .info-card ul li:last-child { border-bottom: none; }
+        .info-card ul li::before {
+            content: "▸";
+            position: absolute;
+            left: 4px;
+            top: 6px;
+            color: var(--accent-cyan);
+            font-size: 0.85rem;
+        }
+        .info-card strong { color: var(--accent-cyan); }
+
+        /* === DEV CARD (mise en avant) === */
+        .info-dev {
+            background: linear-gradient(135deg, rgba(0,217,255,0.10), rgba(0,217,255,0.02));
+            border: 1px solid rgba(0,217,255,0.35);
+            text-align: center;
+        }
+        .info-dev .dev-label {
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 6px;
+        }
+        .info-dev .dev-name {
+            font-size: 1.4rem;
+            color: var(--accent-cyan);
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+        .info-dev .dev-tag {
+            margin-top: 6px;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
+        .info-version {
+            text-align: center;
+            margin-top: 22px;
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            opacity: 0.7;
+            font-family: 'Source Code Pro', monospace;
+        }
+
+        @media (max-width: 600px) {
+            .info-logo-wrap img { width: 260px; }
+            .info-title { font-size: 1.3rem; }
+            .info-card { padding: 16px 14px; }
+        }
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <!-- Bouton retour fixe -->
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <main class="info-page">
+
+        <!-- Logo -->
+        <div class="info-logo-wrap">
+            <img src="logo_bobcnc_light.jpg" alt="Logo BOBCNC" loading="lazy" decoding="async">
+        </div>
+
+        <h1 class="info-title">BOBCNC</h1>
+        <p class="info-subtitle">Interface web embarquée pour fraiseuse CNC FluidNC</p>
+
+        <!-- Présentation générale -->
+        <div class="info-card">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                À propos de l'application
+            </h2>
+            <p>
+                <strong>BOBCNC</strong> est un boîtier électronique autonome basé sur un ESP32-S3
+                qui se connecte à un contrôleur <strong>FluidNC</strong> pour piloter une fraiseuse
+                CNC depuis n'importe quel navigateur (PC, tablette, smartphone).
+            </p>
+            <p>
+                L'interface web embarquée fournit un tableau de bord modulaire : chaque tuile
+                ouvre une fonction métier (perçage, palpage &amp; lamage hélicoïdal, découpe, surfaçage,
+                poche, QR Code 3D, Taquin, contrôle direct, gestion des E/S, configuration machine,
+                réseaux WiFi, mises à jour OTA, info développeur).
+            </p>
+        </div>
+
+        <!-- Fonctionnalités CNC -->
+        <div class="info-card">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                Contrôle CNC en temps réel
+            </h2>
+            <ul>
+                <li><strong>DRO temps réel</strong> X/Y/Z/A avec parsing robuste WPos/MPos (priorité WPos, fallback MPos, gestion NaN)</li>
+                <li><strong>Jog manuel</strong> : pad directionnel 3×3 (XY + diagonales), Z/A séparés, pas 0.1/1/10/100 mm, vitesse 100-5000 mm/min</li>
+                <li><strong>Terminal FluidNC</strong> avec déduplication des « ok » et copie presse-papiers</li>
+                <li><strong>Barre de sécurité fixe</strong> en glassmorphism : STOP (Hold + Soft Reset), Unlock, Reset système</li>
+                <li><strong>Effet d'alarme visuel</strong> : la page entière pulse en rouge quand FluidNC est en état Alarm</li>
+                <li><strong>Offsets G54-G57</strong> : lecture automatique au clic, bouton « Appliquer » qui copie la position DRO, popup de confirmation avant sauvegarde NVS</li>
+                <li><strong>GO TO sécurisé</strong> : séquence Z0 machine → XY offset → Z final, avec popup de confirmation</li>
+                <li><strong>Estimation temps</strong> d'usinage et indicateur d'origine pièce</li>
+            </ul>
+        </div>
+
+        <!-- Générateurs G-code -->
+        <div class="info-card">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
+                Générateurs de G-code intégrés
+            </h2>
+            <ul>
+                <li><strong>Perçage</strong> : grille de trous, débourrage par passes, détection chevauchement</li>
+                <li><strong>Palpage &amp; Lamage hélicoïdal</strong> : palpage Z/X/Y/coins (compensation rayon bille), <em>section accordéon</em> de lamage avec choix outil, diamètre, profondeur, pas hélicoïdal, finition optionnelle, stats temps réel (tours, rayon, durée)</li>
+                <li><strong>Découpe</strong> : contours rectangulaires/circulaires avec passes successives</li>
+                <li><strong>Surfaçage</strong> et <strong>Poche</strong> : balayage paramétrable</li>
+                <li><strong>QR Code 3D</strong> : génération matrice à partir d'un texte/URL/WiFi, conversion en perçages, vérifications limites machine</li>
+                <li><strong>Envoi G-code</strong> en streaming WebSocket ligne par ligne, téléchargement <code>.nc</code>, copie presse-papiers</li>
+            </ul>
+        </div>
+
+        <!-- Visualisations 3D -->
+        <div class="info-card">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                Visualisations 3D &amp; simulations
+            </h2>
+            <ul>
+                <li><strong>Simulateur CNC isométrique</strong> : modèle STL du bâti BATITCNC, parseur G-code multi-G-word (G0/G1/G2/G3), gestion des offsets G54-G57, animation transparente quand l'outil est masqué</li>
+                <li><strong>Visu 3D du lamage hélicoïdal</strong> : <em>enlèvement progressif de matière</em> (plaque réellement creusée via ExtrudeGeometry), règle millimétrée X/Y/Z, trajet d'approche pointillé du zéro machine vers le zéro pièce, animation de l'outil avec contrôles Play/Pause/Reset/Speed</li>
+                <li><strong>Visu 3D du Taquin</strong> : ventouse pick &amp; place Ø10 mm, rejoue la solution IDA*, succion verte/rouge, légende et progression</li>
+                <li><strong>Visu 3D QR Code</strong> : aperçu cellule par cellule de la matrice de perçage</li>
+            </ul>
+        </div>
+
+        <!-- Système & matériel -->
+        <div class="info-card">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/></svg>
+                Système &amp; périphériques
+            </h2>
+            <ul>
+                <li><strong>Tableau de bord réorganisable</strong> par glisser-déposer, mémorisé dans la NVS de l'ESP32</li>
+                <li><strong>Liaison FluidNC double</strong> : UART à 1 Mbaud (RX=2/TX=1) ou Telnet WiFi, avec bascule automatique et watchdog</li>
+                <li><strong>Pont série</strong> bidirectionnel UART1 ⇄ UART2 (FluidDial sur RX=42/TX=41) en pass-through non bloquant</li>
+                <li><strong>Écran e-Paper 2.7″ V2</strong> (driver GxEPD2_270_GDEY027T91) affichant état de connexion, IP et statut FluidNC</li>
+                <li><strong>LED RGB NeoPixel</strong> sur GPIO 48 : violet pulsé (E-STOP), bleu pulsé (WiFi), vert (UART1+2 OK), orange (FluidNC seul), cyan (FluidDial seul), rouge pulsé (silence)</li>
+                <li><strong>IOManager</strong> : éclairage GPIO 4 (M64/M65 P1), aspiration GPIO 5 (P2), E-STOP soft GPIO 6 avec verrouillage logiciel</li>
+                <li><strong>Base d'outils CSV</strong> 12 champs (id, num_t, nom, diamètre, longueur, dents, avances, RPM, angle, remarque) avec import/export</li>
+                <li><strong>ATC 6 slots</strong> : tableau de magasin, changement d'outil automatique, persistance CSV</li>
+                <li><strong>Multi-réseaux WiFi</strong> stockés dans <code>reseaux.json</code>, scan, mode AP de secours « BOBCNC_Setup », résolution mDNS <code>bobcnc.local</code></li>
+                <li><strong>Mises à jour OTA</strong> firmware et système de fichiers depuis le navigateur</li>
+                <li><strong>Mode Taquin</strong> : puzzle 3×3 résolu mécaniquement par la CNC avec ventouse pick &amp; place</li>
+            </ul>
+        </div>
+
+        <!-- Pile technique -->
+        <div class="info-card">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-7M14 17H7M9 7H4M20 17h-3M9 12h11"/></svg>
+                Architecture technique
+            </h2>
+            <ul>
+                <li>Microcontrôleur <strong>ESP32-S3</strong> (PlatformIO + Arduino framework)</li>
+                <li>Serveur web asynchrone (<strong>ESPAsyncWebServer</strong>) + <strong>WebSocket</strong> temps réel avec ré-assemblage robuste</li>
+                <li>Système de fichiers <strong>LittleFS</strong> pour l'interface embarquée (HTML/CSS/JS/CSV/STL)</li>
+                <li>Frontend HTML/CSS/JS vanilla avec <strong>GSAP</strong> et <strong>Three.js</strong> (importmap CDN, OrbitControls, ExtrudeGeometry, ArrowHelper)</li>
+                <li>Préférences persistantes (<strong>NVS</strong>) pour la configuration, les outils et les offsets G54-G57</li>
+                <li>Communication FluidNC en <strong>UART</strong> 1 Mbaud (Serial1) ou <strong>Telnet</strong> WiFi, avec watchdog 3 s</li>
+                <li>Pont matériel <strong>UART1 ⇄ UART2</strong> non bloquant pour FluidDial</li>
+                <li>Modules C++ : <code>main.cpp</code>, <code>WifiManager</code>, <code>IOManager</code>, <code>ToolManager</code>, <code>ATCManager</code>, <code>LedManager</code>, <code>DisplayManager</code>, <code>TelnetClient</code></li>
+            </ul>
+        </div>
+
+        <!-- Développeur -->
+        <div class="info-card info-dev">
+            <div class="dev-label">Développeur</div>
+            <div class="dev-name">Didier Dero</div>
+            <div class="dev-tag">Conception matérielle, firmware ESP32 et interface web</div>
+        </div>
+
+        <div class="info-version">
+            BOBCNC — Interface embarquée &copy; <span id="copyYear">2025</span>
+        </div>
+    </main>
+
+    <script>
+        // Année dynamique
+        document.getElementById('copyYear').textContent = new Date().getFullYear();
+    </script>
+</body>
+</html>

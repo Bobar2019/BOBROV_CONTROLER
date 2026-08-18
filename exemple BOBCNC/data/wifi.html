@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BOBCNC - Configuration WiFi</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: rgba(30, 30, 30, 0.9);
+            --text-color: #ffffff;
+            --accent-gradient: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
+            --border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+
+        /* --- Style du Titre BOBCNC (Identique au site) --- */
+        .brand-title {
+            font-size: 4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.3em;
+            margin-bottom: 10px;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 5px 15px rgba(58, 123, 213, 0.4));
+            text-align: center;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            margin-bottom: 40px;
+            text-align: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 450px;
+        }
+        
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #aaa;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* --- Liste des Réseaux --- */
+        .networks-list {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+
+        .network-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        .network-item:hover {
+            background: rgba(0, 210, 255, 0.1);
+        }
+
+        .network-item.selected {
+            background: rgba(0, 210, 255, 0.2);
+            border-left: 4px solid #00d2ff;
+        }
+
+        .network-info { flex: 1; }
+        .network-name { font-weight: 600; font-size: 14px; }
+        .network-security { font-size: 12px; color: #666; }
+
+        /* --- Formulaire --- */
+        .form-group { margin-bottom: 20px; }
+        .form-label { display: block; font-size: 12px; color: #888; margin-bottom: 8px; text-transform: uppercase; }
+        
+        .form-input {
+            width: 100%;
+            padding: 14px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .form-input:focus {
+            border-color: #00d2ff;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-primary {
+            background: var(--accent-gradient);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(58, 123, 213, 0.4);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: #aaa;
+            margin-top: 10px;
+        }
+
+        /* --- Status Messages --- */
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            display: none;
+            text-align: center;
+        }
+
+        .status.success { background: rgba(0, 255, 100, 0.1); color: #00ff64; border: 1px solid rgba(0, 255, 100, 0.2); }
+        .status.error { background: rgba(255, 0, 0, 0.1); color: #ff3c3c; border: 1px solid rgba(255, 0, 0, 0.2); }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        @media (max-width: 600px) {
+            .brand-title { font-size: 2.5rem; }
+        }
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <!-- BOUTON RETOUR (fixe haut-droite) -->
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height='22' viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <div class="brand-title">BOBCNC</div>
+    <div class="subtitle">Configuration Réseau</div>
+
+    <div class="container">
+        <div class="card">
+            <div class="section-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>
+                Réseaux WiFi à proximité
+            </div>
+            
+            <div class="networks-list" id="networksList">
+                <div class="network-item" style="justify-content: center; color: #666;">
+                    <div class="spinner"></div>
+                    <span style="margin-left: 12px;">Recherche...</span>
+                </div>
+            </div>
+            
+            <button class="btn btn-secondary" onclick="scanNetworks()">Actualiser</button>
+            
+            <form id="wifiForm" onsubmit="connectWifi(event)" style="margin-top: 30px;">
+                <div class="form-group">
+                    <label class="form-label">SSID (Nom du réseau)</label>
+                    <input type="text" class="form-input" id="ssid" placeholder="Sélectionnez un réseau haut dessus" required>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">Clé de sécurité</label>
+                    <input type="password" class="form-input" id="password" placeholder="Mot de passe">
+                </div>
+                
+                <button type="submit" class="btn btn-primary" id="btnConnect">Connexion</button>
+            </form>
+            
+            <div class="status" id="status"></div>
+        </div>
+    </div>
+
+    <script>
+        // Animation au chargement
+        gsap.from(".brand-title", { duration: 1.2, y: -30, opacity: 0, ease: "back.out(1.7)" });
+        gsap.from(".card", { duration: 1, opacity: 0, scale: 0.9, delay: 0.3 });
+
+        function scanNetworks() {
+            const list = document.getElementById('networksList');
+            list.innerHTML = '<div class="network-item" style="justify-content: center; color: #666;"><div class="spinner"></div><span style="margin-left: 12px;">Scan en cours...</span></div>';
+            
+            fetch('/scan')
+                .then(r => r.json())
+                .then(networks => {
+                    list.innerHTML = '';
+                    if (networks.length === 0) {
+                        list.innerHTML = '<div class="network-item">Aucun réseau trouvé</div>';
+                        return;
+                    }
+                    networks.forEach(net => {
+                        const item = document.createElement('div');
+                        item.className = 'network-item';
+                        item.onclick = () => {
+                            document.querySelectorAll('.network-item').forEach(el => el.classList.remove('selected'));
+                            item.classList.add('selected');
+                            document.getElementById('ssid').value = net.ssid;
+                        };
+                        item.innerHTML = `
+                            <div class="network-info">
+                                <div class="network-name">${net.ssid}</div>
+                                <div class="network-security">${net.secure ? '🔒 Sécurisé' : '🔓 Ouvert'} | Signal: ${net.rssi}dBm</div>
+                            </div>
+                        `;
+                        list.appendChild(item);
+                    });
+                })
+                .catch(() => { list.innerHTML = '<div class="network-item" style="color: #ff3c3c;">Erreur lors du scan</div>'; });
+        }
+
+        function connectWifi(e) {
+            e.preventDefault();
+            const ssid = document.getElementById('ssid').value;
+            const password = document.getElementById('password').value;
+            const status = document.getElementById('status');
+            const btn = document.getElementById('btnConnect');
+
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner"></div> Tentative...';
+            status.style.display = 'none';
+
+            fetch('/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ssid, password })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    status.innerHTML = "Succès ! Redémarrage de BOBCNC...";
+                    status.className = "status success";
+                    status.style.display = "block";
+                    setTimeout(() => window.location.href = "http://bobcnc.local", 5000);
+                } else {
+                    status.innerHTML = "Échec de connexion : Vérifiez vos identifiants.";
+                    status.className = "status error";
+                    status.style.display = "block";
+                    btn.disabled = false;
+                    btn.innerHTML = "Connexion";
+                }
+            })
+            .catch(() => {
+                status.innerHTML = "Erreur de communication avec l'ESP32.";
+                status.className = "status error";
+                status.style.display = "block";
+                btn.disabled = false;
+                btn.innerHTML = "Connexion";
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', scanNetworks);
+    </script>
+</body>
+</html>

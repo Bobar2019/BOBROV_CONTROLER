@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poche - BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .cad-page{max-width:1200px;margin:0 auto;padding:20px;padding-top:90px;padding-bottom:60px}
+        .cad-grid{display:grid;grid-template-columns:360px 1fr;gap:18px}
+        @media(max-width:880px){.cad-grid{grid-template-columns:1fr}}
+        .cad-card{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+        .cad-card h2{font-size:.85rem;color:var(--accent-cyan);display:flex;align-items:center;gap:7px;margin-bottom:10px}
+        .fg{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}
+        .fg label{font-size:.66rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.3px;display:flex;align-items:center;gap:4px}
+        .fg input,.fg select{padding:7px 10px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:5px;color:var(--text-primary);font-family:'Source Code Pro',monospace;font-size:.8rem;outline:none}
+        .fg input:focus,.fg select:focus{border-color:var(--accent-cyan)}
+        .fg-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+        .fg-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+        .fg-row4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px}
+        .toggle-row{display:flex;align-items:center;gap:9px}
+        .toggle-switch{position:relative;width:42px;height:20px}
+        .toggle-switch input{opacity:0;width:0;height:0}
+        .toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:20px;transition:.3s}
+        .toggle-slider:before{position:absolute;content:"";height:14px;width:14px;left:2px;bottom:2px;background:var(--text-secondary);border-radius:50%;transition:.3s}
+        .toggle-switch input:checked+.toggle-slider{background:rgba(0,217,255,.2);border-color:var(--accent-cyan)}
+        .toggle-switch input:checked+.toggle-slider:before{transform:translateX(22px);background:var(--accent-cyan)}
+        .btn{padding:7px 14px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-card);color:var(--text-primary);font-family:'Source Code Pro',monospace;font-size:.78rem;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:5px}
+        .btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(0,0,0,.3)}
+        .btn-primary{background:linear-gradient(135deg,rgba(0,217,255,.2),rgba(0,217,255,.08));border-color:rgba(0,217,255,.5);color:var(--accent-cyan)}
+        .btn-success{background:linear-gradient(135deg,rgba(0,255,136,.15),rgba(0,255,136,.05));border-color:rgba(0,255,136,.4);color:#00ff88}
+        .btn-warn{background:linear-gradient(135deg,rgba(255,204,0,.15),rgba(255,204,0,.05));border-color:rgba(255,204,0,.4);color:#ffcc00}
+        .btn-danger{background:linear-gradient(135deg,rgba(255,51,51,.15),rgba(255,51,51,.05));border-color:rgba(255,51,51,.4);color:#ff6666}
+        .btn-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+        .cad-canvas-wrap{display:flex;justify-content:center;align-items:center;background:rgba(0,0,0,.3);border:1px solid var(--border-color);border-radius:8px;padding:12px;min-height:380px}
+        #cadCanvas{max-width:100%}
+        .gcode-area{width:100%;min-height:140px;max-height:300px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:5px;color:var(--accent-cyan);font-family:'Source Code Pro',monospace;font-size:.72rem;padding:8px;resize:vertical;outline:none}
+        .gcode-area:focus{border-color:var(--accent-cyan)}
+        .cad-alert{padding:9px 12px;border-radius:7px;font-size:.76rem;margin-bottom:10px;display:none}
+        .cad-alert.warn{display:block;background:rgba(255,204,0,.1);border:1px solid rgba(255,204,0,.4);color:#ffcc00}
+        .cad-alert.err{display:block;background:rgba(255,51,51,.1);border:1px solid rgba(255,51,51,.4);color:#ff6666}
+        .cad-alert.ok{display:block;background:rgba(0,255,136,.1);border:1px solid rgba(0,255,136,.4);color:#00ff88}
+        .cad-stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+        .cad-stat{font-size:.7rem;color:var(--text-secondary)}
+        .cad-stat strong{color:var(--accent-cyan)}
+        .sub-label{font-size:.62rem;color:var(--text-secondary);margin-top:4px;margin-bottom:2px}
+
+        /* ===== STRATÉGIE MULTI-SÉLECTION ===== */
+        .strategy-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+        .strategy-btn{position:relative;padding:9px 10px 9px 36px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-primary);cursor:pointer;transition:all .2s;font-family:'Source Code Pro',monospace;font-size:.75rem;color:var(--text-secondary);text-align:left}
+        .strategy-btn input[type=radio]{position:absolute;left:10px;top:50%;transform:translateY(-50%);accent-color:var(--accent-cyan);cursor:pointer;width:14px;height:14px}
+        .strategy-btn:has(input:checked){border-color:var(--accent-cyan);background:rgba(0,217,255,.08);color:var(--text-primary)}
+        .strategy-btn .s-name{display:block;font-weight:600;font-size:.76rem;color:inherit}
+        .strategy-btn .s-desc{display:block;font-size:.62rem;opacity:.65;margin-top:1px;line-height:1.3}
+
+        /* ===== TOOLTIP INFOBULLES ===== */
+        .tip-wrap{position:relative;display:inline-flex;align-items:center}
+        .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:rgba(0,217,255,.15);border:1px solid rgba(0,217,255,.4);color:var(--accent-cyan);font-size:9px;font-weight:700;cursor:help;flex-shrink:0;line-height:1;font-family:sans-serif;transition:background .15s}
+        .tip-icon:hover{background:rgba(0,217,255,.3)}
+        .tip-box{display:none;position:absolute;left:20px;top:-4px;z-index:100;width:210px;background:#1a1d26;border:1px solid rgba(0,217,255,.35);border-radius:7px;padding:8px 10px;font-size:.7rem;color:var(--text-secondary);line-height:1.5;box-shadow:0 4px 20px rgba(0,0,0,.5);pointer-events:none;font-family:'Source Code Pro',monospace}
+        .tip-box::before{content:'';position:absolute;left:-6px;top:10px;width:0;height:0;border-top:5px solid transparent;border-bottom:5px solid transparent;border-right:6px solid rgba(0,217,255,.35)}
+        .tip-wrap:hover .tip-box,.tip-wrap:focus-within .tip-box{display:block}
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <div class="cad-page">
+        <header class="page-header"><h1>Poche - Évidement</h1></header>
+        <div class="cad-alert" id="cadAlert"></div>
+        <div class="cad-grid">
+
+            <!-- ===== COL GAUCHE ===== -->
+            <div>
+
+                <!-- Forme -->
+                <div class="cad-card">
+                    <h2><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg> Forme de la Poche</h2>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Largeur W (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Dimension de la poche selon l'axe X. L'outil sera entièrement à l'intérieur de cette cote.</span></span></label>
+                            <input type="number" id="cadW" step="0.1" min="0.1" value="50">
+                        </div>
+                        <div class="fg">
+                            <label>Hauteur H (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Dimension de la poche selon l'axe Y.</span></span></label>
+                            <input type="number" id="cadH" step="0.1" min="0.1" value="30">
+                        </div>
+                    </div>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Offset X (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Décalage du coin bas-gauche de la poche par rapport à l'origine pièce (G54...).</span></span></label>
+                            <input type="number" id="cadX" step="0.1" value="0">
+                        </div>
+                        <div class="fg">
+                            <label>Offset Y (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Décalage du coin bas-gauche selon Y.</span></span></label>
+                            <input type="number" id="cadY" step="0.1" value="0">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Congés -->
+                <div class="cad-card">
+                    <h2><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg> Congés (Fillets) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Arrondi des coins de la poche. Le rayon ne doit pas dépasser la moitié de la plus petite dimension de la poche. Valeur 0 = coin vif (non recommandé, l'outil risque de s'y bloquer).</span></span></h2>
+                    <div class="fg">
+                        <label>Coins identiques</label>
+                        <div class="toggle-row">
+                            <label class="toggle-switch"><input type="checkbox" id="cadFilletSame" checked><span class="toggle-slider"></span></label>
+                            <span id="cadFilletLabel" style="font-size:.72rem;color:var(--text-secondary)">OUI</span>
+                        </div>
+                    </div>
+                    <div id="cadFilletSameRow">
+                        <div class="fg"><label>Rayon (mm)</label><input type="number" id="cadR" step="0.1" min="0" value="5"></div>
+                    </div>
+                    <div id="cadFilletIndepRow" style="display:none">
+                        <div class="sub-label">Bas-Gauche</div><div class="fg"><input type="number" id="cadR0" step="0.1" min="0" value="5"></div>
+                        <div class="sub-label">Bas-Droite</div><div class="fg"><input type="number" id="cadR1" step="0.1" min="0" value="5"></div>
+                        <div class="sub-label">Haut-Droite</div><div class="fg"><input type="number" id="cadR2" step="0.1" min="0" value="5"></div>
+                        <div class="sub-label">Haut-Gauche</div><div class="fg"><input type="number" id="cadR3" step="0.1" min="0" value="5"></div>
+                    </div>
+                </div>
+
+                <!-- Outil -->
+                <div class="cad-card">
+                    <h2><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg> Outil</h2>
+                    <div class="fg"><label>Fraise</label><select id="cadTool"></select></div>
+                    <div class="fg-row3" style="font-size:.68rem;color:var(--text-secondary);margin-top:3px">
+                        <span>∅ <strong id="cadToolDiam">-</strong></span>
+                        <span>Fz <strong id="cadToolFz">-</strong></span>
+                        <span>RPM <strong id="cadToolRpm">-</strong></span>
+                    </div>
+                </div>
+
+                <!-- Usinage -->
+                <div class="cad-card">
+                    <h2><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Paramètres d'Usinage</h2>
+
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Origine pièce</label>
+                            <select id="cadOffset">
+                                <option value="G54">G54 (P1)</option>
+                                <option value="G55">G55 (P2)</option>
+                                <option value="G56">G56 (P3)</option>
+                                <option value="G57">G57 (P4)</option>
+                            </select>
+                        </div>
+                        <div class="fg">
+                            <label>Profondeur totale (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Profondeur finale de la poche. L'usinage se fait en plusieurs passes (Z step) jusqu'à cette valeur.</span></span></label>
+                            <input type="number" id="cadDepth" step="0.1" min="0.1" value="5">
+                        </div>
+                    </div>
+
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Z Sécurité (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Hauteur de dégagement outil pour les déplacements rapides (G0). Doit être positif et suffisant pour passer par-dessus les brides.</span></span></label>
+                            <input type="number" id="cadZSafe" step="0.5" min="0.5" value="5">
+                        </div>
+                        <div class="fg">
+                            <label>Passe Z (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Profondeur de coupe par passage. Doit rester inférieur à la moitié du diamètre de l'outil pour éviter la casse.</span></span></label>
+                            <input type="number" id="cadPassDepth" step="0.1" min="0.1" value="1">
+                        </div>
+                    </div>
+
+                    <div class="fg">
+                        <label>Recouvrement (%) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Pourcentage du diamètre outil que la passe suivante repasse sur la précédente. 40% = bonne balance vitesse/qualité. 60–70% = meilleur état de surface.</span></span></label>
+                        <input type="number" id="cadOverlap" step="5" min="10" max="90" value="40">
+                    </div>
+
+                    <!-- STRATÉGIE MULTI-CHOIX -->
+                    <div class="fg" style="margin-bottom:4px">
+                        <label>Stratégie de remplissage <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Concentrique : spirale depuis le bord vers le centre. Zig-Zag : allers-retours horizontaux. Les deux génèrent un contour de finition si l'option est activée.</span></span></label>
+                    </div>
+                    <div class="strategy-grid">
+                        <label class="strategy-btn">
+                            <input type="radio" name="cadStrategy" value="concentric" checked>
+                            <span class="s-name">Concentrique</span>
+                            <span class="s-desc">Spirale rectangulaire du bord vers le centre. Bon état de surface.</span>
+                        </label>
+                        <label class="strategy-btn">
+                            <input type="radio" name="cadStrategy" value="zigzag">
+                            <span class="s-name">Zig-Zag</span>
+                            <span class="s-desc">Balayage horizontal en allers-retours. Calcul rapide.</span>
+                        </label>
+                    </div>
+
+                    <div class="fg" style="margin-top:10px">
+                        <label>Contour final (finition) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Ajoute une dernière passe de contour à chaque niveau Z pour finir les parois. Utilise l'avance de finition (Fxy_fin) définie dans l'outil.</span></span></label>
+                        <div class="toggle-row">
+                            <label class="toggle-switch"><input type="checkbox" id="cadFinishPass" checked><span class="toggle-slider"></span></label>
+                            <span id="cadFinishLabel" style="font-size:.72rem;color:var(--text-secondary)">OUI</span>
+                        </div>
+                    </div>
+
+                    <div class="btn-actions">
+                        <button class="btn btn-primary" onclick="generate()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Générer
+                        </button>
+                        <button class="btn btn-danger" onclick="clearAll()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Effacer
+                        </button>
+                    </div>
+                </div>
+            </div><!-- /col gauche -->
+
+            <!-- ===== COL DROITE ===== -->
+            <div>
+                <div class="cad-card">
+                    <h2><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Prévisualisation 2D</h2>
+                    <div class="cad-stats" id="cadStats"></div>
+                    <div class="cad-canvas-wrap"><canvas id="cadCanvas" width="500" height="400"></canvas></div>
+                </div>
+                <div class="cad-card">
+                    <h2><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg> G-code</h2>
+                    <textarea class="gcode-area" id="cadGcode" readonly placeholder="Cliquez Générer..."></textarea>
+                    <div class="btn-actions">
+                        <button class="btn btn-success" onclick="sendCNC()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Envoyer CNC
+                        </button>
+                        <button class="btn btn-warn" onclick="downloadNC()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Télécharger .nc
+                        </button>
+                        <button class="btn" onclick="copyGcode(this)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copier
+                        </button>
+                        <button class="btn" onclick="openCNCVisualizer(generatedGcode,'vizModal','vizCanvas',document.getElementById('cadOffset').value)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Visu 3D
+                        </button>
+                    </div>
+                </div>
+            </div><!-- /col droite -->
+        </div>
+    </div><!-- /cad-page -->
+
+<script src="main.js"></script>
+<script>
+// ============================================================
+//  ÉTAT GLOBAL
+// ============================================================
+let tools = [], generatedGcode = '';
+let machineConfig = { z_safe: 5, limit_x: 0, limit_y: 0, limit_z: 0 };
+
+// ============================================================
+//  INIT
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    loadTools();
+    loadConfig();
+    initPageWS();
+    initUI();
+    updateCanvas();
+    gsap.from('.cad-card', { y: 12, opacity: 0, duration: .35, stagger: .08, ease: 'power2.out' });
+});
+
+function initPageWS() {
+    window.addCncSocketMessageHandler(function(data) {
+        try {
+            const m = JSON.parse(data);
+            if (m.type === 'config') machineConfig.z_safe = m.z_safe || machineConfig.z_safe;
+        } catch(e) {}
+    });
+}
+
+function initUI() {
+    document.getElementById('cadFilletSame').addEventListener('change', function() {
+        document.getElementById('cadFilletSameRow').style.display = this.checked ? 'block' : 'none';
+        document.getElementById('cadFilletIndepRow').style.display = this.checked ? 'none' : 'block';
+        document.getElementById('cadFilletLabel').textContent = this.checked ? 'OUI' : 'NON';
+        updateCanvas();
+    });
+    document.getElementById('cadFinishPass').addEventListener('change', function() {
+        document.getElementById('cadFinishLabel').textContent = this.checked ? 'OUI' : 'NON';
+        updateCanvas();
+    });
+    // Live preview sur tous les inputs
+    ['cadW','cadH','cadX','cadY','cadR','cadR0','cadR1','cadR2','cadR3','cadDepth','cadPassDepth','cadOverlap','cadZSafe'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateCanvas);
+    });
+    document.querySelectorAll('input[name="cadStrategy"]').forEach(r => r.addEventListener('change', updateCanvas));
+}
+
+// ============================================================
+//  OUTILS
+// ============================================================
+async function loadTools() {
+    try {
+        const r = await fetch('/api/tools');
+        const d = await r.json();
+        tools = Array.isArray(d) ? d : [];
+        const s = document.getElementById('cadTool');
+        s.innerHTML = '<option value="">-- Sélectionner --</option>';
+        tools.forEach(t => { s.innerHTML += `<option value="${t.id}">T${t.num_t||0} — ${t.nom||'?'} (⌀${t.diametre||0})</option>`; });
+        if (tools.length > 0) { s.value = tools[0].id; updateToolInfo(); updateCanvas(); }
+    } catch(e) {}
+}
+function updateToolInfo() {
+    const id = parseInt(document.getElementById('cadTool').value);
+    const t = tools.find(x => x.id === id);
+    document.getElementById('cadToolDiam').textContent = t ? parseFloat(t.diametre||0).toFixed(1)+'mm' : '-';
+    document.getElementById('cadToolFz').textContent   = t ? (t.avance_z||0)+'mm/min' : '-';
+    document.getElementById('cadToolRpm').textContent  = t ? (t.vitesse_broche||0) : '-';
+}
+function getTool() {
+    const id = parseInt(document.getElementById('cadTool').value);
+    return tools.find(x => x.id === id) || null;
+}
+document.getElementById('cadTool').addEventListener('change', () => { updateToolInfo(); updateCanvas(); });
+
+async function loadConfig() {
+    try {
+        const r = await fetch('/api/config');
+        const c = await r.json();
+        machineConfig.z_safe  = c.z_safe  || 5;
+        machineConfig.limit_x = c.limit_x || 0;
+        machineConfig.limit_y = c.limit_y || 0;
+        document.getElementById('cadZSafe').value = machineConfig.z_safe;
+    } catch(e) {}
+}
+
+// ============================================================
+//  PARAMÈTRES
+// ============================================================
+function getParams() {
+    const W = parseFloat(document.getElementById('cadW').value) || 50;
+    const H = parseFloat(document.getElementById('cadH').value) || 30;
+    const X = parseFloat(document.getElementById('cadX').value) || 0;
+    const Y = parseFloat(document.getElementById('cadY').value) || 0;
+    const same = document.getElementById('cadFilletSame').checked;
+    const R    = same ? (parseFloat(document.getElementById('cadR').value) || 0) : 0;
+    const radii = same ? [R, R, R, R] : [
+        parseFloat(document.getElementById('cadR0').value) || 0,
+        parseFloat(document.getElementById('cadR1').value) || 0,
+        parseFloat(document.getElementById('cadR2').value) || 0,
+        parseFloat(document.getElementById('cadR3').value) || 0
+    ];
+    const strategy   = document.querySelector('input[name="cadStrategy"]:checked')?.value || 'concentric';
+    const overlap    = parseFloat(document.getElementById('cadOverlap').value) || 40;
+    const finishPass = document.getElementById('cadFinishPass').checked;
+    const tool = getTool();
+    const diam = tool ? parseFloat(tool.diametre) || 0 : 0;
+    return { W, H, X, Y, same, R, radii, strategy, overlap, finishPass, tool, diam };
+}
+
+// ============================================================
+//  CANVAS 2D
+// ============================================================
+function updateCanvas() {
+    const p = getParams();
+    const canvas = document.getElementById('cadCanvas');
+    const ctx = canvas.getContext('2d');
+    const cw = 500, ch = 400;
+    canvas.width = cw; canvas.height = ch;
+    const margin = 40;
+
+    const gcResult = buildGCode();
+    let parsed = null;
+    if (gcResult && window.GCodeParser) {
+        parsed = window.GCodeParser.parse(gcResult.gcode);
+    }
+
+    // Calcul des bornes de la scène
+    let bMinX, bMaxX, bMinY, bMaxY;
+    if (parsed && parsed.waypoints.length > 1) {
+        bMinX = Infinity; bMaxX = -Infinity; bMinY = Infinity; bMaxY = -Infinity;
+        for (const wp of parsed.waypoints) {
+            if (wp.x < bMinX) bMinX = wp.x; if (wp.x > bMaxX) bMaxX = wp.x;
+            if (wp.y < bMinY) bMinY = wp.y; if (wp.y > bMaxY) bMaxY = wp.y;
+        }
+        bMinX = Math.min(bMinX, p.X); bMaxX = Math.max(bMaxX, p.X + p.W);
+        bMinY = Math.min(bMinY, p.Y); bMaxY = Math.max(bMaxY, p.Y + p.H);
+    } else {
+        const off = p.diam / 2 + 5;
+        bMinX = p.X - off; bMaxX = p.X + p.W + off;
+        bMinY = p.Y - off; bMaxY = p.Y + p.H + off;
+    }
+    const padX = (bMaxX - bMinX) * 0.1 || 5;
+    const padY = (bMaxY - bMinY) * 0.1 || 5;
+    bMinX -= padX; bMaxX += padX; bMinY -= padY; bMaxY += padY;
+
+    const rangeX = Math.max(bMaxX - bMinX, 1);
+    const rangeY = Math.max(bMaxY - bMinY, 1);
+    const scale  = Math.min((cw - margin * 2) / rangeX, (ch - margin * 2) / rangeY);
+    const midX   = (bMinX + bMaxX) / 2, midY = (bMinY + bMaxY) / 2;
+    const ox = cw / 2 - midX * scale;
+    const oy = ch / 2 + midY * scale;
+
+    // Fond + grille
+    ctx.fillStyle = '#0d0d1a'; ctx.fillRect(0, 0, cw, ch);
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 0.5;
+    for (let gx = Math.floor(bMinX / 10) * 10; gx <= bMaxX; gx += 10) {
+        const px = ox + gx * scale;
+        if (px >= margin && px <= cw - margin) { ctx.beginPath(); ctx.moveTo(px, margin); ctx.lineTo(px, ch - margin); ctx.stroke(); }
+    }
+    for (let gy = Math.floor(bMinY / 10) * 10; gy <= bMaxY; gy += 10) {
+        const py = oy - gy * scale;
+        if (py >= margin && py <= ch - margin) { ctx.beginPath(); ctx.moveTo(margin, py); ctx.lineTo(cw - margin, py); ctx.stroke(); }
+    }
+    // Origine
+    ctx.strokeStyle = 'rgba(0,217,255,0.3)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ox - 8, oy); ctx.lineTo(ox + 8, oy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ox, oy - 8); ctx.lineTo(ox, oy + 8); ctx.stroke();
+    ctx.fillStyle = 'rgba(0,217,255,0.5)'; ctx.font = '8px Source Code Pro'; ctx.fillText('0,0', ox + 4, oy + 10);
+
+    // Contour poche
+    drawRoundRect(ctx, p.X, p.Y, p.W, p.H, p.radii, scale, ox, oy, 'rgba(255,255,255,0.18)', 1.5);
+
+    // Trajectoires parsées
+    if (parsed && parsed.segments.length > 0) {
+        for (const seg of parsed.segments) {
+            if (seg.points.length < 2) continue;
+            ctx.beginPath();
+            ctx.strokeStyle = seg.type === 'G0' ? '#ff3333' : seg.type === 'ARC' ? '#00ccff' : '#00ff88';
+            ctx.lineWidth   = seg.type === 'G0' ? 1 : 1.5;
+            ctx.setLineDash(seg.type === 'G0' ? [4, 3] : []);
+            for (let i = 0; i < seg.points.length; i++) {
+                const px = ox + seg.points[i].x * scale;
+                const py = oy - seg.points[i].y * scale;
+                i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        // Point de départ
+        if (parsed.waypoints.length > 1) {
+            const sp = parsed.waypoints[1];
+            ctx.fillStyle = 'rgba(0,255,100,0.9)';
+            ctx.beginPath(); ctx.arc(ox + sp.x * scale, oy - sp.y * scale, 4, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+
+    // Légende
+    ctx.font = '9px Source Code Pro';
+    ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillText('□ Poche', 8, 14);
+    ctx.fillStyle = '#ff3333';                ctx.fillText('--- Rapide G0', 62, 14);
+    ctx.fillStyle = '#00ff88';                ctx.fillText('— Coupe G1', 155, 14);
+    ctx.fillStyle = '#00ccff';                ctx.fillText('— Arcs', 240, 14);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';  ctx.fillText('W='+p.W+' H='+p.H+' ⌀'+p.diam, cw - 130, 14);
+
+    // Stats
+    const area = p.W * p.H;
+    let statsHTML = `<span class="cad-stat">Forme: <strong>${p.W}×${p.H}</strong></span>
+                     <span class="cad-stat">Surface: <strong>${area.toFixed(0)} mm²</strong></span>
+                     <span class="cad-stat">Stratégie: <strong>${p.strategy === 'concentric' ? 'Concentrique' : 'Zig-Zag'}</strong></span>`;
+    if (parsed) {
+        statsHTML += `<span class="cad-stat">Trajectoire: <strong>${parsed.totalLength.toFixed(0)} mm</strong></span>`;
+        if (gcResult) statsHTML += `<span class="cad-stat">Passes Z: <strong>${gcResult.numPasses}</strong></span>`;
+    }
+    document.getElementById('cadStats').innerHTML = statsHTML;
+}
+
+// Dessin d'un rectangle avec congés (canvas)
+function drawRoundRect(ctx, x, y, w, h, radii, scale, ox, oy, color, lw) {
+    const pts = [{ x, y }, { x: x+w, y }, { x: x+w, y: y+h }, { x, y: y+h }];
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = lw;
+    for (let i = 0; i < 4; i++) {
+        const cur = pts[i], next = pts[(i + 1) % 4], r = radii[i];
+        const sx = ox + cur.x * scale, sy = oy - cur.y * scale;
+        if (r > 0) {
+            const dx = next.x - cur.x, dy = next.y - cur.y;
+            const len = Math.sqrt(dx*dx + dy*dy), cr = Math.min(r, len / 2);
+            const t1x = ox + (cur.x + dx/len * cr) * scale, t1y = oy - (cur.y + dy/len * cr) * scale;
+            const t2x = ox + (next.x - dx/len * cr) * scale, t2y = oy - (next.y - dy/len * cr) * scale;
+            i === 0 ? ctx.moveTo(t1x, t1y) : ctx.lineTo(t1x, t1y);
+            ctx.arcTo(sx, sy, t2x, t2y, cr * scale);
+        } else {
+            i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+        }
+    }
+    ctx.closePath(); ctx.stroke();
+}
+
+// ============================================================
+//  GÉNÉRATION G-CODE COMPLÈTE
+// ============================================================
+function buildGCode() {
+    const p = getParams();
+    if (!p.tool) return null;
+
+    const depth     = parseFloat(document.getElementById('cadDepth').value)    || 5;
+    const passDepth = parseFloat(document.getElementById('cadPassDepth').value) || 1;
+    const zSafe     = parseFloat(document.getElementById('cadZSafe').value)     || 5;
+    const offsetCmd = document.getElementById('cadOffset').value;
+    const rpm   = p.tool.vitesse_broche || 1000;
+    const fz    = p.tool.avance_z       || 100;
+    const fxy   = p.tool.avance_ebauche || 500;
+    const fFin  = p.tool.avance_finition|| fxy;
+    const diam  = p.diam;
+    const r     = diam / 2;
+
+    if (diam <= 0) return null;
+
+    // Validation
+    const alerts = [];
+    if (diam > Math.min(p.W, p.H))          alerts.push({ msg: 'Outil trop grand pour la poche', type: 'err' });
+    if (machineConfig.limit_x > 0 && (p.X + p.W) > machineConfig.limit_x) alerts.push({ msg: 'Dépassement X max', type: 'warn' });
+    if (machineConfig.limit_y > 0 && (p.Y + p.H) > machineConfig.limit_y) alerts.push({ msg: 'Dépassement Y max', type: 'warn' });
+
+    const numPasses = Math.ceil(depth / passDepth);
+    const stepover  = diam * (1 - p.overlap / 100);
+
+    // Congés clampés
+    const effRadii = p.radii.map(rv => Math.max(0, Math.min(rv, p.W / 2 - r, p.H / 2 - r)));
+    const [r0, r1, r2, r3] = effRadii;
+
+    const lines = [];
+    lines.push('(==========================================)');
+    lines.push('( BOBCNC - Poche)');
+    lines.push(`( Forme: ${p.W}x${p.H} mm | Profondeur: ${depth} mm)`);
+    lines.push(`( Stratégie: ${p.strategy === 'concentric' ? 'Concentrique' : 'Zig-Zag'} | Recouvrement: ${p.overlap}%)`);
+    lines.push(`( Outil: T${p.tool.num_t||0} ⌀${diam} | Fxy: ${fxy} | Ffin: ${fFin} | RPM: ${rpm})`);
+    lines.push('(==========================================)');
+    lines.push('');
+    lines.push('G90 G21 G17');
+    lines.push(offsetCmd);
+    lines.push(`T${p.tool.num_t||1} M6`);
+    lines.push('G4 P1');
+    lines.push(`G0 Z${zSafe.toFixed(2)}`);
+    lines.push(`M3 S${rpm}`);
+    lines.push('G4 P3');
+    lines.push('');
+
+    for (let pass = 1; pass <= numPasses; pass++) {
+        const z = -(Math.min(pass * passDepth, depth));
+        lines.push(`(=== PASSE ${pass}/${numPasses} | Z=${z.toFixed(2)} mm ===)`);
+
+        // Aller au point d'entrée et plonger
+        const entryX = p.X + p.W / 2;
+        const entryY = p.Y + p.H / 2;
+        lines.push(`G0 X${entryX.toFixed(3)} Y${entryY.toFixed(3)}`);
+        lines.push(`G1 Z${z.toFixed(3)} F${fz}`);
+
+        // ---- Remplissage selon stratégie ----
+        if (p.strategy === 'concentric') {
+            _generateConcentric(lines, p, r, effRadii, stepover, z, fxy);
+        } else {
+            _generateZigzag(lines, p, r, stepover, z, fxy);
+        }
+
+        // ---- Contour de finition ----
+        if (p.finishPass) {
+            lines.push(`( -- Contour finition passe ${pass} --)`);
+            _generateContour(lines, p, r, effRadii, z, fFin, r0, r1, r2, r3);
+        }
+        lines.push('');
+    }
+
+    lines.push('M5');
+    lines.push(`G0 Z${zSafe.toFixed(2)}`);
+    lines.push('G0 X0 Y0');
+    lines.push('M2');
+
+    return { gcode: lines.join('\n'), alerts, numPasses };
+}
+
+// ---- Remplissage concentrique (spirales rectangulaires vers l'intérieur) ----
+function _generateConcentric(lines, p, r, effRadii, stepover, z, fxy) {
+    // On part de la poche intérieure (offset par r) et on va vers le centre
+    // Calculer combien d'anneaux on peut tracer
+    const innerW0 = p.W - 2 * r;
+    const innerH0 = p.H - 2 * r;
+    if (innerW0 <= 0 || innerH0 <= 0) return;
+
+    const passes = Math.floor(Math.min(innerW0, innerH0) / 2 / stepover) + 1;
+
+    for (let i = 0; i < passes; i++) {
+        const offset = r + i * stepover;
+        const x0 = p.X + offset;
+        const y0 = p.Y + offset;
+        const x1 = p.X + p.W - offset;
+        const y1 = p.Y + p.H - offset;
+        if (x1 <= x0 || y1 <= y0) break;
+
+        // Congés réduits proportionnellement
+        const maxR = Math.min((x1 - x0) / 2, (y1 - y0) / 2);
+        const ri0 = Math.min(Math.max(0, effRadii[0] - offset), maxR);
+        const ri1 = Math.min(Math.max(0, effRadii[1] - offset), maxR);
+        const ri2 = Math.min(Math.max(0, effRadii[2] - offset), maxR);
+        const ri3 = Math.min(Math.max(0, effRadii[3] - offset), maxR);
+
+        // Tracé du rectangle intérieur
+        lines.push(`G1 X${(x0 + ri0).toFixed(3)} Y${y0.toFixed(3)} F${fxy}`);
+        lines.push(`G1 X${(x1 - ri1).toFixed(3)} Y${y0.toFixed(3)} F${fxy}`);
+        if (ri1 > 0) lines.push(`G3 X${x1.toFixed(3)} Y${(y0 + ri1).toFixed(3)} I0 J${ri1.toFixed(3)}`);
+        lines.push(`G1 X${x1.toFixed(3)} Y${(y1 - ri2).toFixed(3)} F${fxy}`);
+        if (ri2 > 0) lines.push(`G3 X${(x1 - ri2).toFixed(3)} Y${y1.toFixed(3)} I${(-ri2).toFixed(3)} J0`);
+        lines.push(`G1 X${(x0 + ri3).toFixed(3)} Y${y1.toFixed(3)} F${fxy}`);
+        if (ri3 > 0) lines.push(`G3 X${x0.toFixed(3)} Y${(y1 - ri3).toFixed(3)} I0 J${(-ri3).toFixed(3)}`);
+        lines.push(`G1 X${x0.toFixed(3)} Y${(y0 + ri0).toFixed(3)} F${fxy}`);
+        if (ri0 > 0) lines.push(`G3 X${(x0 + ri0).toFixed(3)} Y${y0.toFixed(3)} I${ri0.toFixed(3)} J0`);
+    }
+}
+
+// ---- Remplissage zig-zag (balayage horizontal) ----
+function _generateZigzag(lines, p, r, stepover, z, fxy) {
+    const x0 = p.X + r;
+    const x1 = p.X + p.W - r;
+    const y0 = p.Y + r;
+    const y1 = p.Y + p.H - r;
+    if (x1 <= x0 || y1 <= y0) return;
+
+    let y = y0;
+    let goRight = true;
+    while (y <= y1 + 0.001) {
+        const yc = Math.min(y, y1);
+        if (goRight) {
+            lines.push(`G1 X${x0.toFixed(3)} Y${yc.toFixed(3)} F${fxy}`);
+            lines.push(`G1 X${x1.toFixed(3)} Y${yc.toFixed(3)} F${fxy}`);
+        } else {
+            lines.push(`G1 X${x1.toFixed(3)} Y${yc.toFixed(3)} F${fxy}`);
+            lines.push(`G1 X${x0.toFixed(3)} Y${yc.toFixed(3)} F${fxy}`);
+        }
+        goRight = !goRight;
+        y += stepover;
+    }
+}
+
+// ---- Contour de finition ----
+function _generateContour(lines, p, r, effRadii, z, fFin, r0, r1, r2, r3) {
+    const x0 = p.X + r;
+    const y0 = p.Y + r;
+    const x1 = p.X + p.W - r;
+    const y1 = p.Y + p.H - r;
+
+    lines.push(`G0 X${(x0 + r0).toFixed(3)} Y${y0.toFixed(3)}`);
+    lines.push(`G1 Z${z.toFixed(3)} F${fFin}`);
+    lines.push(`G1 X${(x1 - r1).toFixed(3)} Y${y0.toFixed(3)} F${fFin}`);
+    if (r1 > 0) lines.push(`G3 X${x1.toFixed(3)} Y${(y0 + r1).toFixed(3)} I0 J${r1.toFixed(3)}`);
+    lines.push(`G1 X${x1.toFixed(3)} Y${(y1 - r2).toFixed(3)} F${fFin}`);
+    if (r2 > 0) lines.push(`G3 X${(x1 - r2).toFixed(3)} Y${y1.toFixed(3)} I${(-r2).toFixed(3)} J0`);
+    lines.push(`G1 X${(x0 + r3).toFixed(3)} Y${y1.toFixed(3)} F${fFin}`);
+    if (r3 > 0) lines.push(`G3 X${x0.toFixed(3)} Y${(y1 - r3).toFixed(3)} I0 J${(-r3).toFixed(3)}`);
+    lines.push(`G1 X${x0.toFixed(3)} Y${(y0 + r0).toFixed(3)} F${fFin}`);
+    if (r0 > 0) lines.push(`G3 X${(x0 + r0).toFixed(3)} Y${y0.toFixed(3)} I${r0.toFixed(3)} J0`);
+    lines.push(`G1 X${(x0 + r0).toFixed(3)} Y${y0.toFixed(3)} F${fFin} ; fermeture`);
+}
+
+// ============================================================
+//  ACTIONS
+// ============================================================
+function generate() {
+    const result = buildGCode();
+    if (!result) { showAlert('Sélectionnez un outil', 'err'); return; }
+    generatedGcode = wrapWithStartEndGcode(result.gcode);
+    document.getElementById('cadGcode').value = generatedGcode;
+    if (result.alerts.length > 0) {
+        const t = result.alerts.some(a => a.type === 'err') ? 'err' : 'warn';
+        showAlert(result.alerts.map(a => a.msg).join(' | '), t);
+    } else {
+        showAlert(`✓ G-code généré — ${result.numPasses} passe(s)`, 'ok');
+    }
+}
+function clearAll() { document.getElementById('cadGcode').value = ''; generatedGcode = ''; showAlert('', ''); }
+function sendCNC() {
+    if (!generatedGcode) { showAlert("Générez le G-code d'abord", 'err'); return; }
+    if (!cncConnected || !cncSocket || cncSocket.readyState !== WebSocket.OPEN) { showAlert('WebSocket non connecté', 'err'); return; }
+    const lines = generatedGcode.split('\n');
+    let sent = 0;
+    lines.forEach(l => { const t = l.trim(); if (!t || t.startsWith('(')) return; sendCommand(t); sent++; });
+    showAlert(`G-code envoyé (${sent} cmds)`, 'ok');
+}
+function downloadNC() {
+    if (!generatedGcode) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([generatedGcode], { type: 'text/plain' }));
+    a.download = 'poche.nc';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
+}
+function copyGcode(btn) {
+    if (!generatedGcode) { showAlert('Rien à copier', 'err'); return; }
+    const ok = () => {
+        showAlert(`G-code copié (${generatedGcode.split('\n').length} lignes)`, 'ok');
+        if (btn) { const o = btn.innerHTML; btn.innerHTML = '✓ Copié !'; setTimeout(() => btn.innerHTML = o, 1500); }
+    };
+    if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(generatedGcode).then(ok).catch(fb); } else fb();
+    function fb() {
+        const ta = document.createElement('textarea'); ta.value = generatedGcode;
+        ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); ok(); } catch(e) { showAlert('Échec copie', 'err'); }
+        document.body.removeChild(ta);
+    }
+}
+function showAlert(m, t) {
+    const e = document.getElementById('cadAlert');
+    if (!m) { e.className = 'cad-alert'; e.textContent = ''; return; }
+    e.className = 'cad-alert ' + t; e.textContent = m;
+}
+</script>
+
+<!-- Visualiseur 3D (partagé) -->
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}</script>
+<script type="module" src="visualizer.js"></script>
+
+<!-- Modal Visualiseur 3D -->
+<div class="viz-modal-overlay" id="vizModal">
+    <div class="viz-modal">
+        <div class="viz-modal-header">
+            <h2>Simulateur CNC 3D</h2>
+            <div style="display:flex;gap:8px;align-items:center">
+                <button class="btn" id="btnViewIso">Isométrique</button>
+                <button class="btn" id="btnViewTop">Dessus (XY)</button>
+                <span class="viz-length" id="vizLength">0 mm</span>
+                <button class="btn" id="vizModalClose">Fermer</button>
+            </div>
+        </div>
+        <div class="viz-modal-body">
+            <div class="viz-legend">
+                <span class="viz-leg" style="color:#ff3333">● Rapide (G0)</span>
+                <span class="viz-leg" style="color:#00ff88">● Coupe (G1)</span>
+                <span class="viz-leg" style="color:#00ccff">● Arcs (G2/G3)</span>
+                <span class="viz-leg" style="color:#445566">● Bâti</span>
+            </div>
+            <div id="vizCanvas" style="width:100%;height:100%"></div>
+        </div>
+    </div>
+</div>
+
+<style>
+.viz-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:200;align-items:center;justify-content:center}
+.viz-modal-overlay.active{display:flex}
+.viz-modal{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:14px;width:92%;max-width:900px;height:85vh;display:flex;flex-direction:column;overflow:hidden}
+.viz-modal-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border-color);flex-shrink:0}
+.viz-modal-header h2{color:var(--accent-cyan);font-size:.9rem}
+.viz-modal-body{flex:1;position:relative;overflow:hidden}
+.viz-legend{position:absolute;top:10px;left:10px;z-index:10;display:flex;gap:14px;background:rgba(0,0,0,.6);padding:6px 12px;border-radius:6px}
+.viz-leg{font-size:.7rem;font-family:'Source Code Pro',monospace}
+.viz-length{font-size:.72rem;color:var(--accent-cyan);font-family:'Source Code Pro',monospace}
+#vizCanvas{position:relative}
+.viz-ui-panel{position:absolute;bottom:10px;right:10px;z-index:10;background:rgba(0,0,0,.75);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:10px 12px;min-width:220px;backdrop-filter:blur(4px)}
+.viz-ui-title{font-size:.65rem;color:var(--accent-cyan);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-family:'Source Code Pro',monospace}
+.viz-ui-row{display:flex;align-items:center;gap:6px;margin-bottom:5px;font-size:.7rem;color:rgba(255,255,255,.7);font-family:'Source Code Pro',monospace}
+.viz-ui-row input[type="range"]{flex:1;height:4px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,.15);border-radius:2px;outline:none;cursor:pointer}
+.viz-ui-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--accent-cyan);cursor:pointer}
+.viz-ui-row input[type="checkbox"]{accent-color:var(--accent-cyan);cursor:pointer}
+.viz-ui-row label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.viz-ui-sep{height:1px;background:rgba(255,255,255,.1);margin:8px 0}
+.viz-cam-label{position:absolute;top:10px;right:10px;z-index:10;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:4px;font-size:.6rem;color:rgba(255,255,255,.5);font-family:'Source Code Pro',monospace}
+.viz-anim-row .viz-play-btn,.viz-anim-row .viz-reset-btn{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:4px;color:#fff;font-size:.8rem;padding:2px 8px;cursor:pointer;font-family:monospace;line-height:1.2}
+.viz-anim-row .viz-play-btn:hover,.viz-anim-row .viz-reset-btn:hover{background:rgba(0,217,255,.2);border-color:var(--accent-cyan)}
+.viz-anim-pct{font-size:.6rem;min-width:36px;text-align:right}
+</style>
+</body>
+</html>

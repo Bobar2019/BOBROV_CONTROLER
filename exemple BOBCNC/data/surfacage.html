@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Surfaçage - BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .cad-page{max-width:1200px;margin:0 auto;padding:20px;padding-top:90px;padding-bottom:60px}
+        .cad-grid{display:grid;grid-template-columns:360px 1fr;gap:18px}
+        @media(max-width:880px){.cad-grid{grid-template-columns:1fr}}
+        .cad-card{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+        .cad-card h2{font-size:.85rem;color:var(--accent-cyan);display:flex;align-items:center;gap:7px;margin-bottom:10px}
+        .fg{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}
+        .fg label{font-size:.66rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.3px;display:flex;align-items:center;gap:4px}
+        .fg input,.fg select{padding:7px 10px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:5px;color:var(--text-primary);font-family:'Source Code Pro',monospace;font-size:.8rem;outline:none}
+        .fg input:focus,.fg select:focus{border-color:var(--accent-cyan)}
+        .fg-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+        .fg-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+        .toggle-row{display:flex;align-items:center;gap:9px}
+        .toggle-switch{position:relative;width:42px;height:20px}
+        .toggle-switch input{opacity:0;width:0;height:0}
+        .toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:20px;transition:.3s}
+        .toggle-slider:before{position:absolute;content:"";height:14px;width:14px;left:2px;bottom:2px;background:var(--text-secondary);border-radius:50%;transition:.3s}
+        .toggle-switch input:checked+.toggle-slider{background:rgba(0,217,255,.2);border-color:var(--accent-cyan)}
+        .toggle-switch input:checked+.toggle-slider:before{transform:translateX(22px);background:var(--accent-cyan)}
+        .btn{padding:7px 14px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-card);color:var(--text-primary);font-family:'Source Code Pro',monospace;font-size:.78rem;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:5px}
+        .btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(0,0,0,.3)}
+        .btn-primary{background:linear-gradient(135deg,rgba(0,217,255,.2),rgba(0,217,255,.08));border-color:rgba(0,217,255,.5);color:var(--accent-cyan)}
+        .btn-success{background:linear-gradient(135deg,rgba(0,255,136,.15),rgba(0,255,136,.05));border-color:rgba(0,255,136,.4);color:#00ff88}
+        .btn-warn{background:linear-gradient(135deg,rgba(255,204,0,.15),rgba(255,204,0,.05));border-color:rgba(255,204,0,.4);color:#ffcc00}
+        .btn-danger{background:linear-gradient(135deg,rgba(255,51,51,.15),rgba(255,51,51,.05));border-color:rgba(255,51,51,.4);color:#ff6666}
+        .btn-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+        .cad-canvas-wrap{display:flex;justify-content:center;align-items:center;background:rgba(0,0,0,.3);border:1px solid var(--border-color);border-radius:8px;padding:12px;min-height:380px}
+        #cadCanvas{max-width:100%}
+        .gcode-area{width:100%;min-height:140px;max-height:300px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:5px;color:var(--accent-cyan);font-family:'Source Code Pro',monospace;font-size:.72rem;padding:8px;resize:vertical;outline:none}
+        .gcode-area:focus{border-color:var(--accent-cyan)}
+        .cad-alert{padding:9px 12px;border-radius:7px;font-size:.76rem;margin-bottom:10px;display:none}
+        .cad-alert.warn{display:block;background:rgba(255,204,0,.1);border:1px solid rgba(255,204,0,.4);color:#ffcc00}
+        .cad-alert.err{display:block;background:rgba(255,51,51,.1);border:1px solid rgba(255,51,51,.4);color:#ff6666}
+        .cad-alert.ok{display:block;background:rgba(0,255,136,.1);border:1px solid rgba(0,255,136,.4);color:#00ff88}
+        .cad-stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+        .cad-stat{font-size:.7rem;color:var(--text-secondary)}
+        .cad-stat strong{color:var(--accent-cyan)}
+
+        /* ===== STRATÉGIE MULTI-SÉLECTION ===== */
+        .strategy-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+        .strategy-btn{position:relative;padding:9px 10px 9px 36px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-primary);cursor:pointer;transition:all .2s;font-family:'Source Code Pro',monospace;font-size:.75rem;color:var(--text-secondary);text-align:left}
+        .strategy-btn input[type=radio]{position:absolute;left:10px;top:50%;transform:translateY(-50%);accent-color:var(--accent-cyan);cursor:pointer;width:14px;height:14px}
+        .strategy-btn:has(input:checked){border-color:var(--accent-cyan);background:rgba(0,217,255,.08);color:var(--text-primary)}
+        .strategy-btn .s-name{display:block;font-weight:600;font-size:.76rem;color:inherit}
+        .strategy-btn .s-desc{display:block;font-size:.62rem;opacity:.65;margin-top:1px;line-height:1.3}
+
+        /* ===== TOOLTIP INFOBULLES ===== */
+        .tip-wrap{position:relative;display:inline-flex;align-items:center}
+        .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:rgba(0,217,255,.15);border:1px solid rgba(0,217,255,.4);color:var(--accent-cyan);font-size:9px;font-weight:700;cursor:help;flex-shrink:0;line-height:1;font-family:sans-serif;transition:background .15s}
+        .tip-icon:hover{background:rgba(0,217,255,.3)}
+        .tip-box{display:none;position:absolute;left:20px;top:-4px;z-index:100;width:210px;background:#1a1d26;border:1px solid rgba(0,217,255,.35);border-radius:7px;padding:8px 10px;font-size:.7rem;color:var(--text-secondary);line-height:1.5;box-shadow:0 4px 20px rgba(0,0,0,.5);pointer-events:none;font-family:'Source Code Pro',monospace}
+        .tip-box::before{content:'';position:absolute;left:-6px;top:10px;width:0;height:0;border-top:5px solid transparent;border-bottom:5px solid transparent;border-right:6px solid rgba(0,217,255,.35)}
+        .tip-wrap:hover .tip-box,.tip-wrap:focus-within .tip-box{display:block}
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <div class="cad-page">
+        <header class="page-header"><h1>Surfaçage - Dressage de surface</h1></header>
+        <div class="cad-alert" id="cadAlert"></div>
+        <div class="cad-grid">
+
+            <!-- ===== COL GAUCHE ===== -->
+            <div>
+
+                <!-- Dimensions pièce -->
+                <div class="cad-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                        Dimensions de la Pièce
+                    </h2>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Longueur X (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Dimension de la pièce selon l'axe X. L'outil dépassera légèrement de chaque côté pour garantir le surfaçage complet.</span></span></label>
+                            <input type="number" id="cadLX" step="0.5" min="1" value="100">
+                        </div>
+                        <div class="fg">
+                            <label>Largeur Y (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Dimension de la pièce selon l'axe Y. Même logique de dépassement que X.</span></span></label>
+                            <input type="number" id="cadLY" step="0.5" min="1" value="80">
+                        </div>
+                    </div>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Offset X (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Position X du coin bas-gauche de la pièce par rapport à l'origine de travail (G54...).</span></span></label>
+                            <input type="number" id="cadOX" step="0.1" value="0">
+                        </div>
+                        <div class="fg">
+                            <label>Offset Y (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Position Y du coin bas-gauche de la pièce par rapport à l'origine de travail.</span></span></label>
+                            <input type="number" id="cadOY" step="0.1" value="0">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Épaisseurs -->
+                <div class="cad-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+                        Épaisseurs
+                    </h2>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Épaisseur brut (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Épaisseur de la matière avant usinage. Le surfaçage part de Z=0 (ou au niveau de la première passe si plusieurs passes).</span></span></label>
+                            <input type="number" id="cadZBrut" step="0.1" min="0.1" value="3">
+                        </div>
+                        <div class="fg">
+                            <label>Épaisseur fini (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Épaisseur souhaitée après surfaçage. La matière à enlever = brut − fini. Doit être inférieur à l'épaisseur brut.</span></span></label>
+                            <input type="number" id="cadZFini" step="0.1" min="0" value="0">
+                        </div>
+                    </div>
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Passe Z (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Profondeur de coupe par passage. Doit être inférieur à la moitié du diamètre de l'outil pour les fraises en bout. Pour une fraise à surfacer (face mill) on peut prendre plus.</span></span></label>
+                            <input type="number" id="cadPassZ" step="0.1" min="0.05" value="0.5">
+                        </div>
+                        <div class="fg">
+                            <label>Surépaisseur finition (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Si la passe de finition est activée, cette valeur est laissée en réserve sur la dernière passe d'ébauche puis usinée à l'avance de finition. 0 = désactivé.</span></span></label>
+                            <input type="number" id="cadStock" step="0.05" min="0" value="0.1">
+                        </div>
+                    </div>
+                    <div id="cadThicknessInfo" style="font-size:.68rem;color:var(--text-secondary);margin-top:4px;padding:6px 8px;background:rgba(0,217,255,.05);border-radius:5px;border:1px solid rgba(0,217,255,.12)">
+                        Matière à enlever : <strong id="cadToRemove">3.0 mm</strong> → <strong id="cadNumPasses">6 passes</strong>
+                    </div>
+                </div>
+
+                <!-- Outil -->
+                <div class="cad-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                        Outil
+                    </h2>
+                    <div class="fg"><label>Fraise</label><select id="cadTool"></select></div>
+                    <div class="fg-row3" style="font-size:.68rem;color:var(--text-secondary);margin-top:3px">
+                        <span>∅ <strong id="cadToolDiam">-</strong></span>
+                        <span>Fz <strong id="cadToolFz">-</strong></span>
+                        <span>RPM <strong id="cadToolRpm">-</strong></span>
+                    </div>
+                </div>
+
+                <!-- Paramètres usinage -->
+                <div class="cad-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        Paramètres d'Usinage
+                    </h2>
+
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Origine pièce</label>
+                            <select id="cadOffset">
+                                <option value="G54">G54 (P1)</option>
+                                <option value="G55">G55 (P2)</option>
+                                <option value="G56">G56 (P3)</option>
+                                <option value="G57">G57 (P4)</option>
+                            </select>
+                        </div>
+                        <div class="fg">
+                            <label>Z Sécurité (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Hauteur de dégagement outil pour les déplacements rapides (G0). Doit être suffisant pour passer par-dessus les brides et la pièce brute.</span></span></label>
+                            <input type="number" id="cadZSafe" step="0.5" min="0.5" value="5">
+                        </div>
+                    </div>
+
+                    <div class="fg-row">
+                        <div class="fg">
+                            <label>Recouvrement (%) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Pourcentage du diamètre outil que la passe suivante repasse. 40% = équilibre vitesse/qualité. Pour un surfaçage propre, 50–60% est recommandé.</span></span></label>
+                            <input type="number" id="cadOverlap" step="5" min="10" max="90" value="50">
+                        </div>
+                        <div class="fg">
+                            <label>Dépassement bords (mm) <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Dépassement de l'outil au-delà des bords de la pièce pour garantir un surfaçage complet. Généralement r/2 à r (rayon outil). Valeur 0 = aucun dépassement.</span></span></label>
+                            <input type="number" id="cadOverhang" step="0.5" min="0" value="3">
+                        </div>
+                    </div>
+
+                    <!-- STRATÉGIE MULTI-CHOIX -->
+                    <div class="fg" style="margin-bottom:4px">
+                        <label>Stratégie de surfaçage <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Choisissez le sens de balayage. Zig-Zag X/Y = passes parallèles dans le sens X ou Y. Spirale = de l'extérieur vers l'intérieur. Diagonal = passes à 45° pour un état de surface homogène.</span></span></label>
+                    </div>
+                    <div class="strategy-grid">
+                        <label class="strategy-btn">
+                            <input type="radio" name="sfStrategy" value="zigzag-x" checked>
+                            <span class="s-name">Zig-Zag X</span>
+                            <span class="s-desc">Passes parallèles à l'axe X, balayage selon Y. Le plus courant.</span>
+                        </label>
+                        <label class="strategy-btn">
+                            <input type="radio" name="sfStrategy" value="zigzag-y">
+                            <span class="s-name">Zig-Zag Y</span>
+                            <span class="s-desc">Passes parallèles à l'axe Y, balayage selon X. Utile si la pièce est plus longue en Y.</span>
+                        </label>
+                        <label class="strategy-btn">
+                            <input type="radio" name="sfStrategy" value="spiral">
+                            <span class="s-name">Spirale</span>
+                            <span class="s-desc">Rectangles concentriques de l'extérieur vers le centre. Moins de levées d'outil.</span>
+                        </label>
+                        <label class="strategy-btn">
+                            <input type="radio" name="sfStrategy" value="diagonal">
+                            <span class="s-name">Diagonal 45°</span>
+                            <span class="s-desc">Passes à 45°. Meilleur état de surface sur certains matériaux.</span>
+                        </label>
+                    </div>
+
+                    <!-- Passe de finition -->
+                    <div class="fg" style="margin-top:10px">
+                        <label>Passe de finition <span class="tip-wrap"><span class="tip-icon">i</span><span class="tip-box">Ajoute une dernière passe lente à l'avance de finition avec la surépaisseur réservée. Améliore l'état de surface Ra.</span></span></label>
+                        <div class="toggle-row">
+                            <label class="toggle-switch"><input type="checkbox" id="cadFinishPass" checked><span class="toggle-slider"></span></label>
+                            <span id="cadFinishLabel" style="font-size:.72rem;color:var(--text-secondary)">OUI</span>
+                        </div>
+                    </div>
+
+                    <div class="btn-actions">
+                        <button class="btn btn-primary" onclick="generate()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Générer
+                        </button>
+                        <button class="btn btn-danger" onclick="clearAll()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Effacer
+                        </button>
+                    </div>
+                </div>
+            </div><!-- /col gauche -->
+
+            <!-- ===== COL DROITE ===== -->
+            <div>
+                <div class="cad-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        Prévisualisation 2D
+                    </h2>
+                    <div class="cad-stats" id="cadStats"></div>
+                    <div class="cad-canvas-wrap"><canvas id="cadCanvas" width="500" height="400"></canvas></div>
+                </div>
+                <div class="cad-card">
+                    <h2>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        G-code
+                    </h2>
+                    <textarea class="gcode-area" id="cadGcode" readonly placeholder="Cliquez Générer..."></textarea>
+                    <div class="btn-actions">
+                        <button class="btn btn-success" onclick="sendCNC()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Envoyer CNC
+                        </button>
+                        <button class="btn btn-warn" onclick="downloadNC()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Télécharger .nc
+                        </button>
+                        <button class="btn" onclick="copyGcode(this)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copier
+                        </button>
+                        <button class="btn" onclick="openCNCVisualizer(generatedGcode,'vizModal','vizCanvas',document.getElementById('cadOffset').value)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Visu 3D
+                        </button>
+                    </div>
+                </div>
+            </div><!-- /col droite -->
+        </div>
+    </div><!-- /cad-page -->
+
+<script src="main.js"></script>
+<script>
+// ============================================================
+//  ÉTAT GLOBAL
+// ============================================================
+let tools = [], generatedGcode = '';
+let machineConfig = { z_safe: 5, limit_x: 0, limit_y: 0, limit_z: 0 };
+
+// ============================================================
+//  INIT
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    loadTools();
+    loadConfig();
+    initPageWS();
+    initUI();
+    updateCanvas();
+    gsap.from('.cad-card', { y: 12, opacity: 0, duration: .35, stagger: .08, ease: 'power2.out' });
+});
+
+function initPageWS() {
+    window.addCncSocketMessageHandler(function(data) {
+        try {
+            const m = JSON.parse(data);
+            if (m.type === 'config') machineConfig.z_safe = m.z_safe || machineConfig.z_safe;
+        } catch(e) {}
+    });
+}
+
+function initUI() {
+    document.getElementById('cadFinishPass').addEventListener('change', function() {
+        document.getElementById('cadFinishLabel').textContent = this.checked ? 'OUI' : 'NON';
+        updateCanvas();
+    });
+
+    // Info épaisseur live
+    ['cadZBrut','cadZFini','cadPassZ'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', () => { updateThicknessInfo(); updateCanvas(); });
+    });
+
+    // Live preview sur tous les inputs
+    ['cadLX','cadLY','cadOX','cadOY','cadZSafe','cadOverlap','cadOverhang','cadStock'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateCanvas);
+    });
+    document.querySelectorAll('input[name="sfStrategy"]').forEach(r => r.addEventListener('change', updateCanvas));
+
+    updateThicknessInfo();
+}
+
+function updateThicknessInfo() {
+    const brut  = parseFloat(document.getElementById('cadZBrut').value) || 0;
+    const fini  = parseFloat(document.getElementById('cadZFini').value) || 0;
+    const passZ = parseFloat(document.getElementById('cadPassZ').value) || 0.5;
+    const toRem = Math.max(0, brut - fini);
+    const nPass = passZ > 0 ? Math.ceil(toRem / passZ) : 0;
+    document.getElementById('cadToRemove').textContent = toRem.toFixed(2) + ' mm';
+    document.getElementById('cadNumPasses').textContent = nPass + ' passe' + (nPass > 1 ? 's' : '');
+}
+
+// ============================================================
+//  OUTILS
+// ============================================================
+async function loadTools() {
+    try {
+        const r = await fetch('/api/tools');
+        const d = await r.json();
+        tools = Array.isArray(d) ? d : [];
+        const s = document.getElementById('cadTool');
+        s.innerHTML = '<option value="">-- Sélectionner --</option>';
+        tools.forEach(t => { s.innerHTML += `<option value="${t.id}">T${t.num_t||0} — ${t.nom||'?'} (⌀${t.diametre||0})</option>`; });
+        if (tools.length > 0) { s.value = tools[0].id; updateToolInfo(); updateCanvas(); }
+    } catch(e) {}
+}
+
+function updateToolInfo() {
+    const id = parseInt(document.getElementById('cadTool').value);
+    const t = tools.find(x => x.id === id);
+    document.getElementById('cadToolDiam').textContent = t ? parseFloat(t.diametre||0).toFixed(1)+'mm' : '-';
+    document.getElementById('cadToolFz').textContent   = t ? (t.avance_z||0)+'mm/min' : '-';
+    document.getElementById('cadToolRpm').textContent  = t ? (t.vitesse_broche||0) : '-';
+}
+
+function getTool() {
+    const id = parseInt(document.getElementById('cadTool').value);
+    return tools.find(x => x.id === id) || null;
+}
+document.getElementById('cadTool').addEventListener('change', () => { updateToolInfo(); updateCanvas(); });
+
+async function loadConfig() {
+    try {
+        const r = await fetch('/api/config');
+        const c = await r.json();
+        machineConfig.z_safe  = c.z_safe  || 5;
+        machineConfig.limit_x = c.limit_x || 0;
+        machineConfig.limit_y = c.limit_y || 0;
+        document.getElementById('cadZSafe').value = machineConfig.z_safe;
+    } catch(e) {}
+}
+
+// ============================================================
+//  PARAMÈTRES
+// ============================================================
+function getParams() {
+    const lx       = parseFloat(document.getElementById('cadLX').value)    || 100;
+    const ly       = parseFloat(document.getElementById('cadLY').value)    || 80;
+    const ox       = parseFloat(document.getElementById('cadOX').value)    || 0;
+    const oy       = parseFloat(document.getElementById('cadOY').value)    || 0;
+    const zBrut    = parseFloat(document.getElementById('cadZBrut').value)  || 3;
+    const zFini    = parseFloat(document.getElementById('cadZFini').value)  || 0;
+    const passZ    = parseFloat(document.getElementById('cadPassZ').value)  || 0.5;
+    const stock    = parseFloat(document.getElementById('cadStock').value)  || 0.1;
+    const zSafe    = parseFloat(document.getElementById('cadZSafe').value)  || 5;
+    const overlap  = parseFloat(document.getElementById('cadOverlap').value)|| 50;
+    const overhang = parseFloat(document.getElementById('cadOverhang').value)|| 3;
+    const strategy = document.querySelector('input[name="sfStrategy"]:checked')?.value || 'zigzag-x';
+    const finishPass = document.getElementById('cadFinishPass').checked;
+    const offsetCmd = document.getElementById('cadOffset').value;
+    const tool = getTool();
+    const diam = tool ? parseFloat(tool.diametre) || 0 : 0;
+    const r    = diam / 2;
+
+    const toRemove = Math.max(0, zBrut - zFini);
+    const stepover = diam * (1 - overlap / 100);
+
+    return { lx, ly, ox, oy, zBrut, zFini, passZ, stock, zSafe, overlap, overhang,
+             strategy, finishPass, offsetCmd, tool, diam, r, toRemove, stepover };
+}
+
+// ============================================================
+//  CANVAS 2D
+// ============================================================
+function updateCanvas() {
+    const p = getParams();
+    const canvas = document.getElementById('cadCanvas');
+    const ctx = canvas.getContext('2d');
+    const cw = 500, ch = 400;
+    canvas.width = cw; canvas.height = ch;
+    const margin = 40;
+
+    const gcResult = buildGCode();
+    let parsed = null;
+    if (gcResult && window.GCodeParser) {
+        parsed = window.GCodeParser.parse(gcResult.gcode);
+    }
+
+    // Bornes scène
+    const extraX = p.overhang + p.r;
+    const extraY = p.overhang + p.r;
+    let bMinX = p.ox - extraX - 5;
+    let bMaxX = p.ox + p.lx + extraX + 5;
+    let bMinY = p.oy - extraY - 5;
+    let bMaxY = p.oy + p.ly + extraY + 5;
+
+    if (parsed && parsed.waypoints.length > 1) {
+        for (const wp of parsed.waypoints) {
+            if (wp.x < bMinX) bMinX = wp.x; if (wp.x > bMaxX) bMaxX = wp.x;
+            if (wp.y < bMinY) bMinY = wp.y; if (wp.y > bMaxY) bMaxY = wp.y;
+        }
+    }
+
+    const padX = (bMaxX - bMinX) * 0.08 || 5;
+    const padY = (bMaxY - bMinY) * 0.08 || 5;
+    bMinX -= padX; bMaxX += padX; bMinY -= padY; bMaxY += padY;
+
+    const rangeX = Math.max(bMaxX - bMinX, 1);
+    const rangeY = Math.max(bMaxY - bMinY, 1);
+    const scale  = Math.min((cw - margin * 2) / rangeX, (ch - margin * 2) / rangeY);
+    const midX   = (bMinX + bMaxX) / 2, midY = (bMinY + bMaxY) / 2;
+    const ox = cw / 2 - midX * scale;
+    const oy = ch / 2 + midY * scale;
+
+    // Fond + grille
+    ctx.fillStyle = '#0d0d1a'; ctx.fillRect(0, 0, cw, ch);
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 0.5;
+    const gridStep = 10;
+    for (let gx = Math.floor(bMinX / gridStep) * gridStep; gx <= bMaxX; gx += gridStep) {
+        const px = ox + gx * scale;
+        if (px >= margin && px <= cw - margin) { ctx.beginPath(); ctx.moveTo(px, margin); ctx.lineTo(px, ch - margin); ctx.stroke(); }
+    }
+    for (let gy = Math.floor(bMinY / gridStep) * gridStep; gy <= bMaxY; gy += gridStep) {
+        const py = oy - gy * scale;
+        if (py >= margin && py <= ch - margin) { ctx.beginPath(); ctx.moveTo(margin, py); ctx.lineTo(cw - margin, py); ctx.stroke(); }
+    }
+
+    // Origine
+    ctx.strokeStyle = 'rgba(0,217,255,0.3)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ox - 8, oy); ctx.lineTo(ox + 8, oy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ox, oy - 8); ctx.lineTo(ox, oy + 8); ctx.stroke();
+    ctx.fillStyle = 'rgba(0,217,255,0.5)'; ctx.font = '8px Source Code Pro'; ctx.fillText('0,0', ox + 4, oy + 10);
+
+    // Contour pièce
+    const px0 = ox + p.ox * scale;
+    const py0 = oy - p.oy * scale;
+    const pw  = p.lx * scale;
+    const ph  = p.ly * scale;
+    ctx.strokeStyle = 'rgba(255,255,255,0.20)'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(px0, py0 - ph, pw, ph);
+
+    // Zone de travail (avec dépassement)
+    const wx0 = ox + (p.ox - p.overhang) * scale;
+    const wy0 = oy - (p.oy + p.ly + p.overhang) * scale;
+    const ww  = (p.lx + 2 * p.overhang) * scale;
+    const wh  = (p.ly + 2 * p.overhang) * scale;
+    ctx.strokeStyle = 'rgba(0,217,255,0.12)'; ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(wx0, wy0, ww, wh);
+    ctx.setLineDash([]);
+
+    // Trajectoires parsées
+    if (parsed && parsed.segments.length > 0) {
+        for (const seg of parsed.segments) {
+            if (seg.points.length < 2) continue;
+            ctx.beginPath();
+            ctx.strokeStyle = seg.type === 'G0' ? '#ff3333' : '#00ff88';
+            ctx.lineWidth   = seg.type === 'G0' ? 1 : 1.2;
+            ctx.setLineDash(seg.type === 'G0' ? [4, 3] : []);
+            for (let i = 0; i < seg.points.length; i++) {
+                const spx = ox + seg.points[i].x * scale;
+                const spy = oy - seg.points[i].y * scale;
+                i === 0 ? ctx.moveTo(spx, spy) : ctx.lineTo(spx, spy);
+            }
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        if (parsed.waypoints.length > 1) {
+            const sp = parsed.waypoints[1];
+            ctx.fillStyle = 'rgba(0,255,100,0.9)';
+            ctx.beginPath(); ctx.arc(ox + sp.x * scale, oy - sp.y * scale, 4, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+
+    // Légende
+    const stratLabels = { 'zigzag-x': 'Zig-Zag X', 'zigzag-y': 'Zig-Zag Y', 'spiral': 'Spirale', 'diagonal': 'Diagonal 45°' };
+    ctx.font = '9px Source Code Pro';
+    ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillText('□ Pièce', 8, 14);
+    ctx.fillStyle = '#ff3333';                ctx.fillText('--- Rapide G0', 58, 14);
+    ctx.fillStyle = '#00ff88';                ctx.fillText('— Coupe G1', 148, 14);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';  ctx.fillText(p.lx+'×'+p.ly+' ⌀'+p.diam, cw - 130, 14);
+
+    // Stats
+    const toRem = p.toRemove;
+    const nPass = p.passZ > 0 ? Math.ceil(toRem / p.passZ) : 0;
+    let statsHTML = `<span class="cad-stat">Pièce: <strong>${p.lx}×${p.ly}</strong></span>
+                     <span class="cad-stat">Enlever: <strong>${toRem.toFixed(2)} mm</strong></span>
+                     <span class="cad-stat">Passes: <strong>${nPass}</strong></span>
+                     <span class="cad-stat">Stratégie: <strong>${stratLabels[p.strategy] || p.strategy}</strong></span>`;
+    if (parsed) {
+        statsHTML += `<span class="cad-stat">Trajectoire: <strong>${parsed.totalLength.toFixed(0)} mm</strong></span>`;
+    }
+    document.getElementById('cadStats').innerHTML = statsHTML;
+}
+
+// ============================================================
+//  GÉNÉRATION G-CODE
+// ============================================================
+function buildGCode() {
+    const p = getParams();
+    if (!p.tool) return null;
+    if (p.diam <= 0) return null;
+
+    const toRemove = p.toRemove;
+    if (toRemove <= 0) {
+        return { gcode: '( Rien à enlever — brut = fini )', alerts: [], numPasses: 0 };
+    }
+
+    const rpm   = p.tool.vitesse_broche  || 1000;
+    const fz    = p.tool.avance_z        || 100;
+    const fxy   = p.tool.avance_ebauche  || 500;
+    const fFin  = p.tool.avance_finition || fxy;
+
+    // Validation
+    const alerts = [];
+    if (machineConfig.limit_x > 0 && (p.ox + p.lx) > machineConfig.limit_x) alerts.push({ msg: 'Dépassement X max', type: 'warn' });
+    if (machineConfig.limit_y > 0 && (p.oy + p.ly) > machineConfig.limit_y) alerts.push({ msg: 'Dépassement Y max', type: 'warn' });
+    if (p.diam <= 0) alerts.push({ msg: 'Outil non valide', type: 'err' });
+
+    // Nombre de passes (avec surépaisseur finition)
+    const finishStock = p.finishPass ? p.stock : 0;
+    const roughRemove = Math.max(0, toRemove - finishStock);
+    const numRoughPasses = roughRemove > 0 ? Math.ceil(roughRemove / p.passZ) : 0;
+    const numPasses = numRoughPasses + (p.finishPass && finishStock > 0 ? 1 : 0);
+
+    const lines = [];
+    lines.push('(==========================================)');
+    lines.push('( BOBCNC - Surfaçage)');
+    lines.push(`( Pièce: ${p.lx}x${p.ly} mm | Enlever: ${toRemove.toFixed(2)} mm)`);
+    lines.push(`( Stratégie: ${p.strategy} | Recouvrement: ${p.overlap}%)`);
+    lines.push(`( Outil: T${p.tool.num_t||0} ⌀${p.diam} | Fxy: ${fxy} | Ffin: ${fFin} | RPM: ${rpm})`);
+    lines.push('(==========================================)');
+    lines.push('');
+    lines.push('G90 G21 G17');
+    lines.push(p.offsetCmd);
+    lines.push(`T${p.tool.num_t||1} M6`);
+    lines.push('G4 P1');
+    lines.push(`G0 Z${p.zSafe.toFixed(2)}`);
+    lines.push(`M3 S${rpm}`);
+    lines.push('G4 P3');
+    lines.push('');
+
+    // === Passes d'ébauche ===
+    for (let pass = 1; pass <= numRoughPasses; pass++) {
+        const z = -(Math.min(pass * p.passZ, roughRemove));
+        lines.push(`(=== ÉBAUCHE ${pass}/${numRoughPasses} | Z=${z.toFixed(3)} mm ===)`);
+        _generateSurfacePass(lines, p, z, fz, fxy, false);
+        lines.push('');
+    }
+
+    // === Passe de finition ===
+    if (p.finishPass && finishStock > 0) {
+        const z = -toRemove;
+        lines.push(`(=== FINITION | Z=${z.toFixed(3)} mm ===)`);
+        _generateSurfacePass(lines, p, z, fz, fFin, true);
+        lines.push('');
+    }
+
+    lines.push('M5');
+    lines.push(`G0 Z${p.zSafe.toFixed(2)}`);
+    lines.push('G0 X0 Y0');
+    lines.push('M2');
+
+    return { gcode: lines.join('\n'), alerts, numPasses };
+}
+
+// ---- Génère une passe de surfaçage à la profondeur z donnée ----
+function _generateSurfacePass(lines, p, z, fz, fxy, isFinish) {
+    const strategy = p.strategy;
+    // Zone de travail : pièce + dépassement de chaque côté
+    const xMin = p.ox - p.overhang;
+    const xMax = p.ox + p.lx + p.overhang;
+    const yMin = p.oy - p.overhang;
+    const yMax = p.oy + p.ly + p.overhang;
+    const label = isFinish ? 'FIN' : 'EBG';
+
+    if (strategy === 'zigzag-x') {
+        // Passes parallèles à X, progression en Y
+        let y = yMin;
+        let goRight = true;
+        let first = true;
+        while (y <= yMax + 0.001) {
+            const yc = Math.min(y, yMax);
+            if (first) {
+                lines.push(`G0 X${(goRight ? xMin : xMax).toFixed(3)} Y${yc.toFixed(3)}`);
+                lines.push(`G1 Z${z.toFixed(3)} F${fz}`);
+                first = false;
+            } else {
+                lines.push(`G0 X${(goRight ? xMin : xMax).toFixed(3)} Y${yc.toFixed(3)}`);
+            }
+            lines.push(`G1 X${(goRight ? xMax : xMin).toFixed(3)} Y${yc.toFixed(3)} F${fxy}`);
+            goRight = !goRight;
+            y += p.stepover;
+        }
+
+    } else if (strategy === 'zigzag-y') {
+        // Passes parallèles à Y, progression en X
+        let x = xMin;
+        let goUp = true;
+        let first = true;
+        while (x <= xMax + 0.001) {
+            const xc = Math.min(x, xMax);
+            if (first) {
+                lines.push(`G0 X${xc.toFixed(3)} Y${(goUp ? yMin : yMax).toFixed(3)}`);
+                lines.push(`G1 Z${z.toFixed(3)} F${fz}`);
+                first = false;
+            } else {
+                lines.push(`G0 X${xc.toFixed(3)} Y${(goUp ? yMin : yMax).toFixed(3)}`);
+            }
+            lines.push(`G1 X${xc.toFixed(3)} Y${(goUp ? yMax : yMin).toFixed(3)} F${fxy}`);
+            goUp = !goUp;
+            x += p.stepover;
+        }
+
+    } else if (strategy === 'spiral') {
+        // Spirale rectangulaire de l'extérieur vers l'intérieur
+        // On commence à l'extérieur (xMin, yMin) et on réduit
+        let curXMin = xMin, curXMax = xMax, curYMin = yMin, curYMax = yMax;
+        let first = true;
+        while (curXMin < curXMax + 0.001 && curYMin < curYMax + 0.001) {
+            if (first) {
+                lines.push(`G0 X${curXMin.toFixed(3)} Y${curYMin.toFixed(3)}`);
+                lines.push(`G1 Z${z.toFixed(3)} F${fz}`);
+                first = false;
+            } else {
+                lines.push(`G1 X${curXMin.toFixed(3)} Y${curYMin.toFixed(3)} F${fxy}`);
+            }
+            lines.push(`G1 X${curXMax.toFixed(3)} Y${curYMin.toFixed(3)} F${fxy}`); // bas → droite
+            lines.push(`G1 X${curXMax.toFixed(3)} Y${curYMax.toFixed(3)} F${fxy}`); // droite → haut
+            lines.push(`G1 X${curXMin.toFixed(3)} Y${curYMax.toFixed(3)} F${fxy}`); // haut → gauche
+            curXMin += p.stepover; curXMax -= p.stepover;
+            curYMin += p.stepover; curYMax -= p.stepover;
+        }
+
+    } else if (strategy === 'diagonal') {
+        // Passes diagonales à 45°
+        // On parcourt selon les diagonales : lignes le long de (x - y = constante)
+        // On balaye de (xMin, yMin) jusqu'à (xMax, yMax)
+        const range = (xMax - xMin) + (yMax - yMin);
+        let d = 0;
+        let goForward = true;
+        let first = true;
+        while (d <= range + 0.001) {
+            // La diagonale d = cste : x - y = (xMin - yMax) + d
+            const diagConst = (xMin - yMax) + d;
+            // Intersection avec le bord de la zone
+            // x = diagConst + y  → à y=yMin: x = diagConst + yMin ; à y=yMax: x = diagConst + yMax
+            let x1d = diagConst + yMin, y1d = yMin;
+            let x2d = diagConst + yMax, y2d = yMax;
+            // Clamp dans la zone
+            if (x1d < xMin) { y1d = yMin + (xMin - x1d); x1d = xMin; }
+            if (x1d > xMax) { y1d = yMin + (x1d - xMax); x1d = xMax; }  // shouldn't happen but guard
+            if (x2d > xMax) { y2d = yMax - (x2d - xMax); x2d = xMax; }
+            if (x2d < xMin) { y2d = yMax - (xMin - x2d); x2d = xMin; }
+            // Clamp Y
+            if (y1d < yMin) y1d = yMin; if (y1d > yMax) y1d = yMax;
+            if (y2d < yMin) y2d = yMin; if (y2d > yMax) y2d = yMax;
+
+            // Ignorer les lignes dégénérées
+            const dx = x2d - x1d, dy = y2d - y1d;
+            if (Math.sqrt(dx*dx + dy*dy) > 0.1) {
+                const sx = goForward ? x1d : x2d, sy = goForward ? y1d : y2d;
+                const ex = goForward ? x2d : x1d, ey = goForward ? y2d : y1d;
+                if (first) {
+                    lines.push(`G0 X${sx.toFixed(3)} Y${sy.toFixed(3)}`);
+                    lines.push(`G1 Z${z.toFixed(3)} F${fz}`);
+                    first = false;
+                } else {
+                    lines.push(`G0 X${sx.toFixed(3)} Y${sy.toFixed(3)}`);
+                }
+                lines.push(`G1 X${ex.toFixed(3)} Y${ey.toFixed(3)} F${fxy}`);
+                goForward = !goForward;
+            }
+            d += p.stepover;
+        }
+    }
+
+    // Dégagement après la passe
+    lines.push(`G0 Z${p.zSafe.toFixed(2)}`);
+}
+
+// ============================================================
+//  ACTIONS
+// ============================================================
+function generate() {
+    const result = buildGCode();
+    if (!result) { showAlert('Sélectionnez un outil valide', 'err'); return; }
+    generatedGcode = wrapWithStartEndGcode(result.gcode);
+    document.getElementById('cadGcode').value = generatedGcode;
+    if (result.alerts.length > 0) {
+        const t = result.alerts.some(a => a.type === 'err') ? 'err' : 'warn';
+        showAlert(result.alerts.map(a => a.msg).join(' | '), t);
+    } else {
+        showAlert(`G-code généré — ${result.numPasses} passe(s)`, 'ok');
+    }
+}
+
+function clearAll() {
+    document.getElementById('cadGcode').value = '';
+    generatedGcode = '';
+    showAlert('', '');
+}
+
+function sendCNC() {
+    if (!generatedGcode) { showAlert("Générez le G-code d'abord", 'err'); return; }
+    if (!cncConnected || !cncSocket || cncSocket.readyState !== WebSocket.OPEN) { showAlert('WebSocket non connecté', 'err'); return; }
+    const lines = generatedGcode.split('\n');
+    let sent = 0;
+    lines.forEach(l => { const t = l.trim(); if (!t || t.startsWith('(')) return; sendCommand(t); sent++; });
+    showAlert(`G-code envoyé (${sent} commandes)`, 'ok');
+}
+
+function downloadNC() {
+    if (!generatedGcode) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([generatedGcode], { type: 'text/plain' }));
+    a.download = 'surfacage.nc';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
+}
+
+function copyGcode(btn) {
+    if (!generatedGcode) { showAlert('Rien à copier', 'err'); return; }
+    const ok = () => {
+        showAlert(`G-code copié (${generatedGcode.split('\n').length} lignes)`, 'ok');
+        if (btn) { const o = btn.innerHTML; btn.innerHTML = '✓ Copié !'; setTimeout(() => btn.innerHTML = o, 1500); }
+    };
+    if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(generatedGcode).then(ok).catch(fb); } else fb();
+    function fb() {
+        const ta = document.createElement('textarea'); ta.value = generatedGcode;
+        ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); ok(); } catch(e) { showAlert('Échec copie', 'err'); }
+        document.body.removeChild(ta);
+    }
+}
+
+function showAlert(m, t) {
+    const e = document.getElementById('cadAlert');
+    if (!m) { e.className = 'cad-alert'; e.textContent = ''; return; }
+    e.className = 'cad-alert ' + t; e.textContent = m;
+}
+</script>
+
+<!-- Visualiseur 3D (partagé) -->
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}</script>
+<script type="module" src="visualizer.js"></script>
+
+<!-- Modal Visualiseur 3D -->
+<div class="viz-modal-overlay" id="vizModal">
+    <div class="viz-modal">
+        <div class="viz-modal-header">
+            <h2>Simulateur CNC 3D</h2>
+            <div style="display:flex;gap:8px;align-items:center">
+                <button class="btn" id="btnViewIso">Isométrique</button>
+                <button class="btn" id="btnViewTop">Dessus (XY)</button>
+                <span class="viz-length" id="vizLength">0 mm</span>
+                <button class="btn" id="vizModalClose">Fermer</button>
+            </div>
+        </div>
+        <div class="viz-modal-body">
+            <div class="viz-legend">
+                <span class="viz-leg" style="color:#ff3333">● Rapide (G0)</span>
+                <span class="viz-leg" style="color:#00ff88">● Coupe (G1)</span>
+                <span class="viz-leg" style="color:#00ccff">● Arcs (G2/G3)</span>
+                <span class="viz-leg" style="color:#445566">● Bâti</span>
+            </div>
+            <div id="vizCanvas" style="width:100%;height:100%"></div>
+        </div>
+    </div>
+</div>
+
+<style>
+.viz-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:200;align-items:center;justify-content:center}
+.viz-modal-overlay.active{display:flex}
+.viz-modal{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:14px;width:92%;max-width:900px;height:85vh;display:flex;flex-direction:column;overflow:hidden}
+.viz-modal-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border-color);flex-shrink:0}
+.viz-modal-header h2{color:var(--accent-cyan);font-size:.9rem}
+.viz-modal-body{flex:1;position:relative;overflow:hidden}
+.viz-legend{position:absolute;top:10px;left:10px;z-index:10;display:flex;gap:14px;background:rgba(0,0,0,.6);padding:6px 12px;border-radius:6px}
+.viz-leg{font-size:.7rem;font-family:'Source Code Pro',monospace}
+.viz-length{font-size:.72rem;color:var(--accent-cyan);font-family:'Source Code Pro',monospace}
+#vizCanvas{position:relative}
+.viz-ui-panel{position:absolute;bottom:10px;right:10px;z-index:10;background:rgba(0,0,0,.75);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:10px 12px;min-width:220px;backdrop-filter:blur(4px)}
+.viz-ui-title{font-size:.65rem;color:var(--accent-cyan);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-family:'Source Code Pro',monospace}
+.viz-ui-row{display:flex;align-items:center;gap:6px;margin-bottom:5px;font-size:.7rem;color:rgba(255,255,255,.7);font-family:'Source Code Pro',monospace}
+.viz-ui-row input[type="range"]{flex:1;height:4px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,.15);border-radius:2px;outline:none;cursor:pointer}
+.viz-ui-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--accent-cyan);cursor:pointer}
+.viz-ui-row input[type="checkbox"]{accent-color:var(--accent-cyan);cursor:pointer}
+.viz-ui-row label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.viz-ui-sep{height:1px;background:rgba(255,255,255,.1);margin:8px 0}
+.viz-cam-label{position:absolute;top:10px;right:10px;z-index:10;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:4px;font-size:.6rem;color:rgba(255,255,255,.5);font-family:'Source Code Pro',monospace}
+.viz-anim-row .viz-play-btn,.viz-anim-row .viz-reset-btn{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:4px;color:#fff;font-size:.8rem;padding:2px 8px;cursor:pointer;font-family:monospace;line-height:1.2}
+.viz-anim-row .viz-play-btn:hover,.viz-anim-row .viz-reset-btn:hover{background:rgba(0,217,255,.2);border-color:var(--accent-cyan)}
+.viz-anim-pct{font-size:.6rem;min-width:36px;text-align:right}
+</style>
+</body>
+</html>

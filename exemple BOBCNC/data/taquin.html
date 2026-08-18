@@ -1,0 +1,3052 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+    <!-- PWA : plein ecran kiosk (mobile + bureau) -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BOBCNC">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!-- Pas de cache : la page évolue beaucoup, on évite que le navigateur garde une vieille version. -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Taquin - BOBCNC</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232c3e50'/><text y='70' x='50' font-family='Arial' font-size='50' font-weight='bold' fill='%23ff8c00' text-anchor='middle'>bob</text></svg>">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <!-- THREE.js (importmap) + module Taquin 3D pour la simulation visuelle -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="taquin3d.js?v=6"></script>
+    <script type="module" src="taquin3d_humain.js?v=1"></script>
+    <style>
+        .tq-page { max-width:860px; margin:0 auto; padding:20px; padding-top:90px; padding-bottom:80px; }
+
+        /* Taille de tuile dynamique selon SIZE (4/5/6). Fallback 72px. */
+        :root { --tile-size: 72px; --tile-font: 1.4rem; }
+
+        /* Cards */
+        .tq-card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:10px; padding:16px 18px; margin-bottom:16px; transition:border-color 0.3s; }
+        .tq-card h2 { font-size:0.9rem; color:var(--accent-cyan); display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+
+        /* Form */
+        .fg { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+        .fg label { font-size:0.68rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.3px; }
+        .fg input, .fg select { padding:8px 12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-family:'Source Code Pro',monospace; font-size:0.82rem; outline:none; }
+        .fg input:focus, .fg select:focus { border-color:var(--accent-cyan); }
+        .fg-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+        .fg-row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+        .fg-row4 { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:10px; }
+
+        /* Buttons */
+        .btn { padding:8px 16px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg-card); color:var(--text-primary); font-family:'Source Code Pro',monospace; font-size:0.8rem; cursor:pointer; transition:all 0.2s; display:inline-flex; align-items:center; gap:6px; }
+        .btn:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,0.3); }
+        .btn:disabled { opacity:0.4; cursor:not-allowed; transform:none; box-shadow:none; }
+        .btn-primary { background:linear-gradient(135deg,rgba(0,217,255,0.2),rgba(0,217,255,0.08)); border-color:rgba(0,217,255,0.5); color:var(--accent-cyan); }
+        .btn-success { background:linear-gradient(135deg,rgba(0,255,136,0.15),rgba(0,255,136,0.05)); border-color:rgba(0,255,136,0.4); color:#00ff88; }
+        .btn-danger { background:linear-gradient(135deg,rgba(255,51,51,0.15),rgba(255,51,51,0.05)); border-color:rgba(255,51,51,0.4); color:#ff6666; }
+        .btn-warn { background:linear-gradient(135deg,rgba(255,204,0,0.15),rgba(255,204,0,0.05)); border-color:rgba(255,204,0,0.4); color:#ffcc00; }
+        .btn-actions { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; }
+
+        /* Puzzle Grid */
+        .puzzle-container { display:flex; justify-content:center; padding:10px 0; }
+        .puzzle-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:3px; background:rgba(0,0,0,0.4); padding:4px; border-radius:10px; border:2px solid var(--border-color); position:relative; }
+        .puzzle-tile {
+            width:var(--tile-size); height:var(--tile-size);
+            display:flex; align-items:center; justify-content:center;
+            background:linear-gradient(145deg, #2a2d38, #1e2030);
+            border:1px solid var(--border-color);
+            border-radius:6px;
+            font-size:var(--tile-font); font-weight:700; color:var(--text-primary);
+            cursor:grab; transition:background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+            user-select:none; position:relative; touch-action:none; z-index:1;
+        }
+        .puzzle-tile:hover { border-color:var(--accent-cyan); background:linear-gradient(145deg, #2a3548, #1e2840); box-shadow:0 0 12px rgba(0,217,255,0.15); }
+        .puzzle-tile.empty { background:rgba(0,0,0,0.2); border:1px dashed rgba(255,255,255,0.08); cursor:default; }
+        .puzzle-tile.empty:hover { border-color:rgba(255,255,255,0.08); background:rgba(0,0,0,0.2); box-shadow:none; }
+        .puzzle-tile.correct { border-bottom:2px solid rgba(0,255,136,0.5); }
+        .puzzle-tile.moving { background:linear-gradient(145deg, rgba(0,217,255,0.3), rgba(0,217,255,0.1)); border-color:var(--accent-cyan); box-shadow:0 0 20px rgba(0,217,255,0.3); }
+        .puzzle-tile.dragging {
+            cursor:grabbing; z-index:10;
+            background:linear-gradient(145deg, rgba(0,217,255,0.25), rgba(0,217,255,0.08));
+            border-color:var(--accent-cyan); box-shadow:0 0 24px rgba(0,217,255,0.35);
+        }
+        .puzzle-tile.snapping { transition:transform 0.15s ease-out; }
+
+        /* Axis labels */
+        .axis-labels { display:flex; justify-content:center; gap:0; padding:2px 4px; margin-top:-4px; }
+        .axis-label-x { font-size:0.55rem; color:var(--text-secondary); width:var(--tile-size); text-align:center; opacity:0.5; }
+        .axis-label-y { position:absolute; font-size:0.55rem; color:var(--text-secondary); opacity:0.5; }
+
+        /* Solver buttons */
+        .solver-row { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:10px; }
+        .solver-row .btn { justify-content:center; width:100%; padding:12px 10px; }
+
+        /* ====== MODAL VISU 3D ====== */
+        .tqviz-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:#000; z-index:200; }
+        .tqviz-overlay.active { display:block; }
+        /* Modal en PLEIN ÉCRAN. Header + toolbar flottent en HUD par-dessus le canvas 3D :
+           le canvas occupe ainsi 100% de la fenêtre, sans qu'aucun élément ne lui vole de
+           place verticale. */
+        .tqviz-modal {
+            position:absolute; inset:0;
+            background:#101418;
+            overflow:hidden;
+        }
+        /* Header flottant en haut, fond semi-transparent */
+        .tqviz-header {
+            position:absolute; top:0; left:0; right:0; z-index:30;
+            display:flex; align-items:center; justify-content:space-between; gap:8px;
+            padding:8px 14px;
+            background:linear-gradient(to bottom, rgba(15,18,23,0.85), rgba(15,18,23,0.0));
+            pointer-events:none;
+        }
+        .tqviz-header > * { pointer-events:auto; }
+        .tqviz-header h2 { color:var(--accent-cyan); font-size:0.9rem; text-shadow:0 1px 4px rgba(0,0,0,0.8); }
+        .tqviz-header-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+        /* Body 3D = plein écran */
+        .tqviz-body { position:absolute; inset:0; background:#101418; }
+        #tqVizCanvas { position:absolute; inset:0; }
+        .tqviz-info { position:absolute; left:10px; top:50px; z-index:25; font-size:0.7rem; color:rgba(255,255,255,0.85); font-family:'Source Code Pro',monospace; background:rgba(0,0,0,0.55); padding:4px 9px; border-radius:6px; }
+        .tqviz-legend { position:absolute; top:50px; right:10px; z-index:25; display:flex; gap:10px; background:rgba(0,0,0,0.55); padding:5px 10px; border-radius:6px; font-size:0.65rem; font-family:'Source Code Pro',monospace; }
+        .tqviz-legend span { color:rgba(255,255,255,0.75); }
+        /* Toolbar flottante en bas, fond semi-transparent. Hauteur compacte garantie. */
+        .tqviz-toolbar {
+            position:absolute; left:0; right:0; bottom:0; z-index:30;
+            display:flex; align-items:center; gap:8px;
+            padding:8px 12px;
+            background:linear-gradient(to top, rgba(15,18,23,0.92), rgba(15,18,23,0.65));
+            border-top:1px solid rgba(0,217,255,0.4);
+            flex-wrap:nowrap; overflow-x:auto;
+            padding-bottom:max(8px, env(safe-area-inset-bottom));
+        }
+        .tqviz-toolbar .btn-icon { padding:6px 10px; min-width:38px; font-size:0.95rem; }
+        .tqviz-toolbar .btn-icon.active { background:linear-gradient(135deg,rgba(0,255,136,0.2),rgba(0,255,136,0.05)); border-color:rgba(0,255,136,0.5); color:#00ff88; }
+        .tqviz-toolbar .btn { padding:6px 10px; font-size:0.75rem; white-space:nowrap; flex-shrink:0; }
+        .tqviz-toolbar .btn.active { box-shadow:0 0 0 2px rgba(0,255,136,0.4) inset; }
+        .btn-close-x { padding:4px 9px !important; font-size:1rem !important; line-height:1; }
+        .tqviz-speed { display:flex; align-items:center; gap:6px; font-size:0.7rem; color:var(--text-secondary); flex:1; min-width:120px; flex-shrink:1; }
+        .tqviz-speed input[type=range] { flex:1; min-width:60px; accent-color:var(--accent-cyan); }
+        .tqviz-speed .speed-val { min-width:38px; text-align:right; color:var(--accent-cyan); font-family:'Source Code Pro',monospace; }
+        /* Barre de progression : ligne fine au-dessus de la toolbar (pas dans la toolbar) */
+        .tqviz-progressbar { position:absolute; left:0; right:0; bottom:100%; height:4px; background:rgba(255,255,255,0.08); overflow:hidden; }
+        .tqviz-progress { height:100%; width:0%; background:linear-gradient(90deg, var(--accent-cyan), #00ff88); transition:width 0.1s linear; }
+
+        /* G-code textarea */
+        .gcode-area { width:100%; min-height:180px; max-height:400px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; color:var(--accent-cyan); font-family:'Source Code Pro',monospace; font-size:0.72rem; padding:10px; resize:vertical; outline:none; }
+        .gcode-area:focus { border-color:var(--accent-cyan); }
+
+        /* Modal */
+        .modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); backdrop-filter:blur(5px); z-index:200; align-items:center; justify-content:center; }
+        .modal-overlay.active { display:flex; }
+        .modal-box { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:14px; width:90%; max-width:520px; padding:24px; }
+        .modal-box h2 { color:var(--accent-cyan); font-size:1rem; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
+        .modal-box p { color:var(--text-secondary); font-size:0.82rem; line-height:1.7; margin-bottom:10px; }
+        .modal-box ul { color:var(--text-secondary); font-size:0.8rem; line-height:1.7; margin:8px 0 16px 20px; }
+        .modal-box .btn-actions { justify-content:center; margin-top:20px; }
+        .modal-diagram { background:rgba(0,0,0,0.3); border:1px solid var(--border-color); border-radius:8px; padding:16px; margin:12px 0; font-family:'Source Code Pro',monospace; font-size:0.7rem; color:var(--text-secondary); line-height:1.5; text-align:center; }
+
+        /* Solve mode choice cards */
+        .solve-mode-cards { display:flex; flex-direction:column; gap:12px; margin:12px 0; }
+        .solve-mode-btn { display:flex; flex-direction:column; align-items:flex-start; gap:4px; padding:14px 16px !important; text-align:left; line-height:1.4; }
+        .solve-mode-btn svg { flex-shrink:0; }
+        .solve-mode-label { font-size:0.88rem; font-weight:700; color:var(--text-primary); }
+        .solve-mode-desc { font-size:0.72rem; color:var(--text-secondary); font-weight:400; margin-top:2px; }
+
+        /* Spinner + Report */
+        .solve-spinner { display:flex; flex-direction:column; align-items:center; gap:16px; padding:24px 0; }
+        .solve-spinner .spinner-ring { width:44px; height:44px; border:3px solid var(--border-color); border-top-color:var(--accent-cyan); border-radius:50%; animation:spin 0.8s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+        .solve-report { display:none; text-align:left; padding:12px 0; }
+        .solve-report.visible { display:block; }
+        .solve-report-row { display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid rgba(255,255,255,0.06); font-size:0.8rem; }
+        .solve-report-row:last-child { border-bottom:none; }
+        .solve-report-label { color:var(--text-secondary); }
+        .solve-report-value { color:var(--accent-cyan); font-family:'Source Code Pro',monospace; font-weight:600; }
+
+        /* Alert */
+        .tq-alert { padding:10px 14px; border-radius:8px; font-size:0.78rem; margin-bottom:12px; display:none; }
+        .tq-alert.warn { display:block; background:rgba(255,204,0,0.1); border:1px solid rgba(255,204,0,0.4); color:#ffcc00; }
+        .tq-alert.err { display:block; background:rgba(255,51,51,0.1); border:1px solid rgba(255,51,51,0.4); color:#ff6666; }
+        .tq-alert.ok { display:block; background:rgba(0,255,136,0.1); border:1px solid rgba(0,255,136,0.4); color:#00ff88; }
+
+        /* Stats */
+        .tq-stats { display:flex; gap:20px; flex-wrap:wrap; justify-content:center; margin:12px 0; }
+        .tq-stat { font-size:0.72rem; color:var(--text-secondary); }
+        .tq-stat strong { color:var(--accent-cyan); }
+        .tq-stat.solved strong { color:#00ff88; }
+
+        /* ====== MODE TEST TOGGLE SWITCH ====== */
+        .test-mode-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0 2px; margin-top:4px; border-top:1px solid var(--border-color); }
+        .test-mode-row label { font-size:0.72rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.3px; display:flex; align-items:center; gap:6px; }
+        .toggle-switch { position:relative; width:44px; height:24px; flex-shrink:0; }
+        .toggle-switch input { opacity:0; width:0; height:0; }
+        .toggle-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:24px; transition:all 0.3s; }
+        .toggle-slider:before { position:absolute; content:""; height:18px; width:18px; left:2px; bottom:2px; background:var(--text-secondary); border-radius:50%; transition:all 0.3s; }
+        .toggle-switch input:checked + .toggle-slider { background:rgba(255,204,0,0.2); border-color:rgba(255,204,0,0.6); }
+        .toggle-switch input:checked + .toggle-slider:before { transform:translateX(20px); background:#ffcc00; }
+
+        /* ====== CNC STATUS ====== */
+        .cnc-status { display:flex; align-items:center; gap:8px; font-size:0.72rem; color:var(--text-secondary); padding:4px 0; }
+        .cnc-status-dot { width:8px; height:8px; border-radius:50%; background:#ff3333; flex-shrink:0; transition:background 0.3s; }
+        .cnc-status-dot.connected { background:#00ff88; }
+        .cnc-status-dot.running { background:#ffcc00; animation:pulse-dot 1s infinite; }
+        .cnc-status-dot.test { background:#ffcc00; }
+
+        /* ====== CNC LOCK (verrouillage) ====== */
+        .cnc-locked .puzzle-tile:not(.empty) { pointer-events:none; opacity:0.5; }
+        .cnc-locked .btn:not(.log-toggle) { pointer-events:none; opacity:0.4; }
+        .cnc-locked .fg input, .cnc-locked .fg select { pointer-events:none; opacity:0.5; }
+        .cnc-locked #puzzleCard { border-color:rgba(255,165,0,0.6); animation:pulse-border 1.5s infinite; }
+
+        @keyframes pulse-border {
+            0%, 100% { border-color:rgba(255,165,0,0.6); box-shadow:0 0 8px rgba(255,165,0,0.15); }
+            50% { border-color:rgba(255,165,0,0.9); box-shadow:0 0 20px rgba(255,165,0,0.3); }
+        }
+
+        /* CNC busy overlay */
+        .cnc-busy { display:none; position:absolute; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.3); border-radius:8px; z-index:5; align-items:center; justify-content:center; gap:10px; font-size:0.75rem; color:#ffcc00; }
+        .cnc-busy.active { display:flex; }
+        .cnc-spinner { width:20px; height:20px; border:2px solid rgba(255,165,0,0.3); border-top-color:#ffcc00; border-radius:50%; animation:spin 0.8s linear infinite; }
+
+        @keyframes spin { to { transform:rotate(360deg); } }
+        @keyframes pulse-dot { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+
+        /* ====== LOG CONSOLE ====== */
+        .log-toggle {
+            position:fixed; bottom:20px; right:20px; width:44px; height:44px;
+            border-radius:50%; background:var(--bg-secondary); border:1px solid var(--border-color);
+            color:var(--text-primary); cursor:pointer; display:flex; align-items:center;
+            justify-content:center; z-index:300; transition:all 0.3s; padding:0;
+        }
+        .log-toggle:hover { border-color:var(--accent-cyan); box-shadow:0 0 12px rgba(0,217,255,0.2); }
+        .log-toggle .badge { position:absolute; top:-4px; right:-4px; min-width:16px; height:16px; border-radius:8px; background:#ff3333; color:#fff; font-size:0.55rem; display:flex; align-items:center; justify-content:center; padding:0 4px; }
+
+        .log-panel {
+            position:fixed; top:0; right:-400px; width:380px; height:100%;
+            background:var(--bg-primary); border-left:1px solid var(--border-color);
+            z-index:250; transition:right 0.3s ease; display:flex; flex-direction:column;
+        }
+        .log-panel.open { right:0; }
+        .log-header {
+            padding:10px 14px; border-bottom:1px solid var(--border-color);
+            display:flex; justify-content:space-between; align-items:center;
+            font-size:0.8rem; color:var(--accent-cyan); font-family:'Source Code Pro',monospace;
+        }
+        .log-header-actions { display:flex; gap:8px; }
+        .log-header-btn { background:none; border:none; color:var(--text-secondary); cursor:pointer; font-size:0.85rem; padding:2px 6px; border-radius:4px; }
+        .log-header-btn:hover { color:var(--text-primary); background:rgba(255,255,255,0.05); }
+        .log-content {
+            flex:1; overflow-y:auto; padding:6px; font-family:'Source Code Pro',monospace; font-size:0.68rem;
+        }
+        .log-entry { padding:3px 6px; border-radius:3px; margin-bottom:1px; word-break:break-all; line-height:1.4; }
+        .log-entry.send { color:#00d9ff; }
+        .log-entry.recv { color:#00ff88; }
+        .log-entry.test { color:#ffcc00; }
+        .log-entry.error { color:#ff6666; }
+        .log-entry.info { color:var(--text-secondary); }
+        .log-time { color:var(--text-secondary); opacity:0.5; margin-right:4px; }
+
+        /* Responsive iPhone / petit mobile */
+        @media(max-width:500px) {
+            /* Page : padding compact + safe-area iPhone (encoche & barre home) */
+            .tq-page {
+                padding:12px;
+                padding-top: calc(80px + env(safe-area-inset-top, 0px));
+                padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+                padding-left: max(12px, env(safe-area-inset-left));
+                padding-right: max(12px, env(safe-area-inset-right));
+            }
+            /* Header de page plus compact */
+            .page-header { margin-bottom:18px; }
+            .page-header h1 { font-size:1.4rem; letter-spacing:2px; }
+            .page-header h1::after { width:40px; height:2px; margin:10px auto 0; }
+
+            /* Cartes plus serrées */
+            .tq-card { padding:12px 14px; margin-bottom:12px; }
+            .tq-card h2 { font-size:0.82rem; }
+
+            /* Grilles de formulaire : 3/4 colonnes -> 2 colonnes */
+            .fg-row3 { grid-template-columns:1fr 1fr; }
+            .fg-row4 { grid-template-columns:1fr 1fr; }
+
+            /* Inputs : font-size 16px = pas de zoom auto sur Safari iOS */
+            .fg input, .fg select { font-size:16px; padding:9px 10px; }
+
+            /* Plateau : tuiles légèrement plus petites pour iPhone (~375 px) */
+            .puzzle-tile { font-size:1.2rem; }
+            .axis-label-x { font-size:0.55rem; }
+
+            /* Solveur empilé verticalement */
+            .solver-row { grid-template-columns:1fr; }
+
+            /* Panneau de log plein écran */
+            .log-panel { width:100%; right:-100%; }
+
+            /* Bouton log : zone tactile 48 px + safe-area home */
+            .log-toggle {
+                bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+                right: calc(20px + env(safe-area-inset-right, 0px));
+                width:48px; height:48px;
+            }
+
+            /* Modal */
+            .modal-box { padding:18px; width:94%; }
+            .modal-box h2 { font-size:0.95rem; }
+
+            /* G-code */
+            .gcode-area { font-size:0.7rem; min-height:140px; }
+
+            /* Boutons : zones tactiles plus confortables */
+            .btn { padding:9px 13px; font-size:0.78rem; }
+            .btn-actions { gap:8px; }
+
+            /* Stats : centré et aéré */
+            .tq-stats { gap:14px; }
+        }
+
+        /* iPhone SE / très petits écrans */
+        @media(max-width:360px) {
+            .puzzle-tile { font-size:1.1rem; }
+            .fg-row3 { grid-template-columns:1fr; }
+            .fg-row4 { grid-template-columns:1fr 1fr; }
+            .page-header h1 { font-size:1.2rem; letter-spacing:1.5px; }
+        }
+
+        /* Solveur empilé sur petits écrans (4 boutons → 2x2) */
+        @media(max-width:500px) {
+            .solver-row { grid-template-columns:1fr 1fr; }
+            .tqviz-modal { width:96%; height:92vh; }
+            .tqviz-header h2 { font-size:0.78rem; }
+        }
+    </style>
+    <script src="/mini_dashboard.js" defer></script>
+    <script src="/bug_reporter.js" defer></script>
+</head>
+<body>
+    <a href="/" class="back-top-btn" aria-label="Retour">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+
+    <div class="tq-page" id="mainPage">
+        <header class="page-header"><h1>Taquin</h1></header>
+
+        <!-- Alert -->
+        <div class="tq-alert" id="tqAlert"></div>
+
+        <!-- ==================== CONFIGURATION ==================== -->
+        <div class="tq-card">
+            <h2>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Configuration
+            </h2>
+            <!-- CNC Status -->
+            <div class="cnc-status">
+                <span class="cnc-status-dot" id="cncStatusDot"></span>
+                <span id="cncStatusText">Deconnecte</span>
+            </div>
+            <div class="fg-row3">
+                <div class="fg">
+                    <label>Origine PCS</label>
+                    <select id="pcsOffset">
+                        <option value="G54">G54 (P1)</option>
+                        <option value="G55">G55 (P2)</option>
+                        <option value="G56">G56 (P3)</option>
+                        <option value="G57">G57 (P4)</option>
+                        <option value="G58">G58 (P5)</option>
+                        <option value="G59">G59 (P6)</option>
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Taille puzzle</label>
+                    <select id="puzzleSize" onchange="changePuzzleSize()">
+                        <option value="4">4 x 4 (15)</option>
+                        <option value="5">5 x 5 (24)</option>
+                        <option value="6">6 x 6 (35)</option>
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Taille case (mm)</label>
+                    <input type="number" id="tileSize" step="0.5" min="5" max="200" value="20">
+                </div>
+            </div>
+            <div class="fg-row3" style="grid-template-columns:1fr 1fr;">
+                <div class="fg">
+                    <label>Z Securite (mm)</label>
+                    <input type="number" id="zSafe" step="0.5" min="0.5" value="5">
+                </div>
+                <div class="fg">
+                    <label>Z Prise (mm)</label>
+                    <input type="number" id="zPick" step="0.1" min="0" value="0.5">
+                </div>
+            </div>
+            <div class="btn-actions" style="justify-content:center;margin-top:6px;">
+                <button class="btn btn-primary" onclick="openHomingModal()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4"/></svg>
+                    Prise d'origine
+                </button>
+            </div>
+            <!-- Mode Test toggle -->
+            <div class="test-mode-row">
+                <label>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    Mode Test
+                </label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="testModeToggle" onchange="toggleTestMode()">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <!-- ==================== GRILLE DE JEU ==================== -->
+        <div class="tq-card" id="puzzleCard">
+            <h2>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h7v7h-7z"/></svg>
+                Grille de Jeu
+            </h2>
+            <div class="tq-stats">
+                <span class="tq-stat">Coups: <strong id="moveCount">0</strong></span>
+                <span class="tq-stat">Solution: <strong id="solutionInfo">-</strong></span>
+                <span class="tq-stat" id="solveStatus"></span>
+            </div>
+            <div class="puzzle-container">
+                <div id="puzzleGrid" class="puzzle-grid">
+                    <div class="cnc-busy" id="cncBusy">
+                        <div class="cnc-spinner"></div>
+                        <span>CNC en mouvement...</span>
+                    </div>
+                </div>
+            </div>
+            <div class="btn-actions" style="justify-content:center;">
+                <button class="btn btn-danger" onclick="resetPuzzle()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                    Reinitialiser
+                </button>
+            </div>
+        </div>
+
+        <!-- ==================== MELANGE PHYSIQUE (Marche aleatoire) ==================== -->
+        <!-- Mode "Record & Replay" : on mélange physiquement la CNC en enregistrant chaque
+             mouvement dans moveHistory. La résolution rejoue simplement l'historique à l'envers,
+             sans aucun calcul mathematique lourd (évite la saturation memoire sur 6x6). -->
+        <div class="tq-card">
+            <h2>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                Melange physique
+            </h2>
+            <div class="input-row">
+                <label for="shuffleCount">Nombre de mouvements&nbsp;:</label>
+                <input type="number" id="shuffleCount" min="1" max="500" step="1" value="30" style="width:90px;">
+                <span class="hint" id="shuffleHint" style="font-size:0.75rem;opacity:0.7;">Mouvements en mémoire&nbsp;: <strong id="historyCount">0</strong></span>
+            </div>
+            <div class="btn-actions" style="margin-top:8px;">
+                <button class="btn btn-warn" id="btnShuffle" onclick="shufflePuzzle()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                    Melanger la grille
+                </button>
+            </div>
+        </div>
+
+        <!-- ==================== GRILLE PERSONNALISÉE ==================== -->
+        <div class="tq-card">
+            <h2>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                Grille personnalisee
+            </h2>
+            <div class="fg">
+                <label for="customGridInput">Entrez les chiffres separees par des virgules (0 = case vide)</label>
+                <input type="text" id="customGridInput" placeholder="Ex: 15,13,3,2,11,14,10,9,8,4,5,7,1,6,12">
+            </div>
+            <div class="btn-actions">
+                <button class="btn btn-primary" onclick="validateCustomGrid()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                    Valider la Grille
+                </button>
+                <button class="btn btn-warn" id="btnSwapLastTwo" onclick="swapLastTwoDigits()" style="display:none;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                    Permuter les 2 derniers
+                </button>
+            </div>
+            <div id="statutAnalyse" style="margin-top:10px;font-size:0.78rem;min-height:18px;"></div>
+        </div>
+
+        <!-- ==================== PARAMETRES OUTIL ET VITESSES ==================== -->
+        <div class="tq-card">
+            <h2>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Parametres Outil et Vitesses
+            </h2>
+            <div class="fg-row3">
+                <div class="fg">
+                    <label>Outil</label>
+                    <select id="toolSelect" onchange="onToolChange()">
+                        <option value="1">T1 - Ventouse Standard</option>
+                        <option value="2">T2 - Ventouse Rapide</option>
+                        <option value="3">T3 - Manuel</option>
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Vitesse XY (mm/min)</label>
+                    <input type="number" id="feedXY" step="100" min="100" value="3000">
+                </div>
+                <div class="fg">
+                    <label>Vitesse Z (mm/min)</label>
+                    <input type="number" id="feedZ" step="50" min="50" value="800">
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== CONTROLES DE RESOLUTION ==================== -->
+        <div class="tq-card">
+            <h2>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                Resolution
+            </h2>
+            <div class="solver-row">
+                <button class="btn btn-primary" id="btnSolve" onclick="openResolutionModal()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                    Resoudre
+                </button>
+                <button class="btn btn-success" id="btnSimulate" onclick="simulateSolution()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Simuler
+                </button>
+                <button class="btn btn-warn" id="btnVisu3D" onclick="openTaquin3DSimulation()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                    Visu 3D
+                </button>
+                <button class="btn btn-danger" id="btnExecute" onclick="executeGcode()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    Executer
+                </button>
+            </div>
+        </div>
+
+        <!-- ==================== G-CODE ==================== -->
+        <div class="tq-card">
+            <h2>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                G-Code
+            </h2>
+            <textarea class="gcode-area" id="gcodeArea" readonly placeholder="Cliquez Resoudre pour calculer la solution et generer le G-code..."></textarea>
+            <div class="btn-actions">
+                <button class="btn" onclick="copyGcode(this)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copier
+                </button>
+                <button class="btn" onclick="downloadGcode()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Telecharger .nc
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== MODAL PRISE D'ORIGINE ==================== -->
+    <div class="modal-overlay" id="modalHoming">
+        <div class="modal-box">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4"/></svg>
+                Prise d'Origine Piece &mdash; <strong id="homingOffsetLabel">G54</strong>
+            </h2>
+            <p>Procedure en <strong>2 etapes</strong> : XY d'abord, puis Z separement.</p>
+            <div class="modal-diagram">
+                Y<br>
+                ^&nbsp;+---+---+---+---+<br>
+                |&nbsp;&nbsp;|&nbsp;1&nbsp;|&nbsp;2&nbsp;|&nbsp;3&nbsp;|&nbsp;4&nbsp;|<br>
+                |&nbsp;+---+---+---+---+<br>
+                |&nbsp;&nbsp;|&nbsp;5&nbsp;|&nbsp;6&nbsp;|&nbsp;7&nbsp;|&nbsp;8&nbsp;|<br>
+                |&nbsp;+---+---+---+---+<br>
+                |&nbsp;&nbsp;|&nbsp;9&nbsp;|10&nbsp;|11&nbsp;|12&nbsp;|<br>
+                |&nbsp;+---+---+---+---+<br>
+                |&nbsp;&nbsp;|13&nbsp;|14&nbsp;|15&nbsp;|&nbsp;&nbsp;&nbsp;|<br>
+                +---+---+---+---+---+-&gt;&nbsp;X<br>
+                &nbsp;&nbsp;&nbsp;^&nbsp;Coin&nbsp;Sud-Ouest&nbsp;=&nbsp;XY0
+            </div>
+            <ul>
+                <li><strong>Etape 1 XY</strong> : Positionnez l'outil sur le <strong>coin Sud-Ouest</strong> du cadre, a hauteur de securite. Cliquez <em>Appliquer XY</em>.<br><small>Commande envoyee : <code>G10 L20 P<span id="homingPNum">1</span> X0 Y0</code></small></li>
+                <li><strong>Etape 2 Z</strong> : Descendez l'outil jusqu'a la <strong>surface de la piece</strong> (MPos Z = hauteur prise). Cliquez <em>Appliquer Z</em>.<br><small>Commande envoyee : <code>G10 L20 P<span class="homingPNumZ">1</span> Z0</code></small></li>
+            </ul>
+            <p style="font-size:0.72rem;color:var(--text-secondary)">Apres chaque etape, un <code>?</code> est envoye automatiquement pour confirmer les nouvelles coordonnees dans la console.</p>
+            <div class="btn-actions" style="flex-wrap:wrap;">
+                <button class="btn" onclick="closeHomingModal()">Annuler</button>
+                <button class="btn btn-warn" id="btnHomingXY" onclick="validateHomingXY()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    Appliquer XY
+                </button>
+                <button class="btn btn-success" id="btnHomingZ" onclick="validateHomingZ()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                    Appliquer Z
+                </button>
+            </div>
+            <!-- Statut retour des commandes -->
+            <div id="homingStatus" style="margin-top:10px;font-size:0.72rem;color:var(--text-secondary);min-height:18px;"></div>
+        </div>
+    </div>
+
+    
+
+    <!-- ==================== MODAL CHOIX RESOLUTION ==================== -->
+    <div class="modal-overlay" id="modalChoixResolution">
+        <div class="modal-box">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                Choisir le mode de resolution
+            </h2>
+            <p>Selectionnez la strategie mecanique de resolution :</p>
+            <div class="solve-mode-cards">
+                <button class="btn btn-primary solve-mode-btn" onclick="chooseSolveMode('pickplace')">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                    <span class="solve-mode-label">1 : Piece par piece</span>
+                    <span class="solve-mode-desc">Pick &amp; Place classique : chaque tuile est soulevee, deplacee au Z securite, puis deposee.</span>
+                </button>
+                <button class="btn btn-success solve-mode-btn" onclick="chooseSolveMode('slide')">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    <span class="solve-mode-label">2 : Comme un humain</span>
+                    <span class="solve-mode-desc">Glissement optimise : les tuiles chainees glissent a hauteur Z prise sans remonter l'axe Z.</span>
+                </button>
+            </div>
+            <div class="btn-actions" style="margin-top:16px;justify-content:center;">
+                <button class="btn" onclick="closeResolutionModal()">Annuler</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== MODAL CALCUL EN COURS ==================== -->
+    <div class="modal-overlay" id="modalSolveProgress">
+        <div class="modal-box" style="max-width:440px;">
+            <h2>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                Resolution du puzzle
+            </h2>
+            <!-- Zone spinner (visible pendant le calcul) -->
+            <div class="solve-spinner" id="solveSpinnerZone">
+                <div class="spinner-ring"></div>
+                <p style="color:var(--text-secondary);font-size:0.82rem;">Calcul de la solution en cours...</p>
+            </div>
+            <!-- Zone rapport (masquee pendant le calcul, visible apres) -->
+            <div class="solve-report" id="solveReportZone">
+                <div class="solve-report-row"><span class="solve-report-label">Temps de calcul IA</span><span class="solve-report-value" id="reportCalcTime">-</span></div>
+                <div class="solve-report-row"><span class="solve-report-label">Mouvements physiques</span><span class="solve-report-value" id="reportMoveCount">-</span></div>
+                <div class="solve-report-row"><span class="solve-report-label">Temps machine estime</span><span class="solve-report-value" id="reportMachineTime">-</span></div>
+            </div>
+            <div class="btn-actions" style="margin-top:16px;">
+                <button class="btn" id="btnSolveCancel" onclick="closeSolveProgressModal()">Annuler</button>
+                <button class="btn btn-success" id="btnSolveGenerate" style="display:none;" onclick="onSolveGenerateAnd3D()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Generer G-code &amp; Lancer 3D
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== MODAL VISU 3D ==================== -->
+    <div class="tqviz-overlay" id="tqVizModal">
+        <div class="tqviz-modal">
+            <div class="tqviz-header">
+                <h2>Simulation 3D Taquin</h2>
+                <div class="tqviz-header-actions">
+                    <button class="btn" id="tqVizIso" title="Vue isométrique">Iso</button>
+                    <button class="btn" id="tqVizTop" title="Vue de dessus">Dessus</button>
+                    <!-- Croix rouge accessible directement depuis le coin supérieur droit -->
+                    <button class="btn btn-danger btn-close-x" id="tqVizCloseX" title="Quitter la Visu 3D" aria-label="Quitter">✕</button>
+                </div>
+            </div>
+            <div class="tqviz-body" id="tqVizCanvas">
+                <div class="tqviz-info">Mvt <span id="tqVizMove">0 / 0</span></div>
+                <div class="tqviz-legend">
+                    <span style="color:#ffe9b0">■ Tuiles</span>
+                    <span style="color:#33ff66">● Ventouse ON</span>
+                    <span style="color:#cc6666">● Ventouse OFF</span>
+                </div>
+            </div>
+            <!-- Toolbar : tous les contrôles TOUJOURS visibles en bas du modal.
+                 Libellés clairs en français (imposé par la spécif d'étiquetage à l'impératif). -->
+            <div class="tqviz-toolbar">
+                <button class="btn btn-success" id="tqVizPlay"  title="Démarrer / reprendre la simulation">▶ Lire</button>
+                <button class="btn btn-warn"    id="tqVizPause" title="Mettre la simulation en pause">◼ Stop</button>
+                <button class="btn"             id="tqVizReset" title="Revenir au tout début du mélange">⏮ Début</button>
+                <span class="tqviz-speed">
+                    Vitesse
+                    <input type="range" id="tqVizSpeed" min="0.25" max="3" step="0.05" value="1">
+                    <span class="speed-val" id="tqVizSpeedVal">1.00x</span>
+                </span>
+                <!-- Bouton Quitter dans la toolbar : redondant avec la croix mais bien visible. -->
+                <button class="btn btn-danger" id="tqVizClose" title="Fermer la Visu 3D">✕ Quitter</button>
+                <div class="tqviz-progressbar"><div class="tqviz-progress" id="tqVizProgress"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== LOG CONSOLE ==================== -->
+    <button class="log-toggle btn" id="logToggle" onclick="toggleLogPanel()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <span class="badge" id="logBadge" style="display:none">0</span>
+    </button>
+
+    <div class="log-panel" id="logPanel">
+        <div class="log-header">
+            <span>Console FluidNC</span>
+            <div class="log-header-actions">
+                <button class="log-header-btn" onclick="clearLog()" title="Effacer">Effacer</button>
+                <button class="log-header-btn" onclick="toggleLogPanel()" title="Fermer">&#10005;</button>
+            </div>
+        </div>
+        <div class="log-content" id="logContent"></div>
+    </div>
+
+    <script src="main.js"></script>
+    <script>
+    // ============================================================
+    //  PARAMETRES MODIFIABLES (valeurs par defaut)
+    // ============================================================
+    const HAUTEUR_SECURITE = 5;       // mm - hauteur de degagement
+    const HAUTEUR_PRISE    = 0.5;     // mm - hauteur de prise (ventouse)
+    const VITESSE_DESCENTE = 800;     // mm/min - vitesse G1 Z
+    const PAUSE_VIDE       = 0.5;     // secondes - pause aspiration/relachement
+    const DELAI_ENVOI      = 100;     // ms entre chaque ligne G-code envoi
+    const DRAG_THRESHOLD   = 0.35;    // ratio de la taille de tuile pour valider un drag
+
+    // ============================================================
+    //  ETAT GLOBAL
+    // ============================================================
+    // Taille du puzzle (4, 5 ou 6). GOAL et board sont reconstruits dynamiquement.
+    let SIZE     = 4;
+    let GOAL     = buildGoal(SIZE);
+    let board    = [...GOAL];
+    let emptyIdx = SIZE * SIZE - 1;
+    let moveCount = 0;
+    let solution = null;
+    let solvedBoardState = null;
+    let gcodeText = '';
+    let solveMode = 'pickplace'; // 'pickplace' ou 'slide'
+    let isExecuting = false;
+    let originValidated = false;
+
+    // --- MEMOIRE HISTORIQUE (Record & Replay) ---
+    // Chaque entrée = { fromIdx, toIdx, tile } :
+    //   - fromIdx : index initial de la tuile (avant le mouvement)
+    //   - toIdx   : index ou la tuile est arrivée (= ancien emptyIdx)
+    //   - tile    : valeur de la tuile (1..n²-1) pour pouvoir tracer/vérifier
+    // Alimenté par TOUS les mouvements validés (drag manuel + mélange auto).
+    // Vidé lors d'un reset, d'un changement de taille, d'une prise d'origine ou d'un replay résolu.
+    let moveHistory = [];
+
+    // Construit l'état résolu : [1, 2, ..., n*n-1, 0]
+    function buildGoal(n) {
+        const g = [];
+        for (let i = 1; i < n * n; i++) g.push(i);
+        g.push(0);
+        return g;
+    }
+
+    // Adapte la taille des tuiles selon SIZE pour rester dans la largeur disponible.
+    function applyGridLayout() {
+        const grid = document.getElementById('puzzleGrid');
+        if (grid) grid.style.gridTemplateColumns = 'repeat(' + SIZE + ',1fr)';
+        // Tuiles plus petites pour 5×5 et 6×6, et adaptation mobile.
+        const isMobile = window.matchMedia('(max-width:500px)').matches;
+        const isTiny   = window.matchMedia('(max-width:360px)').matches;
+        let px;
+        if (isTiny)        px = SIZE === 4 ? 58 : SIZE === 5 ? 48 : 40;
+        else if (isMobile) px = SIZE === 4 ? 64 : SIZE === 5 ? 54 : 46;
+        else               px = SIZE === 4 ? 72 : SIZE === 5 ? 60 : 52;
+        document.documentElement.style.setProperty('--tile-size', px + 'px');
+    }
+
+    // Directions : [dr, dc] - U=0, D=1, L=2, R=3
+    const DIRS = [[-1,0],[1,0],[0,-1],[0,1]];
+
+    // --- Drag & Drop ---
+    let isDragging = false;
+    let dragTileIdx = -1;
+    let dragTileEl = null;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragDirX = 0;        // direction vers la case vide (-1, 0, 1)
+    let dragDirY = 0;
+    let dragMaxDist = 0;     // distance max en pixels (taille tuile)
+
+    // --- CNC Lock ---
+    let cncLocked = false;
+    let cncWasRunning = false;  // vrai si on a detecte <Run|...> depuis le verrouillage
+    let cncLockTimeout = null;  // timeout de securite (30s)
+
+    // --- Mode Test ---
+    let testMode = false;
+
+    // --- Log Console ---
+    let logCount = 0;
+
+    // --- Synchronisation multi-appareils (taquin_init / taquin_update) ---
+    // Quand on applique une mise à jour venant de l'ESP32 (donc d'un autre appareil),
+    // on lit cette variable pour NE PAS renvoyer le G-code à FluidNC ni rebroadcaster.
+    let _applyingRemote = false;
+
+    // ============================================================
+    //  INITIALISATION
+    // ============================================================
+    document.addEventListener('DOMContentLoaded', () => {
+        initPageWS();
+        applyGridLayout();
+        renderGrid();
+        // Re-applique la taille des tuiles si l'utilisateur change d'orientation / rédimensionne.
+        window.addEventListener('resize', applyGridLayout);
+        gsap.from('.tq-card', { y:15, opacity:0, duration:0.4, stagger:0.1, ease:'power2.out' });
+    });
+
+    // Ecouteurs globaux pour le drag & drop
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+    document.addEventListener('pointercancel', onPointerCancel);
+
+    // ============================================================
+    //  WEBSOCKET (utilise cncSocket de main.js)
+    // ============================================================
+    function initPageWS() {
+        // Etat initial (main.js peut avoir deja connecte)
+        if (typeof cncConnected !== 'undefined' && cncConnected) {
+            addLog('WebSocket connecte', 'info');
+            updateCncStatus('connected', 'Connecte');
+            // Demander l'etat taquin initial
+            requestTaquinInit();
+        }
+        // Handler open/close
+        window.addCncSocketStateHandler(function(connected) {
+            if (connected) {
+                addLog('WebSocket connecte', 'info');
+                updateCncStatus('connected', 'Connecte');
+                requestTaquinInit();
+            } else {
+                addLog('WebSocket deconnecte', 'error');
+                updateCncStatus('', 'Deconnecte');
+            }
+        });
+        // Handler messages
+        window.addCncSocketMessageHandler(function(data) {
+            var msg = data;
+            // --- Messages JSON taquin_* (synchronisation multi-appareils) ---
+            if (typeof msg === 'string' && msg.length > 0 && msg.charAt(0) === '{') {
+                try {
+                    var obj = JSON.parse(msg);
+                    if (obj && typeof obj.type === 'string' && obj.type.indexOf('taquin_') === 0) {
+                        handleTaquinMessage(obj);
+                        return;
+                    }
+                } catch (e) {}
+            }
+            addLog(msg, 'recv');
+            parseGrblStatus(msg);
+        });
+    }
+    function initWS() { initPageWS(); }
+
+    function requestTaquinInit() {
+        if (cncSocket && cncSocket.readyState === WebSocket.OPEN) {
+            cncSocket.send(JSON.stringify({ type: 'taquin_request' }));
+        }
+    }
+
+    function parseGrblStatus(msg) {
+        if (typeof msg !== 'string' || !msg.startsWith('<')) return;
+        const match = msg.match(/^<(\w+)/);
+        if (!match) return;
+        const state = match[1];
+
+        if (state === 'Run' || state === 'Jog') {
+            cncWasRunning = true;
+            updateCncStatus('running', state);
+        } else if (state === 'Idle') {
+            updateCncStatus('connected', 'Idle');
+            if (cncLocked && cncWasRunning) {
+                unlockInterface();
+                showAlert('CNC terminee - interface deverouillee', 'ok');
+            }
+        } else if (state === 'Hold') {
+            updateCncStatus('running', 'Hold');
+        } else if (state === 'Alarm') {
+            updateCncStatus('', 'Alarme');
+            if (cncLocked) {
+                unlockInterface();
+                showAlert('Alarme CNC - interface deverouillee', 'err');
+            }
+        } else {
+            updateCncStatus('connected', state);
+        }
+    }
+
+    function updateCncStatus(dotClass, text) {
+        const dot = document.getElementById('cncStatusDot');
+        const txt = document.getElementById('cncStatusText');
+        dot.className = 'cnc-status-dot' + (dotClass ? ' ' + dotClass : '');
+        txt.textContent = text + (testMode ? ' (Test)' : '');
+    }
+
+    function sendCommand(cmd) {
+        addLog('> ' + cmd, 'send');
+        if (testMode) return;
+        if (typeof window.sendCommand === 'function' && window.sendCommand !== sendCommand) {
+            window.sendCommand(cmd);
+        } else if (cncSocket && cncSocket.readyState === WebSocket.OPEN) {
+            cncSocket.send(cmd);
+        }
+    }
+
+    // ============================================================
+    //  TAQUIN — SYNCHRONISATION MULTI-APPAREILS
+    // ============================================================
+    /** Envoie l'état courant de la grille à l'ESP32 (qui rediffuse aux autres clients). */
+    function syncTaquinGrid() {
+        if (_applyingRemote) return;
+        if (!cncSocket || cncSocket.readyState !== WebSocket.OPEN) return;
+        cncSocket.send(JSON.stringify({
+            type: 'taquin_update',
+            size: SIZE,
+            grid: board,
+            moveCount: moveCount
+        }));
+    }
+
+    /** Envoie le G-code généré à l'ESP32 pour qu'il le mémorise (restauration au reload). */
+    function syncTaquinGcode(text) {
+        if (_applyingRemote) return;
+        if (!cncSocket || cncSocket.readyState !== WebSocket.OPEN) return;
+        cncSocket.send(JSON.stringify({ type: 'taquin_save_gcode', gcode: text || '' }));
+    }
+
+    /** Applique une grille distante sans redéclencher de mouvement physique CNC. */
+    function applyRemoteGrid(newGrid, newMoveCount, newSize) {
+        if (!Array.isArray(newGrid)) return;
+        // Déduit la taille si fournie, sinon on tente à partir de la longueur de la grille.
+        let s = (typeof newSize === 'number' && [4,5,6].includes(newSize)) ? newSize : null;
+        if (s === null) {
+            if (newGrid.length === 16) s = 4;
+            else if (newGrid.length === 25) s = 5;
+            else if (newGrid.length === 36) s = 6;
+            else return;   // taille non reconnue
+        }
+        if (newGrid.length !== s * s) return;
+
+        _applyingRemote = true;
+        try {
+            // Si la taille a changé, on reconstruit GOAL/SIZE et on relayoute.
+            if (s !== SIZE) {
+                SIZE = s;
+                GOAL = buildGoal(SIZE);
+                const sel = document.getElementById('puzzleSize');
+                if (sel) sel.value = String(SIZE);
+                applyGridLayout();
+            }
+            board = newGrid.slice();
+            emptyIdx = board.indexOf(0);
+            // Met à jour le compteur de coups si fourni (sinon on garde la valeur locale).
+            if (typeof newMoveCount === 'number' && !isNaN(newMoveCount)) {
+                moveCount = newMoveCount;
+                const mc = document.getElementById('moveCount');
+                if (mc) mc.textContent = moveCount;
+            }
+            // On reset la solution car le plateau a changé hors de notre contrôle.
+            solution = null;
+            solvedBoardState = null;
+            // Idem pour l'historique : un autre appareil a modifié le plateau,
+            // notre mémoire locale ne reflète plus le vrai chemin parcouru.
+            moveHistory = [];
+            updateHistoryCount();
+            const info = document.getElementById('solutionInfo');
+            if (info) info.textContent = '-';
+            renderGrid();
+            checkSolved();
+        } finally {
+            _applyingRemote = false;
+        }
+    }
+
+    /** Aiguillage des messages JSON taquin_* reçus via WebSocket. */
+    function handleTaquinMessage(obj) {
+        if (obj.type === 'taquin_init') {
+            // État initial envoyé par l'ESP32 à la connexion : grille + dernier G-code.
+            if (Array.isArray(obj.grid)) {
+                applyRemoteGrid(obj.grid, obj.moveCount, obj.size);
+            }
+            if (typeof obj.gcode === 'string') {
+                gcodeText = obj.gcode;
+                const ta = document.getElementById('gcodeArea');
+                if (ta) ta.value = gcodeText;
+            }
+            addLog('[Taquin] etat synchronise depuis ESP32', 'info');
+        } else if (obj.type === 'taquin_update') {
+            // Mise à jour poussée par un AUTRE client → on rafraîchit l'affichage local
+            // sans renvoyer de commande à FluidNC ni rebroadcaster.
+            if (Array.isArray(obj.grid)) {
+                applyRemoteGrid(obj.grid, obj.moveCount, obj.size);
+                addLog('[Taquin] grille mise a jour depuis un autre appareil', 'info');
+            }
+        }
+    }
+
+    function sendGcodeLines(lines) {
+        const filtered = lines.filter(l => l.trim() !== '');
+        if (testMode) {
+            filtered.forEach(line => addLog('[TEST] ' + line.trim(), 'test'));
+            lockInterface();
+            setTimeout(() => {
+                if (cncLocked) {
+                    unlockInterface();
+                    showAlert('[Mode Test] Mouvement simule', 'ok');
+                }
+            }, 1000);
+            return;
+        }
+        if (!cncSocket || cncSocket.readyState !== WebSocket.OPEN) return;
+        let delay = 0;
+        filtered.forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            setTimeout(() => {
+                cncSocket.send(trimmed);
+                addLog('> ' + trimmed, 'send');
+            }, delay);
+            delay += DELAI_ENVOI;
+        });
+    }
+
+    // ============================================================
+    //  CNC LOCK / UNLOCK
+    // ============================================================
+    function lockInterface() {
+        cncLocked = true;
+        cncWasRunning = false;
+        document.getElementById('mainPage').classList.add('cnc-locked');
+        document.getElementById('cncBusy').classList.add('active');
+        // Timeout de securite : 30 secondes
+        cncLockTimeout = setTimeout(() => {
+            if (cncLocked) {
+                unlockInterface();
+                showAlert('Timeout CNC (30s) - interface deverouillee', 'warn');
+            }
+        }, 30000);
+    }
+
+    function unlockInterface() {
+        cncLocked = false;
+        cncWasRunning = false;
+        if (cncLockTimeout) { clearTimeout(cncLockTimeout); cncLockTimeout = null; }
+        document.getElementById('mainPage').classList.remove('cnc-locked');
+        document.getElementById('cncBusy').classList.remove('active');
+    }
+
+    function isLocked() {
+        return isExecuting || cncLocked;
+    }
+
+    // ============================================================
+    //  MODE TEST
+    // ============================================================
+    function toggleTestMode() {
+        testMode = document.getElementById('testModeToggle').checked;
+        addLog(testMode ? 'Mode Test ACTIVE' : 'Mode Test DESACTIVE', 'info');
+        updateCncStatus(
+            testMode ? 'test' : (cncSocket && cncSocket.readyState === WebSocket.OPEN ? 'connected' : ''),
+            testMode ? 'Test' : (cncSocket && cncSocket.readyState === WebSocket.OPEN ? 'Connecte' : 'Deconnecte')
+        );
+        if (testMode && cncLocked) {
+            // En mode test, deverrouiller immediatement
+            unlockInterface();
+        }
+    }
+
+    // ============================================================
+    //  LOG CONSOLE
+    // ============================================================
+    function addLog(msg, type) {
+        const content = document.getElementById('logContent');
+        const entry = document.createElement('div');
+        entry.className = 'log-entry ' + (type || 'info');
+        const now = new Date();
+        const ts = now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+        entry.innerHTML = '<span class="log-time">' + ts + '</span>' + escapeHtml(String(msg));
+        content.appendChild(entry);
+        content.scrollTop = content.scrollHeight;
+        logCount++;
+        // Badge sur le bouton si le panneau est ferme
+        const panel = document.getElementById('logPanel');
+        if (!panel.classList.contains('open')) {
+            const badge = document.getElementById('logBadge');
+            badge.style.display = 'flex';
+            badge.textContent = logCount > 99 ? '99+' : logCount;
+        }
+    }
+
+    function clearLog() {
+        document.getElementById('logContent').innerHTML = '';
+        logCount = 0;
+        document.getElementById('logBadge').style.display = 'none';
+    }
+
+    function toggleLogPanel() {
+        const panel = document.getElementById('logPanel');
+        panel.classList.toggle('open');
+        if (panel.classList.contains('open')) {
+            logCount = 0;
+            document.getElementById('logBadge').style.display = 'none';
+            // Auto-scroll en bas a l'ouverture
+            const content = document.getElementById('logContent');
+            content.scrollTop = content.scrollHeight;
+        }
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // ============================================================
+    //  GRILLE DE JEU - RENDU
+    // ============================================================
+    function renderGrid() {
+        const grid = document.getElementById('puzzleGrid');
+        // Conserver le overlay CNC busy
+        const busyEl = document.getElementById('cncBusy');
+        grid.innerHTML = '';
+        const total = SIZE * SIZE;
+        for (let i = 0; i < total; i++) {
+            const tile = document.createElement('div');
+            const val = board[i];
+            if (val === 0) {
+                tile.className = 'puzzle-tile empty';
+            } else {
+                tile.className = 'puzzle-tile';
+                if (val === i + 1) tile.classList.add('correct');
+                tile.textContent = val;
+                tile.addEventListener('pointerdown', onPointerDown);
+            }
+            grid.appendChild(tile);
+        }
+        // Reinserer l'overlay
+        if (busyEl) grid.appendChild(busyEl);
+        document.getElementById('moveCount').textContent = moveCount;
+    }
+
+    // ============================================================
+    //  DRAG & DROP (POINTER EVENTS)
+    // ============================================================
+    function onPointerDown(e) {
+        if (isLocked()) return;
+
+        const tile = e.currentTarget;
+        const idx = [...tile.parentNode.querySelectorAll('.puzzle-tile')].indexOf(tile);
+        const val = board[idx];
+        if (val === 0) return;
+
+        // Verifier adjacency avec la case vide
+        const row = (idx / SIZE) | 0;
+        const col = idx % SIZE;
+        const eRow = (emptyIdx / SIZE) | 0;
+        const eCol = emptyIdx % SIZE;
+
+        const dr = eRow - row;
+        const dc = eCol - col;
+        if (!((Math.abs(dr) === 1 && dc === 0) || (dr === 0 && Math.abs(dc) === 1))) return;
+
+        // Initialiser le drag
+        isDragging = true;
+        dragTileIdx = idx;
+        dragTileEl = tile;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        dragDirX = dc;  // direction vers le vide
+        dragDirY = dr;
+
+        // Distance max = taille d'une tuile en pixels
+        const rect = tile.getBoundingClientRect();
+        dragMaxDist = dragDirX !== 0 ? rect.width + 3 : rect.height + 3; // +3 pour le gap
+
+        tile.classList.add('dragging');
+        e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+        if (!isDragging || !dragTileEl) return;
+
+        const dx = e.clientX - dragStartX;
+        const dy = e.clientY - dragStartY;
+
+        // Projeter sur la direction autorisee uniquement
+        let moveX = 0, moveY = 0;
+        if (dragDirX !== 0) {
+            // Mouvement horizontal uniquement
+            const projected = dx * dragDirX; // positif si dans la bonne direction
+            const clamped = Math.max(0, Math.min(projected, dragMaxDist));
+            moveX = clamped * dragDirX;
+        } else {
+            // Mouvement vertical uniquement
+            const projected = dy * dragDirY;
+            const clamped = Math.max(0, Math.min(projected, dragMaxDist));
+            moveY = clamped * dragDirY;
+        }
+
+        dragTileEl.style.transform = 'translate(' + moveX + 'px,' + moveY + 'px)';
+    }
+
+    function onPointerUp(e) {
+        if (!isDragging || !dragTileEl) return;
+
+        const dx = e.clientX - dragStartX;
+        const dy = e.clientY - dragStartY;
+
+        // Calculer la distance dans la direction autorisee
+        let moved = 0;
+        if (dragDirX !== 0) {
+            moved = Math.max(0, dx * dragDirX);
+        } else {
+            moved = Math.max(0, dy * dragDirY);
+        }
+
+        // Si mouvement tres faible (< 5px), considerer comme un tap
+        const isTap = (Math.abs(dx) < 5 && Math.abs(dy) < 5);
+        const threshold = dragMaxDist * DRAG_THRESHOLD;
+
+        dragTileEl.classList.remove('dragging');
+
+        if (isTap || moved > threshold) {
+            // Completer le mouvement : animer vers la position finale
+            dragTileEl.classList.add('snapping');
+            const finalX = dragDirX !== 0 ? dragMaxDist * dragDirX : 0;
+            const finalY = dragDirY !== 0 ? dragMaxDist * dragDirY : 0;
+            dragTileEl.style.transform = 'translate(' + finalX + 'px,' + finalY + 'px)';
+
+            const tileIdx = dragTileIdx;
+            const tileEl = dragTileEl;
+
+            setTimeout(() => {
+                tileEl.classList.remove('snapping');
+                tileEl.style.transform = '';
+                executeTileMove(tileIdx);
+            }, 160);
+        } else {
+            // Revenir a la position initiale
+            dragTileEl.classList.add('snapping');
+            dragTileEl.style.transform = 'translate(0px,0px)';
+            const tileEl = dragTileEl;
+            setTimeout(() => {
+                tileEl.classList.remove('snapping');
+                tileEl.style.transform = '';
+            }, 160);
+        }
+
+        isDragging = false;
+        dragTileIdx = -1;
+        dragTileEl = null;
+    }
+
+    function onPointerCancel(e) {
+        if (!isDragging || !dragTileEl) return;
+        dragTileEl.classList.remove('dragging', 'snapping');
+        dragTileEl.style.transform = '';
+        isDragging = false;
+        dragTileIdx = -1;
+        dragTileEl = null;
+    }
+
+    // ============================================================
+    //  EXECUTION D'UN MOUVEMENT DE TUILE
+    // ============================================================
+    function executeTileMove(idx) {
+        const row = (idx / SIZE) | 0;
+        const col = idx % SIZE;
+        const eRow = (emptyIdx / SIZE) | 0;
+        const eCol = emptyIdx % SIZE;
+
+        // Securite : verifier adjacency
+        const dr = Math.abs(row - eRow);
+        const dc = Math.abs(col - eCol);
+        if (!((dr === 1 && dc === 0) || (dr === 0 && dc === 1))) return;
+
+        // Mémorisation AVANT modification : on a besoin de l'ancien emptyIdx et de la tuile.
+        const fromIdx = idx;
+        const toIdx   = emptyIdx;
+        const tile    = board[idx];
+
+        // Deplacement logique
+        board[emptyIdx] = board[idx];
+        board[idx] = 0;
+
+        // RECORD : enregistrer le mouvement dans l'historique (sauf si l'état vient
+        // d'un autre client - dans ce cas on ne sait pas reconstruire l'historique distant).
+        if (!_applyingRemote) {
+            moveHistory.push({ fromIdx, toIdx, tile });
+            updateHistoryCount();
+        }
+
+        // Envoi G-code : on envoie toujours, mais on alerte si l'origine
+        // n'a pas ete validee (utilisateur peut avoir fixé son G54 manuellement).
+        // Quand l'état vient d'être appliqué à distance (autre appareil), _applyingRemote
+        // est vrai → on ne renvoie ni à FluidNC ni au broadcast (pas de boucle).
+        if (!_applyingRemote) {
+            const tileSize = getTileSize();
+            const zS = getZSafe();
+            const zP = getZPick();
+            const fD = getFeedDown();
+            const fXY = getFeedXY();
+            const xA = col * tileSize + tileSize / 2;
+            const yA = (SIZE - 1 - row) * tileSize + tileSize / 2;
+            const xB = eCol * tileSize + tileSize / 2;
+            const yB = (SIZE - 1 - eRow) * tileSize + tileSize / 2;
+            const lines = buildPickPlace(xA, yA, xB, yB, zS, zP, fD, fXY);
+            sendGcodeLines(lines);
+            if (!originValidated && !window._taquinOriginWarned) {
+                window._taquinOriginWarned = true;
+                showAlert('Attention : origine non validee. Le G-code utilise le repere CNC actuel.', 'warn');
+            }
+        }
+
+        emptyIdx = idx;
+        moveCount++;
+        document.getElementById('moveCount').textContent = moveCount;
+        // Une solution précédente est invalidée car le plateau a changé hors du replay.
+        solution = null;
+        solvedBoardState = null;
+        document.getElementById('solutionInfo').textContent = '-';
+        renderGrid();
+        checkSolved();
+        // Diffuser le nouvel état à l'ESP32 → autres appareils (no-op si _applyingRemote).
+        syncTaquinGrid();
+    }
+
+    /** Met à jour l'indicateur "Mouvements en mémoire" affiché dans la carte Mélange. */
+    function updateHistoryCount() {
+        const el = document.getElementById('historyCount');
+        if (el) el.textContent = moveHistory.length;
+    }
+
+    // ============================================================
+    //  SEQUENCE G-CODE VENTOUSE (Pick & Place)
+    // ============================================================
+    function buildPickPlace(xA, yA, xB, yB, zS, zP, fD, fXY) {
+        var fxyStr = fXY ? (' F' + fXY) : '';
+        return [
+            'G0 Z' + zS.toFixed(2),
+            'G0 X' + xA.toFixed(3) + ' Y' + yA.toFixed(3) + fxyStr,
+            'G1 Z' + zP.toFixed(2) + ' F' + fD,
+            'M7 (Ouvre electrovanne - prise)',
+            'G4 P' + PAUSE_VIDE,
+            'G0 Z' + zS.toFixed(2),
+            'G0 X' + xB.toFixed(3) + ' Y' + yB.toFixed(3) + fxyStr,
+            'G1 Z' + zP.toFixed(2) + ' F' + fD,
+            'M9 (Coupe vanne et pompe)',
+            'M8 (Relance pompe instantanement)',
+            'G4 P' + PAUSE_VIDE,
+            'G0 Z' + zS.toFixed(2)
+        ];
+    }
+
+    // ============================================================
+    //  REINITIALISATION
+    // ============================================================
+    function resetPuzzle() {
+        if (isLocked()) return;
+        board = [...GOAL];
+        emptyIdx = SIZE * SIZE - 1;
+        moveCount = 0;
+        solution = null;
+        solvedBoardState = null;
+        gcodeText = '';
+        // L'historique n'a plus de sens : le plateau revient à l'état résolu.
+        moveHistory = [];
+        updateHistoryCount();
+        document.getElementById('gcodeArea').value = '';
+        document.getElementById('solutionInfo').textContent = '-';
+        document.getElementById('solveStatus').textContent = '';
+        renderGrid();
+        // Synchroniser tous les appareils sur l'état résolu + vider le G-code stocké ESP32.
+        syncTaquinGrid();
+        syncTaquinGcode('');
+        showAlert('Puzzle reinitialise', 'ok');
+    }
+
+    // ============================================================
+    //  CHANGEMENT DE TAILLE DU PUZZLE (4 / 5 / 6)
+    // ============================================================
+    function changePuzzleSize() {
+        if (isLocked()) {
+            // Restaurer la valeur du select pour ne pas refléter un changement non appliqué
+            document.getElementById('puzzleSize').value = String(SIZE);
+            showAlert('Impossible de changer la taille pendant un mouvement CNC', 'warn');
+            return;
+        }
+        const sel = document.getElementById('puzzleSize');
+        const newSize = parseInt(sel.value, 10);
+        if (![4,5,6].includes(newSize) || newSize === SIZE) return;
+
+        SIZE = newSize;
+        GOAL = buildGoal(SIZE);
+        board = [...GOAL];
+        emptyIdx = SIZE * SIZE - 1;
+        moveCount = 0;
+        solution = null;
+        solvedBoardState = null;
+        gcodeText = '';
+        // Changement de taille = nouveau plateau => historique précédent obsolète.
+        moveHistory = [];
+        updateHistoryCount();
+        document.getElementById('gcodeArea').value = '';
+        document.getElementById('solutionInfo').textContent = '-';
+        document.getElementById('solveStatus').textContent = '';
+
+        applyGridLayout();
+        renderGrid();
+
+        // Diffuser la nouvelle taille à l'ESP32 → autres appareils.
+        syncTaquinGrid();
+        syncTaquinGcode('');
+
+        // Information sur la nouvelle taille. Le solveur etant en mode "Replay" (O(N), instantane),
+        // il n'y a plus de limite de temps materielle - seul le melange physique prend du temps.
+        if (SIZE >= 6) {
+            showAlert('Puzzle ' + SIZE + 'x' + SIZE + ' pret - melange physique recommande : 60+ mouvements', 'ok');
+        } else if (SIZE >= 5) {
+            showAlert('Puzzle ' + SIZE + 'x' + SIZE + ' pret - melange physique recommande : 40+ mouvements', 'ok');
+        } else {
+            showAlert('Puzzle ' + SIZE + 'x' + SIZE + ' pret', 'ok');
+        }
+    }
+
+    // ============================================================
+    //  MELANGE PHYSIQUE - Marche aleatoire enregistree (RECORD)
+    // ============================================================
+    //  Strategie "Record & Replay" :
+    //    1) On choisit N mouvements au hasard parmi les tuiles adjacentes à la case vide.
+    //    2) On INTERDIT le retour immédiat en arrière : la tuile qui vient de bouger
+    //       (et qui occupe désormais l'ancienne position de la case vide) ne peut PAS
+    //       être rebougee au coup suivant => évite les aller-retours inutiles de la CNC.
+    //    3) Chaque mouvement physique est envoyé a FluidNC via WebSocket, et on attend
+    //       le retour <Idle|...> AVANT le mouvement suivant (synchronisation stricte).
+    //    4) Chaque mouvement est aussi PUSHÉ dans moveHistory => le solveur n'aura qu'a
+    //       inverser cette liste pour ramener le puzzle a son etat initial.
+    // ============================================================
+
+    /** Retourne la liste des indices des tuiles actuellement adjacentes a la case vide. */
+    function getMovableTileIndices() {
+        const eR = (emptyIdx / SIZE) | 0;
+        const eC = emptyIdx % SIZE;
+        const out = [];
+        for (let d = 0; d < 4; d++) {
+            const nR = eR + DIRS[d][0];
+            const nC = eC + DIRS[d][1];
+            if (nR < 0 || nR >= SIZE || nC < 0 || nC >= SIZE) continue;
+            out.push(nR * SIZE + nC);
+        }
+        return out;
+    }
+
+    /** Génère INSTANTANÉMENT le G-code d'un mélange physique de N mouvements.
+     *  - Aucune communication CNC pendant la génération : tout est calculé en mémoire.
+     *  - Le board JS est mis à jour pour refléter l'état mélangé final.
+     *  - L'historique moveHistory est rempli pour permettre la résolution par replay inversé.
+     *  - Le G-code complet est placé dans la textarea et mémorisé côté ESP32.
+     *  L'utilisateur cliquera ensuite sur "Executer" pour envoyer la séquence à FluidNC. */
+    function shufflePuzzle() {
+        if (isLocked()) return;
+        const inputN = parseInt(document.getElementById('shuffleCount').value, 10);
+        const N = (isNaN(inputN) || inputN < 1) ? 30 : Math.min(500, inputN);
+
+        if (!originValidated && !window._taquinOriginWarned) {
+            window._taquinOriginWarned = true;
+            showAlert('Attention : origine non validee. Le G-code utilise le repere CNC actuel.', 'warn');
+        }
+
+        // Paramètres communs (lus une seule fois, le mélange est instantané)
+        const tileSize = getTileSize();
+        const offset   = document.getElementById('pcsOffset').value;
+        const zS       = getZSafe();
+        const zP       = getZPick();
+        const fD       = getFeedDown();
+        const fXY      = getFeedXY();
+        const toolNum  = getToolNumber();
+
+        // En-tete G-code
+        const lines = [];
+        lines.push('(==========================================)');
+        lines.push('( BOBCNC - Taquin MELANGE PHYSIQUE)');
+        lines.push('( Taille puzzle: ' + SIZE + 'x' + SIZE + ')');
+        lines.push('( Taille case: ' + tileSize + ' mm)');
+        lines.push('( Origine PCS: ' + offset + ')');
+        lines.push('( Z Securite: ' + zS + ' mm | Z Prise: ' + zP + ' mm)');
+        lines.push('( Outil: T' + toolNum + ' | Vitesse XY: ' + fXY + ' mm/min | Vitesse Z: ' + fD + ' mm/min)');
+        lines.push('( Mouvements demandes: ' + N + ')');
+        lines.push('( Genere par marche aleatoire - anti retour-arriere)');
+        lines.push('(==========================================)');
+        lines.push('');
+        lines.push('G90 G21 G17');
+        lines.push(offset);
+        lines.push('T' + toolNum + ' M6 (Appel outil T' + toolNum + ')');
+        lines.push('M8 (Allume la pompe a vide globale)');
+        lines.push('G4 P2.0 (Pause de 2 secondes pour laisser le vide s\'etablir)');
+        lines.push('G0 Z' + zS.toFixed(2));
+        lines.push('');
+
+        // Index de la TUILE qui vient de bouger (= ancien emptyIdx après mouvement).
+        // Interdit au coup suivant pour éviter aller-retours inutiles de la CNC.
+        let lastMovedTileIdx = -1;
+        let done = 0;
+
+        for (let i = 0; i < N; i++) {
+            const candidates = getMovableTileIndices();
+            let pool = candidates.filter(t => t !== lastMovedTileIdx);
+            if (pool.length === 0) pool = candidates;     // sécurité grille dégénérée
+            if (pool.length === 0) break;                  // ne devrait jamais arriver
+
+            const pick    = pool[Math.floor(Math.random() * pool.length)];
+            const row     = (pick / SIZE) | 0;
+            const col     = pick % SIZE;
+            const eRow    = (emptyIdx / SIZE) | 0;
+            const eCol    = emptyIdx % SIZE;
+            const fromIdx = pick;
+            const toIdx   = emptyIdx;
+            const tile    = board[pick];
+
+            // Coordonnées pick (A) et place (B)
+            const xA = col  * tileSize + tileSize / 2;
+            const yA = (SIZE - 1 - row)  * tileSize + tileSize / 2;
+            const xB = eCol * tileSize + tileSize / 2;
+            const yB = (SIZE - 1 - eRow) * tileSize + tileSize / 2;
+
+            lines.push('(Mvt ' + (i + 1) + '/' + N + ': tuile ' + tile + ' de (' + xA.toFixed(1) + ',' + yA.toFixed(1) + ') vers (' + xB.toFixed(1) + ',' + yB.toFixed(1) + '))');
+            const ppLines = buildPickPlace(xA, yA, xB, yB, zS, zP, fD, fXY);
+            for (let k = 0; k < ppLines.length; k++) lines.push(ppLines[k]);
+            lines.push('');
+
+            // Mise à jour logique du plateau
+            board[toIdx]   = tile;
+            board[fromIdx] = 0;
+            emptyIdx = fromIdx;
+            moveCount++;
+            moveHistory.push({ fromIdx, toIdx, tile });
+            lastMovedTileIdx = toIdx;
+            done++;
+        }
+
+        // Pied de page G-code
+        lines.push('(==========================================)');
+        lines.push('( Fin melange - ' + done + ' mouvements)');
+        lines.push('(==========================================)');
+        lines.push('G0 Z' + zS.toFixed(2));
+        lines.push('G0 X0 Y0');
+        lines.push('M9 (Coupe definitivement la pompe et la vanne)');
+        lines.push('M2');
+
+        // Affichage et persistance
+        gcodeText = wrapWithStartEndGcode(lines.join('\n'));
+        document.getElementById('gcodeArea').value = gcodeText;
+        document.getElementById('moveCount').textContent = moveCount;
+        document.getElementById('solutionInfo').textContent = '-';
+        // Une ancienne solution est invalidée : le board a changé.
+        solution = null;
+        solvedBoardState = null;
+        updateHistoryCount();
+        renderGrid();
+        syncTaquinGrid();
+        syncTaquinGcode(gcodeText);
+
+        showAlert('Melange genere : ' + done + ' mouvements - G-code pret. Cliquez Executer.', 'ok');
+    }
+
+    // ============================================================
+    //  SOLVEUR - REPLAY INVERSE (zero calcul mathematique lourd)
+    // ============================================================
+    //  Principe : la solution est tout simplement l'INVERSION de moveHistory.
+    //  Chaque mouvement enregistré {fromIdx, toIdx, tile} signifie :
+    //    "la tuile <tile> a sauté de <fromIdx> vers <toIdx> (= ancien emptyIdx)".
+    //  Pour annuler : on parcourt moveHistory à l'envers et pour chaque entree
+    //  on déplace la tuile de toIdx vers fromIdx (la case vide va donc de fromIdx vers toIdx).
+    //  On convertit en séquence de directions DIRS[0..3] pour rester compatible avec
+    //  generateFullGcode(), simulateSolution() et la Visu 3D existants.
+    // ============================================================
+    function solvePuzzle() {
+        if (isLocked()) return;
+
+        if (board.every((v, i) => v === GOAL[i])) {
+            solution = [];
+            solvedBoardState = [...board];
+            document.getElementById('solutionInfo').textContent = '0';
+            generateFullGcode();
+            showAlert('Le puzzle est deja resolu !', 'ok');
+            return;
+        }
+
+        if (!moveHistory || moveHistory.length === 0) {
+            // Pas d'historique disponible → solveur IDA*
+            _solveWithIdaStar();
+            return;
+        }
+
+        // --- Solveur Record & Replay : tres rapide (< 1 ms), on utilise aussi la modale ---
+        openSolveProgressModal();
+
+        setTimeout(function() {
+            var t0 = performance.now();
+
+            // Construction de la sequence inversee + conversion en directions DIRS.
+            var reversed = moveHistory.slice().reverse();
+            var directions = [];
+            var simBoard = [...board];
+            var simEmpty = simBoard.indexOf(0);
+
+            for (var i = 0; i < reversed.length; i++) {
+                var m = reversed[i];
+                var eR = (simEmpty / SIZE) | 0;
+                var eC = simEmpty % SIZE;
+                var tR = (m.toIdx / SIZE) | 0;
+                var tC = m.toIdx % SIZE;
+                var dR = tR - eR;
+                var dC = tC - eC;
+                var dir = -1;
+                for (var d = 0; d < 4; d++) {
+                    if (DIRS[d][0] === dR && DIRS[d][1] === dC) { dir = d; break; }
+                }
+                if (dir < 0) {
+                    closeSolveProgressModal();
+                    showAlert('Historique incoherent (mouvement ' + (i+1) + ') - replay impossible', 'err');
+                    return;
+                }
+                directions.push(dir);
+                simBoard[simEmpty] = simBoard[m.toIdx];
+                simBoard[m.toIdx] = 0;
+                simEmpty = m.toIdx;
+            }
+
+            solution         = directions;
+            solvedBoardState = [...board];
+            document.getElementById('solutionInfo').textContent = solution.length;
+            moveHistory = [];
+            updateHistoryCount();
+
+            var elapsed = performance.now() - t0;
+            var machineSec = estimerTempsMachine(solution, solveMode);
+            showSolveReport(Math.round(elapsed), solution.length, machineSec);
+        }, 60);
+    }
+
+    // ============================================================
+    //  SOLVEUR IDA* — Appel asynchrone (sans historique)
+    //  Pont entre le module IDA* (IIFE) et le flux existant.
+    //  Quand moveHistory est vide (grille personnalisée ou
+    //  plateau modifié manuellement), ce solveur calcule la
+    //  solution optimale via IDA* au lieu du Record & Replay.
+    // ============================================================
+    var _idaStarRunning = false;
+    function _solveWithIdaStar() {
+        if (_idaStarRunning) return;
+
+        if (SIZE > 4) {
+            showAlert('Solveur IDA* disponible uniquement en 4x4. Utilisez "Melanger la grille" puis "Resoudre" pour les tailles superieures.', 'err');
+            return;
+        }
+
+        _idaStarRunning = true;
+
+        // Ouvrir la modale de progression avec le spinner
+        openSolveProgressModal();
+
+        setTimeout(function() {
+            var startTime = performance.now();
+            var result = window.idaStarSolveBoard(board, SIZE);
+            var elapsed = performance.now() - startTime;
+
+            _idaStarRunning = false;
+
+            if (result === null) {
+                closeSolveProgressModal();
+                showAlert('Pas de solution trouvee (' + (elapsed / 1000).toFixed(1) + 's). Grille non resoluble ou trop complexe.', 'err');
+                return;
+            }
+
+            if (result.length === 0) {
+                closeSolveProgressModal();
+                solution = [];
+                solvedBoardState = [...board];
+                document.getElementById('solutionInfo').textContent = '0';
+                generateFullGcode();
+                showAlert('Le puzzle est deja resolu !', 'ok');
+                return;
+            }
+
+            // --- Solution IDA* trouvee ---
+            solution = result;
+            solvedBoardState = [...board];
+            document.getElementById('solutionInfo').textContent = solution.length;
+            moveHistory = [];
+            updateHistoryCount();
+
+            // Afficher le rapport dans la modale
+            var machineSec = estimerTempsMachine(solution, solveMode);
+            showSolveReport(Math.round(elapsed), solution.length, machineSec);
+        }, 60);
+    }
+
+    function isSolvable() {
+        // Règles classiques du taquin (but = [1..n²-1, 0], blank en bas-droite) :
+        //  - Grille de largeur impaire : nombre d'inversions doit être pair.
+        //  - Grille de largeur paire   : (inversions + ligne_blank_depuis_le_BAS_1‑indexed)
+        //    doit être impair.
+        //  Convention 1‑indexed : la ligne du bas vaut 1, celle du haut vaut SIZE.
+        //  → row_from_bottom_1idx = SIZE - row_from_top_0idx.
+        let inversions = 0;
+        const flat = board.filter(v => v !== 0);
+        for (let i = 0; i < flat.length; i++) {
+            for (let j = i + 1; j < flat.length; j++) {
+                if (flat[i] > flat[j]) inversions++;
+            }
+        }
+        if (SIZE % 2 === 1) {
+            return (inversions % 2) === 0;
+        }
+        const blankRowFromBottom = SIZE - ((emptyIdx / SIZE) | 0);   // 1‑indexed
+        return ((inversions + blankRowFromBottom) % 2) === 1;
+    }
+
+    // ============================================================
+    //  SIMULATION 3D (ventouse + tuiles) — module taquin3d.js
+    // ============================================================
+    /**
+     * Reconstruit la liste des mouvements pick & place à partir de la solution
+     * et de l'état AVANT résolution (solvedBoardState). Retourne null si pas de solution.
+     *
+     * Chaque mouvement est :
+     *   { tileValue, fromR, fromC, toR, toC, xA, yA, xB, yB }
+     * où (xA,yA) = centre de la tuile à déplacer (vers la case vide)
+     *    (xB,yB) = centre de la case vide cible.
+     */
+    function buildMovesFromSolution() {
+        if (!solution || solution.length === 0 || !solvedBoardState) return null;
+        const tileSize = getTileSize();
+        const work = [...solvedBoardState];
+        let workEmpty = work.indexOf(0);
+        const moves = [];
+        for (let i = 0; i < solution.length; i++) {
+            const dir = solution[i];
+            const eR = (workEmpty / SIZE) | 0;
+            const eC = workEmpty % SIZE;
+            const nR = eR + DIRS[dir][0];
+            const nC = eC + DIRS[dir][1];
+            const nIdx = nR * SIZE + nC;
+            const tileValue = work[nIdx];
+            moves.push({
+                tileValue,
+                fromR: nR, fromC: nC,
+                toR:   eR, toC:   eC,
+                xA: nC * tileSize + tileSize / 2,
+                yA: (SIZE - 1 - nR) * tileSize + tileSize / 2,
+                xB: eC * tileSize + tileSize / 2,
+                yB: (SIZE - 1 - eR) * tileSize + tileSize / 2
+            });
+            work[workEmpty] = work[nIdx];
+            work[nIdx] = 0;
+            workEmpty = nIdx;
+        }
+        return moves;
+    }
+
+    /** Ouvre le modal de simulation 3D. Nécessite une solution calculée. */
+    function openTaquin3DSimulation() {
+        // --- Détection du mode "Visu du MELANGE" ---
+        // Si le G-code chargé dans la textarea contient l'en-tête du melange physique
+        // ET que moveHistory contient des mouvements => on visualise le MELANGE
+        // depuis l'état trié (1..n²-1, 0) en rejouant moveHistory DANS L'ORDRE.
+        // Sinon on retombe sur le comportement classique : visualisation de la résolution.
+        const ta = document.getElementById('gcodeArea');
+        const gcodeStr = ta ? (ta.value || '') : '';
+        const isShuffleVisu = gcodeStr.indexOf('Taquin MELANGE PHYSIQUE)') !== -1
+                              && Array.isArray(moveHistory) && moveHistory.length > 0;
+
+        let params;
+        if (isShuffleVisu) {
+            // État de départ = grille triée (les tuiles apparaissent dans l'ordre 1, 2, 3, ...).
+            const initialBoard = [...GOAL];
+            const tileSize = getTileSize();
+            // moveHistory est déjà dans l'ordre chronologique du mélange => on rejoue tel quel.
+            // Chaque entrée {fromIdx, toIdx, tile} = la tuile saute de fromIdx vers toIdx.
+            const moves = [];
+            for (let i = 0; i < moveHistory.length; i++) {
+                const m = moveHistory[i];
+                const fromR = (m.fromIdx / SIZE) | 0;
+                const fromC = m.fromIdx % SIZE;
+                const toR   = (m.toIdx   / SIZE) | 0;
+                const toC   = m.toIdx   % SIZE;
+                moves.push({
+                    tileValue: m.tile,
+                    fromR, fromC, toR, toC,
+                    xA: fromC * tileSize + tileSize / 2,
+                    yA: (SIZE - 1 - fromR) * tileSize + tileSize / 2,
+                    xB: toC   * tileSize + tileSize / 2,
+                    yB: (SIZE - 1 - toR)   * tileSize + tileSize / 2
+                });
+            }
+            params = {
+                size:         SIZE,
+                tileSize:     tileSize,
+                zSafe:        getZSafe(),
+                zPick:        getZPick(),
+                initialBoard: initialBoard,
+                moves:        moves,
+                solveMode:    'pickplace'
+            };
+            showAlert('Visu 3D du melange : depart grille triee + ' + moves.length + ' mouvements', 'ok');
+        } else {
+            // Mode classique : visualisation d'une resolution (replay inverse).
+            if (!solution || solution.length === 0 || !solvedBoardState) {
+                showAlert('Melangez OU resolvez d\'abord le puzzle pour visualiser la simulation 3D', 'err');
+                return;
+            }
+            const moves = buildMovesFromSolution();
+            if (!moves || moves.length === 0) {
+                showAlert('Aucun mouvement a simuler', 'warn');
+                return;
+            }
+            // Construction de pushedTilesMap pour le mode Bulldozer
+            let pushedTilesMap = {};
+            if (solveMode === 'slide') {
+                const ch = detectChains(solution);
+                const tS = getTileSize();
+                const wBoard = [...solvedBoardState];
+                let wEmpty = wBoard.indexOf(0);
+                let mvIdx = 0; // index dans solution[]
+                for (let ci = 0; ci < ch.length; ci++) {
+                    const chain = ch[ci];
+                    const N = chain.end - chain.start + 1;
+                    const eR = (wEmpty / SIZE) | 0;
+                    const eC = wEmpty % SIZE;
+                    const DR = DIRS[chain.dir][0];
+                    const DC = DIRS[chain.dir][1];
+                    if (N > 1) {
+                        // Chaine multi-mouvements : lister toutes les tuiles poussees
+                        const pushed = [];
+                        for (let mi = 1; mi <= N; mi++) {
+                            const srcR = eR + mi * DR;
+                            const srcC = eC + mi * DC;
+                            const dstR = eR + (mi - 1) * DR;
+                            const dstC = eC + (mi - 1) * DC;
+                            const tv = wBoard[srcR * SIZE + srcC];
+                            if (tv !== 0) {
+                                pushed.push({
+                                    tileValue: tv,
+                                    fromX: srcC * tS + tS / 2,
+                                    fromY: (SIZE - 1 - srcR) * tS + tS / 2,
+                                    toX:   dstC * tS + tS / 2,
+                                    toY:   (SIZE - 1 - dstR) * tS + tS / 2
+                                });
+                            }
+                        }
+                        // Cle = index du premier move de la chaine dans moves[]
+                        pushedTilesMap[mvIdx] = pushed;
+                    }
+                    // Mettre a jour le board virtuel pour la chaine suivante
+                    for (let mi = 1; mi <= N; mi++) {
+                        const srcR = eR + mi * DR;
+                        const srcC = eC + mi * DC;
+                        const dstR = eR + (mi - 1) * DR;
+                        const dstC = eC + (mi - 1) * DC;
+                        wBoard[dstR * SIZE + dstC] = wBoard[srcR * SIZE + srcC];
+                    }
+                    const farR = eR + N * DR;
+                    const farC = eC + N * DC;
+                    wBoard[farR * SIZE + farC] = 0;
+                    wEmpty = farR * SIZE + farC;
+                    mvIdx += N;
+                }
+            }
+            params = {
+                size:         SIZE,
+                tileSize:     getTileSize(),
+                zSafe:        getZSafe(),
+                zPick:        getZPick(),
+                initialBoard: [...solvedBoardState],
+                moves:        moves,
+                solveMode:    solveMode,
+                chains:       solveMode === 'slide' ? detectChains(solution) : [],
+                pushedTilesMap: pushedTilesMap
+            };
+        }
+
+        function launch() {
+            if (params.solveMode === 'slide' && typeof window.openTaquinHumainVisualizer === 'function') {
+                window.openTaquinHumainVisualizer(params, 'tqVizModal', 'tqVizCanvas');
+            } else if (typeof window.openTaquinVisualizer === 'function') {
+                window.openTaquinVisualizer(params, 'tqVizModal', 'tqVizCanvas');
+            } else {
+                // Fallback : attendre le chargement du module concerné
+                if (params.solveMode === 'slide') {
+                    window._onTaquinHumainVizReady = () => {
+                        window.openTaquinHumainVisualizer(params, 'tqVizModal', 'tqVizCanvas');
+                    };
+                } else {
+                    window._onTaquinVizReady = () => {
+                        window.openTaquinVisualizer(params, 'tqVizModal', 'tqVizCanvas');
+                    };
+                }
+                showAlert('Chargement du moteur 3D...', 'warn');
+            }
+        }
+        launch();
+    }
+
+    // ============================================================
+    //  SIMULATION VISUELLE
+    // ============================================================
+    function simulateSolution() {
+        if (!solution || solution.length === 0) {
+            showAlert('Resolvez d\'abord le puzzle', 'err');
+            return;
+        }
+        if (isLocked()) return;
+
+        board = [...solvedBoardState];
+        emptyIdx = board.indexOf(0);
+        moveCount = 0;
+        renderGrid();
+
+        isExecuting = true;
+        showAlert('Simulation en cours...', 'warn');
+
+        let step = 0;
+        const totalSteps = solution.length;
+
+        function doStep() {
+            if (step >= totalSteps) {
+                isExecuting = false;
+                showAlert('Simulation terminee - puzzle resolu !', 'ok');
+                return;
+            }
+
+            const moveDir = solution[step];
+            const eR = (emptyIdx / SIZE) | 0;
+            const eC = emptyIdx % SIZE;
+            const nR = eR + DIRS[moveDir][0];
+            const nC = eC + DIRS[moveDir][1];
+            const nIdx = nR * SIZE + nC;
+
+            board[emptyIdx] = board[nIdx];
+            board[nIdx] = 0;
+            emptyIdx = nIdx;
+            moveCount++;
+
+            renderGrid();
+
+            const tiles = document.querySelectorAll('.puzzle-tile');
+            if (tiles[emptyIdx]) {
+                tiles[emptyIdx].classList.add('moving');
+                setTimeout(() => { if (tiles[emptyIdx]) tiles[emptyIdx].classList.remove('moving'); }, 250);
+            }
+
+            step++;
+            setTimeout(doStep, 350);
+        }
+
+        doStep();
+    }
+
+    // ============================================================
+    //  MODALE DE CHOIX DE RESOLUTION
+    // ============================================================
+    function openResolutionModal() {
+        document.getElementById('modalChoixResolution').classList.add('active');
+    }
+    function closeResolutionModal() {
+        document.getElementById('modalChoixResolution').classList.remove('active');
+    }
+    function chooseSolveMode(mode) {
+        solveMode = mode;
+        closeResolutionModal();
+        // Lancer la resolution avec le mode choisi
+        solvePuzzle();
+    }
+
+    // ============================================================
+    //  DETECTION DE CHAINES (mouvements consecutifs meme direction)
+    // ============================================================
+    function detectChains(sol) {
+        if (!sol || sol.length === 0) return [];
+        var chains = [];
+        var cur = { dir: sol[0], start: 0, end: 0 };
+        for (var i = 1; i < sol.length; i++) {
+            if (sol[i] === cur.dir) {
+                cur.end = i;
+            } else {
+                chains.push(cur);
+                cur = { dir: sol[i], start: i, end: i };
+            }
+        }
+        chains.push(cur);
+        return chains;
+    }
+
+    // ============================================================
+    //  GENERATION G-CODE MODE GLISSEMENT (optimise)
+    // ============================================================
+    function generateFullGcodeSlide() {
+        if (!solution || solution.length === 0) {
+            showAlert('Resolvez d\'abord le puzzle', 'err');
+            return;
+        }
+
+        const tileSize = getTileSize();
+        const offset   = document.getElementById('pcsOffset').value;
+        const zS       = getZSafe();
+        const zP       = getZPick();
+        const fZ       = getFeedDown();
+        const fXY      = getFeedXY();
+        const fSlide   = Math.round(fZ * 0.6); // Vitesse de glissement (60% de la vitesse de descente)
+        const toolNum  = getToolNumber();
+
+        const workBoard = [...solvedBoardState];
+        let workEmpty = workBoard.indexOf(0);
+
+        // Detecter les chaines de mouvements consecutifs dans la meme direction
+        const chains = detectChains(solution);
+
+        const lines = [];
+        lines.push('(==========================================)');
+        lines.push('( BOBCNC - Taquin - Mode GLISSEMENT)');
+        lines.push('( Taille puzzle: ' + SIZE + 'x' + SIZE + ' (' + (SIZE*SIZE - 1) + ' tuiles))');
+        lines.push('( Taille case: ' + tileSize + ' mm)');
+        lines.push('( Origine PCS: ' + offset + ')');
+        lines.push('( Z Securite: ' + zS + ' mm | Z Prise: ' + zP + ' mm)');
+        lines.push('( Outil: T' + toolNum + ' | Vitesse XY: ' + fXY + ' mm/min | Vitesse Z: ' + fZ + ' mm/min)');
+        lines.push('( Nombre de mouvements: ' + solution.length + ')');
+        lines.push('( Chaines detectees: ' + chains.length + ')');
+        var chainStats = chains.filter(function(c) { return c.end > c.start; });
+        lines.push('( Chaines multi-mouvements: ' + chainStats.length + ')');
+        lines.push('(==========================================)');
+        lines.push('');
+        lines.push('G90 G21 G17');
+        lines.push(offset);
+        lines.push('T' + toolNum + ' M6 (Appel outil T' + toolNum + ')');
+        lines.push('M8 (Allume la pompe a vide)');
+        lines.push('G4 P2.0 (Pause de 2 secondes pour etablir le vide de depart)');
+        lines.push('G0 Z' + zS.toFixed(2));
+        lines.push('');
+
+        for (var ci = 0; ci < chains.length; ci++) {
+            var chain = chains[ci];
+            var isMultiMove = chain.end > chain.start;
+
+            if (isMultiMove) {
+                // === CHAINE MULTI-MOUVEMENTS : mode BULLDOZER ===
+                // Un seul mouvement physique pousse toutes les tuiles d'un coup.
+                // La ventouse saisit la tuile la plus eloignee de la case vide
+                // et la pousse d'un seul trait vers la position vide initiale.
+                var N = chain.end - chain.start + 1;
+                var eR = (workEmpty / SIZE) | 0;
+                var eC = workEmpty % SIZE;
+                var DR = DIRS[chain.dir][0];
+                var DC = DIRS[chain.dir][1];
+
+                // Position de la tuile la plus eloignee (derniere de la chaine)
+                var farR = eR + N * DR;
+                var farC = eC + N * DC;
+                var farIdx = farR * SIZE + farC;
+                var farTileValue = workBoard[farIdx];
+
+                // Coordonnees G-code : DEPART = tuile la plus eloignee
+                var xStart = farC * tileSize + tileSize / 2;
+                var yStart = (SIZE - 1 - farR) * tileSize + tileSize / 2;
+
+                // Coordonnees G-code : ARRIVEE = depart + exactement UN entraxe
+                // dans la direction de la poussee (opposee au deplacement du vide).
+                // DR/DC = DIRS[chain.dir] : deplacement de la case vide.
+                // La tuile se deplace en sens oppose dans le repere grille,
+                // mais en G-code : deltaY = +DR*tileSize, deltaX = -DC*tileSize.
+                var xEnd = xStart - DC * tileSize;
+                var yEnd = yStart + DR * tileSize;
+
+                var dirNames = ['Haut', 'Bas', 'Gauche', 'Droite'];
+                lines.push('(--- Chaine Bulldozer ' + (ci+1) + ': ' + dirNames[chain.dir] + ', ' + N + ' tuiles poussees ---)');
+                lines.push('(  Tuile poussee: ' + farTileValue + ' de (' + xStart.toFixed(1) + ',' + yStart.toFixed(1) + ') vers (' + xEnd.toFixed(1) + ',' + yEnd.toFixed(1) + '))');
+
+                // Bloc G-code strict : une seule prise, une seule depose
+                lines.push('G0 X' + xStart.toFixed(3) + ' Y' + yStart.toFixed(3));
+                lines.push('G1 Z' + zP.toFixed(2) + ' F' + fZ);
+                lines.push('M7 (Ouvre electrovanne - prise)');
+                lines.push('G4 P' + PAUSE_VIDE);
+                lines.push('G1 X' + xEnd.toFixed(3) + ' Y' + yEnd.toFixed(3) + ' F' + fSlide + ' (Poussee Bulldozer)');
+                lines.push('M9 (Coupe vanne et pompe)');
+                lines.push('M8 (Relance pompe instantanement)');
+                lines.push('G4 P' + PAUSE_VIDE);
+                lines.push('G0 Z' + zS.toFixed(2));
+                lines.push('');
+
+                // Mettre a jour le plateau de travail : chaque tuile se decale d'une case
+                // vers la position vide initiale (du plus proche vers le plus eloigne)
+                for (var mi = 1; mi <= N; mi++) {
+                    var srcR = eR + mi * DR;
+                    var srcC = eC + mi * DC;
+                    var dstR = eR + (mi - 1) * DR;
+                    var dstC = eC + (mi - 1) * DC;
+                    workBoard[dstR * SIZE + dstC] = workBoard[srcR * SIZE + srcC];
+                }
+                workBoard[farIdx] = 0;
+                workEmpty = farIdx;
+
+            } else {
+                // === MOUVEMENT ISOLE : Pick & Place classique ===
+                var moveDir = solution[chain.start];
+                var eR = (workEmpty / SIZE) | 0;
+                var eC = workEmpty % SIZE;
+                var nR = eR + DIRS[moveDir][0];
+                var nC = eC + DIRS[moveDir][1];
+                var nIdx = nR * SIZE + nC;
+                var tileValue = workBoard[nIdx];
+
+                var xA = nC * tileSize + tileSize / 2;
+                var yA = (SIZE - 1 - nR) * tileSize + tileSize / 2;
+                var xB = eC * tileSize + tileSize / 2;
+                var yB = (SIZE - 1 - eR) * tileSize + tileSize / 2;
+
+                lines.push('(Mouvement isole: Tuile ' + tileValue + ')');
+                lines.push.apply(lines, buildPickPlace(xA, yA, xB, yB, zS, zP, fZ, fXY));
+                lines.push('');
+
+                workBoard[workEmpty] = workBoard[nIdx];
+                workBoard[nIdx] = 0;
+                workEmpty = nIdx;
+            }
+        }
+
+        lines.push('(==========================================)');
+        lines.push('( Fin - ' + solution.length + ' mouvements)');
+        lines.push('(==========================================)');
+        lines.push('G0 Z' + zS.toFixed(2));
+        lines.push('G0 X0 Y0');
+        lines.push('M9 (Eteint pompe et electrovanne)');
+        lines.push('M2');
+
+        gcodeText = wrapWithStartEndGcode(lines.join('\n'));
+        document.getElementById('gcodeArea').value = gcodeText;
+        syncTaquinGcode(gcodeText);
+    }
+
+    // ============================================================
+    //  GENERATION G-CODE COMPLETE
+    // ============================================================
+    function generateFullGcode() {
+        if (!solution || solution.length === 0) {
+            showAlert('Resolvez d\'abord le puzzle', 'err');
+            return;
+        }
+
+        // Aiguillage selon le mode de resolution
+        if (solveMode === 'slide') {
+            generateFullGcodeSlide();
+            return;
+        }
+
+        // --- Mode PICK & PLACE (comportement classique) ---
+
+        const tileSize = getTileSize();
+        const offset   = document.getElementById('pcsOffset').value;
+        const zS       = getZSafe();
+        const zP       = getZPick();
+        const fZ       = getFeedDown();
+        const fXY      = getFeedXY();
+        const toolNum  = getToolNumber();
+
+        const workBoard = [...solvedBoardState];
+        let workEmpty = workBoard.indexOf(0);
+
+        const lines = [];
+        lines.push('(==========================================)');
+        lines.push('( BOBCNC - Taquin (Casse-tete coulissant))');
+        lines.push('( Taille puzzle: ' + SIZE + 'x' + SIZE + ' (' + (SIZE*SIZE - 1) + ' tuiles))');
+        lines.push('( Taille case: ' + tileSize + ' mm)');
+        lines.push('( Origine PCS: ' + offset + ')');
+        lines.push('( Z Securite: ' + zS + ' mm | Z Prise: ' + zP + ' mm)');
+        lines.push('( Outil: T' + toolNum + ' | Vitesse XY: ' + fXY + ' mm/min | Vitesse Z: ' + fZ + ' mm/min)');
+        lines.push('( Nombre de mouvements: ' + solution.length + ')');
+        lines.push('(==========================================)');
+        lines.push('');
+        lines.push('G90 G21 G17');
+        lines.push(offset);
+        lines.push('T' + toolNum + ' M6 (Appel outil T' + toolNum + ')');
+        lines.push('M8 (Allume la pompe a vide)');
+        lines.push('G4 P2.0 (Pause de 2 secondes pour etablir le vide de depart)');
+        lines.push('G0 Z' + zS.toFixed(2));
+        lines.push('');
+
+        for (let i = 0; i < solution.length; i++) {
+            const moveDir = solution[i];
+            const eR = (workEmpty / SIZE) | 0;
+            const eC = workEmpty % SIZE;
+            const nR = eR + DIRS[moveDir][0];
+            const nC = eC + DIRS[moveDir][1];
+            const nIdx = nR * SIZE + nC;
+
+            const tileValue = workBoard[nIdx];
+
+            const xA = nC * tileSize + tileSize / 2;
+            const yA = (SIZE - 1 - nR) * tileSize + tileSize / 2;
+            const xB = eC * tileSize + tileSize / 2;
+            const yB = (SIZE - 1 - eR) * tileSize + tileSize / 2;
+
+            lines.push('(Mouvement ' + (i + 1) + ': Tuile ' + tileValue + ' de (' + xA.toFixed(1) + ',' + yA.toFixed(1) + ') vers (' + xB.toFixed(1) + ',' + yB.toFixed(1) + '))');
+            lines.push('G0 Z' + zS.toFixed(2));
+            lines.push('G0 X' + xA.toFixed(3) + ' Y' + yA.toFixed(3) + ' F' + fXY);
+            lines.push('G1 Z' + zP.toFixed(2) + ' F' + fZ);
+            lines.push('M7 (Ouvre electrovanne - prise)');
+            lines.push('G4 P' + PAUSE_VIDE);
+            lines.push('G0 Z' + zS.toFixed(2));
+            lines.push('G0 X' + xB.toFixed(3) + ' Y' + yB.toFixed(3) + ' F' + fXY);
+            lines.push('G1 Z' + zP.toFixed(2) + ' F' + fZ);
+            lines.push('M9 (Coupe vanne et pompe)');
+            lines.push('M8 (Relance pompe instantanement)');
+            lines.push('G4 P' + PAUSE_VIDE);
+            lines.push('G0 Z' + zS.toFixed(2));
+            lines.push('');
+
+            workBoard[workEmpty] = workBoard[nIdx];
+            workBoard[nIdx] = 0;
+            workEmpty = nIdx;
+        }
+
+        lines.push('(==========================================)');
+        lines.push('( Fin - ' + solution.length + ' mouvements)');
+        lines.push('(==========================================)');
+        lines.push('G0 Z' + zS.toFixed(2));
+        lines.push('G0 X0 Y0');
+        lines.push('M9 (Eteint pompe et electrovanne)');
+        lines.push('M2');
+
+        gcodeText = wrapWithStartEndGcode(lines.join('\n'));
+        document.getElementById('gcodeArea').value = gcodeText;
+        // Mémoriser le G-code côté ESP32 → restitué à tout client qui se (re)connecte.
+        syncTaquinGcode(gcodeText);
+    }
+
+    // ============================================================
+    //  EXECUTION G-CODE VERS FLUIDNC
+    // ============================================================
+    function executeGcode() {
+        if (!gcodeText) {
+            showAlert('Generez le G-code d\'abord', 'err');
+            return;
+        }
+        if (isLocked()) return;
+
+        if (testMode) {
+            isExecuting = true;
+            lockInterface();
+            showAlert('[Mode Test] Simulation d\'execution...', 'warn');
+            const lines = gcodeText.split('\n').filter(l => l.trim() && !l.trim().startsWith('('));
+            lines.forEach(line => addLog('[TEST] ' + line.trim(), 'test'));
+            setTimeout(() => {
+                isExecuting = false;
+                unlockInterface();
+                showAlert('[Mode Test] ' + lines.length + ' lignes simulees', 'ok');
+            }, 1000);
+            return;
+        }
+
+        if (!cncSocket || cncSocket.readyState !== WebSocket.OPEN) {
+            showAlert('WebSocket non connecte', 'err');
+            return;
+        }
+
+        isExecuting = true;
+        lockInterface();
+        showAlert('Envoi du G-code a la CNC...', 'warn');
+
+        const lines = gcodeText.split('\n');
+        let delay = 0;
+        let sentCount = 0;
+
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('(')) return;
+            setTimeout(() => {
+                if (cncSocket && cncSocket.readyState === WebSocket.OPEN) {
+                    cncSocket.send(trimmed);
+                    addLog('> ' + trimmed, 'send');
+                    sentCount++;
+                }
+            }, delay);
+            delay += DELAI_ENVOI;
+        });
+
+        // Apres envoi de toutes les lignes, marquer l'envoi comme termine
+        // mais le verrou CNC reste actif jusqu'a reception de <Idle|...>
+        setTimeout(() => {
+            isExecuting = false;
+            showAlert(sentCount + ' lignes envoyees - attente fin CNC...', 'warn');
+        }, delay + 500);
+    }
+
+    // ============================================================
+    //  MODAL PRISE D'ORIGINE
+    // ============================================================
+    function openHomingModal() {
+        if (isLocked()) return;
+        const offset = document.getElementById('pcsOffset').value;
+        const pNum   = parseInt(offset.replace('G', '')) - 53;
+        document.getElementById('homingOffsetLabel').textContent = offset;
+        document.getElementById('homingPNum').textContent        = pNum;
+        document.querySelectorAll('.homingPNumZ').forEach(el => el.textContent = pNum);
+        document.getElementById('homingStatus').textContent = '';
+        document.getElementById('btnHomingXY').disabled = false;
+        document.getElementById('btnHomingZ').disabled  = false;
+        document.getElementById('modalHoming').classList.add('active');
+    }
+
+    function closeHomingModal() {
+        document.getElementById('modalHoming').classList.remove('active');
+    }
+
+    /**
+     * Etape 1 : Definit X=0 Y=0 dans le Work Offset selectionne (Z non touche).
+     * La machine doit etre positionnee au coin Sud-Ouest du cadre.
+     * G10 L20 Pn X0 Y0 : "la position MPos actuelle devient WPos X=0 Y=0 pour Pn"
+     */
+    function validateHomingXY() {
+        const offset = document.getElementById('pcsOffset').value;
+        const pNum   = parseInt(offset.replace('G', '')) - 53;
+        const status = document.getElementById('homingStatus');
+
+        // Envoi de la commande d'origine XY
+        sendCommand('G10 L20 P' + pNum + ' X0 Y0');
+        // Activation du repere 150 ms apres (FluidNC a le temps de traiter G10)
+        setTimeout(() => { sendCommand(offset); }, 150);
+        // Rafraichissement des coordonnees pour confirmer dans la console de logs
+        setTimeout(() => {
+            sendCommand('?');
+            status.textContent = 'XY applique. Verifiez WPos X=0 Y=0 dans la console.';
+            status.style.color = '#00ff88';
+        }, 350);
+
+        document.getElementById('btnHomingXY').disabled = true;
+        addLog('Origine XY : G10 L20 P' + pNum + ' X0 Y0 -> ' + offset, 'info');
+    }
+
+    /**
+     * Etape 2 : Definit Z=0 dans le Work Offset selectionne (X et Y non modifies).
+     * La machine doit etre descendue jusqu'a la surface de la piece (hauteur de prise).
+     * G10 L20 Pn Z0 : "la position MPos Z actuelle devient WPos Z=0 pour Pn"
+     *
+     * ATTENTION : on utilise G10 L20 (position courante) et NON G10 L2 (valeur explicite).
+     * G10 L2 Pn Z-30 serait une erreur : il faudrait connaitre la MPos exacte et il
+     * definirait l'offset comme -MPos, ce qui peut decaler si mal calcule.
+     */
+    function validateHomingZ() {
+        const offset = document.getElementById('pcsOffset').value;
+        const pNum   = parseInt(offset.replace('G', '')) - 53;
+        const status = document.getElementById('homingStatus');
+
+        // Envoi de la commande d'origine Z uniquement
+        sendCommand('G10 L20 P' + pNum + ' Z0');
+        // Rafraichissement des coordonnees pour confirmer
+        setTimeout(() => {
+            sendCommand('?');
+            status.textContent = 'Z applique. Verifiez WPos Z=0 dans la console.';
+            status.style.color = '#00ff88';
+        }, 350);
+
+        originValidated = true;
+        document.getElementById('btnHomingZ').disabled = true;
+        addLog('Origine Z  : G10 L20 P' + pNum + ' Z0', 'info');
+
+        // L'historique des mouvements est invalide apres un changement d'origine
+        if (typeof moveHistory !== 'undefined') {
+            moveHistory = [];
+            if (typeof updateHistoryCount === 'function') updateHistoryCount();
+        }
+
+        setTimeout(() => {
+            closeHomingModal();
+            showAlert('Origine ' + offset + ' validee. Vous pouvez maintenant jouer.', 'ok');
+        }, 700);
+    }
+
+    // ============================================================
+    //  UTILITAIRES
+    // ============================================================
+    function getTileSize() { return parseFloat(document.getElementById('tileSize').value) || 20; }
+    function getZSafe()    { return parseFloat(document.getElementById('zSafe').value)    || HAUTEUR_SECURITE; }
+    function getZPick()    { return parseFloat(document.getElementById('zPick').value)    || HAUTEUR_PRISE; }
+    function getFeedDown() { return parseFloat(document.getElementById('feedZ').value)   || VITESSE_DESCENTE; }
+    function getFeedXY()   { return parseFloat(document.getElementById('feedXY').value)  || 3000; }
+    function getToolNumber() { return parseInt(document.getElementById('toolSelect').value) || 1; }
+
+    // ============================================================
+    //  OUTIL ET VITESSES — Synchronisation du select
+    // ============================================================
+    var TOOL_PRESETS = {
+        '1': { feedXY: 3000, feedZ: 800  },  // Ventouse Standard
+        '2': { feedXY: 5000, feedZ: 1200 },  // Ventouse Rapide
+        '3': { feedXY: 3000, feedZ: 800  }   // Manuel (memes defauts, libre)
+    };
+    function onToolChange() {
+        var sel = document.getElementById('toolSelect').value;
+        var p = TOOL_PRESETS[sel];
+        if (p) {
+            document.getElementById('feedXY').value = p.feedXY;
+            document.getElementById('feedZ').value  = p.feedZ;
+        }
+    }
+
+    // ============================================================
+    //  ESTIMATION DU TEMPS MACHINE
+    // ============================================================
+    //  Calcule le temps reel que mettra la CNC en secondes.
+    //  Params :
+    //    solutionDirs : tableau de directions DIRS[0..3]
+    //    mode : 'pickplace' | 'slide'
+    // ============================================================
+    function estimerTempsMachine(solutionDirs, mode) {
+        if (!solutionDirs || solutionDirs.length === 0) return 0;
+        var tileSize = getTileSize();
+        var zS = getZSafe();
+        var zP = getZPick();
+        var fXY = getFeedXY();
+        var fZ  = getFeedDown();
+        var fSlide = Math.round(fZ * 0.6);
+        var totalSec = 0;
+
+        // Distances Z (constants pour chaque mouvement)
+        var dz = Math.abs(zS - zP); // distance d'une descente ou remontee
+
+        if (mode === 'slide') {
+            // --- Mode BULLDOZER ---
+            var chains = detectChains(solutionDirs);
+            var workBoard = [...solvedBoardState];
+            var workEmpty = workBoard.indexOf(0);
+
+            for (var ci = 0; ci < chains.length; ci++) {
+                var chain = chains[ci];
+                var N = chain.end - chain.start + 1;
+                var eR = (workEmpty / SIZE) | 0;
+                var eC = workEmpty % SIZE;
+                var DR = DIRS[chain.dir][0];
+                var DC = DIRS[chain.dir][1];
+
+                if (N > 1) {
+                    // Chaine Bulldozer : 1 descente Z, 1 poussee XY, 1 remontee Z, 2 pauses
+                    totalSec += PAUSE_VIDE * 2;           // prise + depose
+                    totalSec += (dz / fZ) * 60;          // descente Z
+                    totalSec += (dz / fZ) * 60;          // remontee Z
+                    totalSec += (tileSize / fSlide) * 60; // poussee 1 entraxe
+                    // G0 rapides negligees (presque instantanees en vrai)
+                } else {
+                    // Mouvement isole : Pick & Place classique
+                    // 2 descentes Z + 2 remontees Z + 2 deplacements XY + 2 pauses
+                    totalSec += PAUSE_VIDE * 2;
+                    totalSec += (dz / fZ) * 60 * 2;       // 2 descentes
+                    totalSec += (dz / fZ) * 60 * 2;       // 2 remontees
+                    totalSec += (tileSize / fXY) * 60 * 2; // 2 deplacements XY (G0)
+                }
+
+                // MAJ board virtuel
+                for (var mi = 1; mi <= N; mi++) {
+                    var srcR = eR + mi * DR;
+                    var srcC = eC + mi * DC;
+                    var dstR = eR + (mi - 1) * DR;
+                    var dstC = eC + (mi - 1) * DC;
+                    workBoard[dstR * SIZE + dstC] = workBoard[srcR * SIZE + srcC];
+                }
+                var farR = eR + N * DR;
+                var farC = eC + N * DC;
+                workBoard[farR * SIZE + farC] = 0;
+                workEmpty = farR * SIZE + farC;
+            }
+        } else {
+            // --- Mode PICK & PLACE ---
+            // Chaque mouvement : 2 descentes Z + 2 remontees Z + 2 deplacements XY + 2 pauses
+            var nbMoves = solutionDirs.length;
+            totalSec += PAUSE_VIDE * 2 * nbMoves;
+            totalSec += (dz / fZ) * 60 * 2 * nbMoves;    // descentes
+            totalSec += (dz / fZ) * 60 * 2 * nbMoves;    // remontees
+            totalSec += (tileSize / fXY) * 60 * 2 * nbMoves; // deplacements XY
+        }
+
+        // Ajout de la pause initiale de 2s pour la pompe
+        totalSec += 2.0;
+
+        return totalSec;
+    }
+
+    // ============================================================
+    //  MODALE CALCUL EN COURS — Helpers
+    // ============================================================
+    function openSolveProgressModal() {
+        document.getElementById('solveSpinnerZone').style.display = 'flex';
+        document.getElementById('solveReportZone').className = 'solve-report';
+        document.getElementById('btnSolveCancel').style.display = '';
+        document.getElementById('btnSolveGenerate').style.display = 'none';
+        document.getElementById('modalSolveProgress').classList.add('active');
+    }
+    function closeSolveProgressModal() {
+        document.getElementById('modalSolveProgress').classList.remove('active');
+    }
+    function showSolveReport(calcMs, moveCount, machineSec) {
+        document.getElementById('solveSpinnerZone').style.display = 'none';
+        document.getElementById('reportCalcTime').textContent = calcMs + ' ms';
+        document.getElementById('reportMoveCount').textContent = moveCount + ' mouvements';
+        var min = Math.floor(machineSec / 60);
+        var sec = Math.round(machineSec % 60);
+        document.getElementById('reportMachineTime').textContent = min + ' min ' + sec + ' s';
+        document.getElementById('solveReportZone').className = 'solve-report visible';
+        document.getElementById('btnSolveCancel').textContent = 'Fermer';
+        document.getElementById('btnSolveGenerate').style.display = '';
+    }
+    function onSolveGenerateAnd3D() {
+        closeSolveProgressModal();
+        generateFullGcode();
+        openTaquin3DSimulation();
+    }
+
+    function checkSolved() {
+        if (board.every((v, i) => v === GOAL[i])) {
+            document.getElementById('solveStatus').innerHTML = '<strong style="color:#00ff88">RESOLU !</strong>';
+            showAlert('Puzzle resolu en ' + moveCount + ' coups !', 'ok');
+        } else {
+            document.getElementById('solveStatus').textContent = '';
+        }
+    }
+
+    function showAlert(msg, type) {
+        const el = document.getElementById('tqAlert');
+        if (!msg) { el.className = 'tq-alert'; el.textContent = ''; return; }
+        el.className = 'tq-alert ' + type;
+        el.textContent = msg;
+    }
+
+    function copyGcode(btn) {
+        if (!gcodeText) { showAlert('Rien a copier, genereez le G-code d\'abord', 'err'); return; }
+        function onSuccess() {
+            showAlert('G-code copie dans le presse-papiers', 'ok');
+            if (btn) {
+                const orig = btn.innerHTML;
+                btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copie !';
+                setTimeout(() => { btn.innerHTML = orig; }, 1500);
+            }
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(gcodeText).then(onSuccess).catch(() => fallbackCopy());
+        } else {
+            fallbackCopy();
+        }
+        function fallbackCopy() {
+            const ta = document.createElement('textarea');
+            ta.value = gcodeText;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); onSuccess(); }
+            catch(e) { showAlert('Echec de la copie', 'err'); }
+            document.body.removeChild(ta);
+        }
+    }
+
+    function downloadGcode() {
+        if (!gcodeText) { showAlert('Generez le G-code d\'abord', 'err'); return; }
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([gcodeText], { type: 'text/plain' }));
+        a.download = 'taquin.nc';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+    }
+
+    // ============================================================
+    //  SOLVEUR IDA* — Module autonome (IIFE)
+    //  Algorithme Iterative Deepening A* avec heuristique
+    //  Manhattan + Conflits Linéaires. Résout le Taquin 4x4
+    //  de façon optimale sans explosion mémoire.
+    // ============================================================
+    (function _idaStarModule() {
+
+        /**
+         * Pré-calcule la table des distances de Manhattan.
+         * mdTable[tile * total + pos] = distance de Manhattan de la tuile <tile>
+         * à sa position cible lorsqu'elle est à la position <pos>.
+         */
+        function buildManhattanTable(size) {
+            var total = size * size;
+            var table = new Int16Array(total * total);
+            for (var tile = 1; tile < total; tile++) {
+                var goalRow = ((tile - 1) / size) | 0;
+                var goalCol = (tile - 1) % size;
+                for (var pos = 0; pos < total; pos++) {
+                    var row = (pos / size) | 0;
+                    var col = pos % size;
+                    table[tile * total + pos] = Math.abs(row - goalRow) + Math.abs(col - goalCol);
+                }
+            }
+            return table;
+        }
+
+        /**
+         * Calcule la distance de Manhattan totale du plateau.
+         */
+        function computeManhattan(board, table, size) {
+            var total = size * size;
+            var dist = 0;
+            for (var i = 0; i < total; i++) {
+                if (board[i] !== 0) {
+                    dist += table[board[i] * total + i];
+                }
+            }
+            return dist;
+        }
+
+        /**
+         * Calcule les conflits linéaires (ajout admissible à Manhattan).
+         * Un conflit linéaire : deux tuiles dans leur ligne/colonne cible
+         * mais dans le mauvais ordre relatif → au moins 2 mouvements
+         * supplémentaires par conflit.
+         */
+        function computeLinearConflict(board, size) {
+            var conflicts = 0;
+            var total = size * size;
+
+            // Conflits de ligne
+            for (var row = 0; row < size; row++) {
+                for (var i = row * size; i < (row + 1) * size; i++) {
+                    if (board[i] === 0) continue;
+                    var goalRowI = ((board[i] - 1) / size) | 0;
+                    if (goalRowI !== row) continue;
+                    for (var j = i + 1; j < (row + 1) * size; j++) {
+                        if (board[j] === 0) continue;
+                        var goalRowJ = ((board[j] - 1) / size) | 0;
+                        if (goalRowJ !== row) continue;
+                        if (board[i] > board[j]) conflicts++;
+                    }
+                }
+            }
+
+            // Conflits de colonne
+            for (var col = 0; col < size; col++) {
+                for (var i = col; i < total; i += size) {
+                    if (board[i] === 0) continue;
+                    var goalColI = (board[i] - 1) % size;
+                    if (goalColI !== col) continue;
+                    for (var j = i + size; j < total; j += size) {
+                        if (board[j] === 0) continue;
+                        var goalColJ = (board[j] - 1) % size;
+                        if (goalColJ !== col) continue;
+                        if (board[i] > board[j]) conflicts++;
+                    }
+                }
+            }
+
+            return conflicts * 2;
+        }
+
+        /**
+         * Vérifie la résolvabilité d'une grille (règle de parité).
+         * Même logique que la fonction isSolvable() du script principal
+         * mais encapsulée dans le module.
+         */
+        function isSolvableGrid(board, size) {
+            var total = size * size;
+            var flat = [];
+            for (var i = 0; i < total; i++) {
+                if (board[i] !== 0) flat.push(board[i]);
+            }
+            var inv = 0;
+            for (var i = 0; i < flat.length; i++) {
+                for (var j = i + 1; j < flat.length; j++) {
+                    if (flat[i] > flat[j]) inv++;
+                }
+            }
+            if (size % 2 === 1) return (inv % 2) === 0;
+            var blankIdx = board.indexOf(0);
+            var blankRowFromBottom = size - ((blankIdx / size) | 0); // 1-indexé depuis le bas
+            if (blankRowFromBottom % 2 === 1) return (inv % 2) === 0;
+            return (inv % 2) === 1;
+        }
+
+        /**
+         * Solveur IDA* pour le puzzle Taquin.
+         *
+         * @param {number[]} initialBoard - État actuel du plateau
+         * @param {number} size - Taille de la grille (ex: 4 pour 4×4)
+         * @returns {number[]|null} - Tableau de directions [0=U,1=D,2=L,3=R]
+         *                            ou null si aucune solution
+         *
+         * L'algorithme explore l'arbre par approfondissement itératif.
+         * À chaque itération, il fixe un seuil f-cost et effectue un DFS
+         * borné. Si la solution n'est pas trouvée, le seuil est augmenté
+         * à la plus petite valeur f qui a dépassé le seuil précédent.
+         *
+         * L'heuristique h(n) = Manhattan + Conflits Linéaires est admissible
+         * et assure une solution optimale (nombre minimum de mouvements).
+         */
+        function idaStarSolve(initialBoard, size) {
+            var total = size * size;
+
+            // État cible : [1, 2, ..., n²-1, 0]
+            var goal = [];
+            for (var i = 1; i < total; i++) goal.push(i);
+            goal.push(0);
+
+            // Déjà résolu ?
+            var isSolved = true;
+            for (var i = 0; i < total; i++) {
+                if (initialBoard[i] !== goal[i]) { isSolved = false; break; }
+            }
+            if (isSolved) return [];
+
+            // Vérifier la résolvabilité avant de chercher
+            if (!isSolvableGrid(initialBoard, size)) return null;
+
+            // Pré-calcul de la table Manhattan
+            var mdTable = buildManhattanTable(size);
+
+            // Copie de travail du plateau
+            var board = initialBoard.slice();
+            var emptyIdx = board.indexOf(0);
+
+            // Directions : U=0(-1,0), D=1(1,0), L=2(0,-1), R=3(0,1)
+            // Même convention que DIRS dans le script principal
+            var DR = [-1, 1, 0, 0];
+            var DC = [0, 0, -1, 1];
+            var OPPOSITE = [1, 0, 3, 2]; // Direction opposée (anti-retour)
+
+            var path = [];       // Chemin courant (directions)
+            var nodeCount = 0;   // Compteur de nœuds explorés
+            var startTime = Date.now();
+            var MAX_TIME = 30000;       // 30 secondes max
+            var MAX_NODES = 50000000;   // 50 millions de nœuds max
+            var aborted = false;
+
+            function computeH() {
+                return computeManhattan(board, mdTable, size) + computeLinearConflict(board, size);
+            }
+
+            /**
+             * Recherche DFS bornée par seuil (cœur de l'IDA*).
+             * @param {number} g - Coût du chemin actuel
+             * @param {number} threshold - Seuil f-cost courant
+             * @param {number} lastDir - Dernière direction prise (-1 au départ)
+             * @returns {number} -1 si solution trouvée, sinon prochain seuil
+             */
+            function search(g, threshold, lastDir) {
+                if (aborted) return Infinity;
+
+                nodeCount++;
+                // Vérification temps toutes les 16384 itérations
+                if ((nodeCount & 0x3FFF) === 0 && Date.now() - startTime > MAX_TIME) {
+                    aborted = true;
+                    return Infinity;
+                }
+                if (nodeCount > MAX_NODES) {
+                    aborted = true;
+                    return Infinity;
+                }
+
+                var h = computeH();
+                var f = g + h;
+                if (f > threshold) return f;
+                if (h === 0) return -1; // Solution trouvée !
+
+                var minT = Infinity;
+                var eRow = (emptyIdx / size) | 0;
+                var eCol = emptyIdx % size;
+
+                for (var dir = 0; dir < 4; dir++) {
+                    // Anti-retour immédiat
+                    if (lastDir >= 0 && dir === OPPOSITE[lastDir]) continue;
+
+                    var nRow = eRow + DR[dir];
+                    var nCol = eCol + DC[dir];
+                    if (nRow < 0 || nRow >= size || nCol < 0 || nCol >= size) continue;
+
+                    var nIdx = nRow * size + nCol;
+                    var tile = board[nIdx];
+
+                    // Appliquer le mouvement (échanger tuile et case vide)
+                    board[emptyIdx] = tile;
+                    board[nIdx] = 0;
+                    var prevEmpty = emptyIdx;
+                    emptyIdx = nIdx;
+                    path.push(dir);
+
+                    var t = search(g + 1, threshold, dir);
+                    if (t === -1) return -1; // Solution trouvée, propager
+                    if (t < minT) minT = t;
+
+                    // Annuler le mouvement
+                    board[nIdx] = tile;
+                    board[prevEmpty] = 0;
+                    emptyIdx = prevEmpty;
+                    path.pop();
+
+                    if (aborted) return Infinity;
+                }
+
+                return minT;
+            }
+
+            // Boucle d'approfondissement itératif
+            var threshold = computeH();
+            while (threshold <= 100 && !aborted) {
+                var t = search(0, threshold, -1);
+                if (t === -1) {
+                    // Solution trouvée — statistiques
+                    window._idaStarLastStats = {
+                        nodeCount: nodeCount,
+                        elapsed: Date.now() - startTime,
+                        moves: path.length
+                    };
+                    return path.slice();
+                }
+                if (t === Infinity) break;
+                threshold = t;
+            }
+
+            // Pas de solution dans le temps imparti
+            window._idaStarLastStats = {
+                nodeCount: nodeCount,
+                elapsed: Date.now() - startTime,
+                moves: -1
+            };
+            return null;
+        }
+
+        // Exposer la fonction pour le script principal
+        window.idaStarSolveBoard = idaStarSolve;
+
+    })(); // fin IIFE _idaStarModule
+
+    // ============================================================
+    //  GRILLE PERSONNALISÉE — Module autonome (IIFE)
+    //  NE MODIFIE NI N'INTERFARE PAS avec la logique Record & Replay
+    //  existante (moveHistory, shufflePuzzle, solvePuzzle, etc.).
+    // ============================================================
+    (function _customGridModule() {
+
+        /**
+         * Compte les inversions dans un tableau de nombres.
+         * Une inversion = un nombre plus grand qui précède un nombre plus petit.
+         * Le zéro (case vide) est ignoré.
+         */
+        function countInversions(arr) {
+            const flat = arr.filter(function(v) { return v !== 0; });
+            var inv = 0;
+            for (var i = 0; i < flat.length; i++) {
+                for (var j = i + 1; j < flat.length; j++) {
+                    if (flat[i] > flat[j]) inv++;
+                }
+            }
+            return inv;
+        }
+
+        /**
+         * Retourne la ligne de la case vide depuis le BAS (1-indexed).
+         * Ligne du bas = 1, ligne du haut = SIZE.
+         */
+        function getBlankRowFromBottom(grid, size) {
+            var blankIdx = grid.indexOf(0);
+            var rowFromTop = (blankIdx / size) | 0;
+            return size - rowFromTop;
+        }
+
+        /**
+         * Vérifie la résolvabilité d'une grille de taille SIZE.
+         * Règle mathématique du Taquin :
+         *   - Grille impaire : inversions pair → résolvable.
+         *   - Grille paire (4x4) :
+         *     * Ligne vide impaire (depuis le bas) → inversions doit être pair.
+         *     * Ligne vide paire (depuis le bas) → inversions doit être impair.
+         */
+        function isCustomGridSolvable(grid, size) {
+            var inversions = countInversions(grid);
+            var blankRow = getBlankRowFromBottom(grid, size);
+
+            if (size % 2 === 1) {
+                return (inversions % 2) === 0;
+            }
+            // Grille paire
+            if (blankRow % 2 === 1) {
+                // Ligne impaire → inversions pair
+                return (inversions % 2) === 0;
+            } else {
+                // Ligne paire → inversions impair
+                return (inversions % 2) === 1;
+            }
+        }
+
+        /**
+         * Affiche un message dans la zone de statut d'analyse.
+         * @param {string} msg  - Texte du message
+         * @param {string} type - 'ok' | 'err' | 'warn'
+         */
+        function setAnalyseStatus(msg, type) {
+            var el = document.getElementById('statutAnalyse');
+            if (!el) return;
+            el.innerHTML = msg;
+            el.style.color = (type === 'ok') ? '#00ff88' : (type === 'warn') ? '#ffcc00' : '#ff6666';
+        }
+
+        /**
+         * Bouton principal : valide la grille saisie, vérifie la résolvabilité,
+         * charge la configuration dans l'application si possible.
+         */
+        window.validateCustomGrid = function() {
+            if (typeof isLocked === 'function' && isLocked()) return;
+
+            var input   = document.getElementById('customGridInput');
+            var swapBtn = document.getElementById('btnSwapLastTwo');
+
+            // Réinitialiser l'affichage
+            setAnalyseStatus('', '');
+            if (swapBtn) swapBtn.style.display = 'none';
+
+            // --- 1) Nettoyer et parser la chaîne ---
+            var raw = input.value.trim();
+            if (!raw) {
+                setAnalyseStatus('Veuillez entrer une suite de chiffres separes par des virgules.', 'err');
+                return;
+            }
+
+            var parts = raw.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s !== ''; });
+            var nums  = parts.map(function(s) { return parseInt(s, 10); });
+
+            // Vérifier que tout est numérique
+            if (nums.some(function(n) { return isNaN(n); })) {
+                setAnalyseStatus('Entree invalide : certains elements ne sont pas des nombres.', 'err');
+                return;
+            }
+
+            // --- 2) Valider le nombre de chiffres ---
+            var total   = SIZE * SIZE;
+            var sansVide = total - 1;  // ex: 15 pour 4x4
+            var grid;
+
+            if (nums.length === sansVide) {
+                // 15 chiffres → ajout automatique du 0 en 16e position
+                grid = nums.concat([0]);
+            } else if (nums.length === total) {
+                // 16 chiffres (0 déjà inclus)
+                grid = nums;
+            } else {
+                setAnalyseStatus('Attendu ' + sansVide + ' chiffres (ou ' + total + ' avec le 0). Recu : ' + nums.length + '.', 'err');
+                return;
+            }
+
+            // --- 3) Vérifier que c'est une permutation valide de 0..N-1 ---
+            var sorted = grid.slice().sort(function(a, b) { return a - b; });
+            var validSet = true;
+            for (var k = 0; k < sorted.length; k++) {
+                if (sorted[k] !== k) { validSet = false; break; }
+            }
+            if (!validSet) {
+                setAnalyseStatus('Les chiffres doivent etre une permutation de 0..' + (total - 1) + '. Chiffres manquants ou en double.', 'err');
+                return;
+            }
+
+            // --- 4) Calcul des inversions et résolvabilité ---
+            var inversions = countInversions(grid);
+            var blankRow   = getBlankRowFromBottom(grid, SIZE);
+            var solvable   = isCustomGridSolvable(grid, SIZE);
+
+            // --- 5) Scénario IMPOSSIBLE ---
+            if (!solvable) {
+                setAnalyseStatus(
+                    '<strong>Configuration impossible.</strong> ' +
+                    inversions + ' inversion(s), ligne vide = ' + blankRow +
+                    '. Veuillez inverser les deux dernieres pieces.',
+                    'err'
+                );
+                if (swapBtn) swapBtn.style.display = 'inline-flex';
+                return;
+            }
+
+            // --- 6) Scénario POSSIBLE ---
+            setAnalyseStatus(
+                '<strong>Grille valide.</strong> ' + inversions +
+                ' inversion(s), ligne vide = ' + blankRow +
+                '. Chargement...',
+                'ok'
+            );
+
+            // a) Mettre à jour la grille de l'application
+            board = grid.slice();
+            emptyIdx = board.indexOf(0);
+            moveCount = 0;
+            solution = null;
+            solvedBoardState = null;
+            gcodeText = '';
+            // L'historique n'a plus de sens : on charge un état arbitraire
+            // sans chemin enregistré. Le solveur Record & Replay reste
+            // disponible via le bouton "Melanger" (qui enregistre les coups).
+            moveHistory = [];
+            if (typeof updateHistoryCount === 'function') updateHistoryCount();
+
+            // b) Mettre à jour l'affichage visuel (2D)
+            if (typeof renderGrid === 'function') renderGrid();
+
+            // c) Synchroniser avec les autres appareils via l'ESP32
+            if (typeof syncTaquinGrid === 'function') syncTaquinGrid();
+            if (typeof syncTaquinGcode === 'function') syncTaquinGcode('');
+
+            // d) Mettre à jour les infos de la carte Grille de Jeu
+            var infoEl = document.getElementById('solutionInfo');
+            if (infoEl) infoEl.textContent = '-';
+            var statEl = document.getElementById('solveStatus');
+            if (statEl) statEl.textContent = '';
+            var gcodeArea = document.getElementById('gcodeArea');
+            if (gcodeArea) gcodeArea.value = '';
+
+            // e) Message final informatif
+            setTimeout(function() {
+                setAnalyseStatus(
+                    '<strong>Grille chargee avec succes.</strong> ' +
+                    'Resolvez manuellement en cliquant les tuiles, ' +
+                    'ou cliquez "Melanger la grille" puis "Resoudre".',
+                    'ok'
+                );
+            }, 2000);
+
+            if (typeof showAlert === 'function') {
+                showAlert('Grille personnalisee chargee (' + SIZE + 'x' + SIZE + ')', 'ok');
+            }
+        };
+
+        /**
+         * Bouton secondaire : permute les deux derniers chiffres dans le champ
+         * de saisie, puis relance automatiquement la validation.
+         */
+        window.swapLastTwoDigits = function() {
+            var input = document.getElementById('customGridInput');
+            var parts = input.value.trim().split(',')
+                .map(function(s) { return s.trim(); })
+                .filter(function(s) { return s !== ''; });
+
+            if (parts.length >= 2) {
+                var last = parts.length - 1;
+                var prev = parts.length - 2;
+                var tmp = parts[last];
+                parts[last] = parts[prev];
+                parts[prev] = tmp;
+                input.value = parts.join(',');
+            }
+            // Re-validation automatique après permutation
+            window.validateCustomGrid();
+        };
+
+    })(); // fin IIFE _customGridModule
+    </script>
+</body>
+</html>
