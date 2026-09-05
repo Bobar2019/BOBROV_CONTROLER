@@ -558,7 +558,7 @@ void BobWebServer::_handleSensorConfigPost(AsyncWebServerRequest* request) {
 /**
  * @brief Handler POST /api/settings/save — Sauvegarde PID + watchdog en NVS.
  *
- * Reçoit les paramètres PID (roll, pitch, depth) et le timeout watchdog
+ * Reçoit les paramètres PID (roll, pitch, yaw, altitude) et le timeout watchdog
  * via form-data et les sauvegarde en NVS pour persistance.
  */
 void BobWebServer::_handleSettingsSave(AsyncWebServerRequest* request) {
@@ -983,12 +983,18 @@ void BobWebServer::_taskLoop() {
                 imuObj["pitch"] = roundf(imu.euler[1] * 10.0f) / 10.0f;
                 imuObj["yaw"]   = roundf(imu.euler[2] * 10.0f) / 10.0f;
 
-                /* Pression et profondeur */
+                /* Champ magnétique brut AK8963 (µT, axes remappés MPU9250) */
+                imuObj["mag_x"] = roundf(imu.mag[0] * 100.0f) / 100.0f;
+                imuObj["mag_y"] = roundf(imu.mag[1] * 100.0f) / 100.0f;
+                imuObj["mag_z"] = roundf(imu.mag[2] * 100.0f) / 100.0f;
+                imuObj["mag_ready"] = g_sensors.isMagReady();
+
+                /* Pression et altitude barométrique */
                 PressureData press;
                 g_sensors.getPressureData(press);
                 JsonObject pressObj = doc["press"].to<JsonObject>();
                 pressObj["mbar"]  = press.pressure_mbar / 10.0f;
-                pressObj["depth"] = roundf(press.depth_m * 100.0f) / 100.0f;
+                pressObj["alt"]   = roundf(press.altitude_m * 100.0f) / 100.0f;
                 pressObj["temp"]  = press.temperature / 100.0f;
 
                 /* Puissance (3 wattmètres) */

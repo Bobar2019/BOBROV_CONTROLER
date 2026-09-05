@@ -29,7 +29,7 @@ FlightController::FlightController()
     , _activeMode(MODE_PASSIF)
     , _rpiMaster(false)
     , _lastRPi5FrameTime(0)
-    , _depthTarget(0.0f)
+    , _altTarget(0.0f)
 {
 }
 
@@ -43,7 +43,7 @@ void FlightController::begin(AutopilotConfig* cfg, SemaphoreHandle_t mutex) {
     _activeMode = MODE_PASSIF;
     _rpiMaster  = false;
     _lastRPi5FrameTime = 0;
-    _depthTarget = 0.0f;
+    _altTarget = 0.0f;
 
     resetPID();
     Serial.println("[FLIGHT] Contrôleur de vol initialisé — mode PASSIF");
@@ -62,7 +62,7 @@ void FlightController::setMode(uint8_t mode) {
 
         const char* label;
         switch (mode) {
-            case MODE_AUTO_ROULIS: label = "AUTO_ROULIS"; break;
+            case MODE_AUTO_ROULIS: label = "AUTO_ROULIS+TANGAGE"; break;
             case MODE_AUTO_FULL:   label = "AUTO_FULL";   break;
             default:               label = "PASSIF";       break;
         }
@@ -130,7 +130,7 @@ void FlightController::resetPID() {
         _config->roll.integral  = 0.0f;  _config->roll.prev_error  = 0.0f;
         _config->pitch.integral = 0.0f;  _config->pitch.prev_error = 0.0f;
         _config->yaw.integral   = 0.0f;  _config->yaw.prev_error   = 0.0f;
-        _config->depth.integral = 0.0f;  _config->depth.prev_error = 0.0f;
+        _config->alt.integral = 0.0f;  _config->alt.prev_error = 0.0f;
         xSemaphoreGive(_mutex);
     }
     Serial.println("[FLIGHT] PID reset (intégrales effacées)");
@@ -144,7 +144,7 @@ void FlightController::resetPID() {
  * @brief Applique les corrections PID sur le buffer PWM selon le mode actif.
  *
  * IMPORTANT : le clamp 1000-2000 µs est appliqué UNE SEULE FOIS à la fin,
- * après la somme de TOUTES les corrections (Roll + Pitch + Yaw + Depth).
+ * après la somme de TOUTES les corrections (Roll + Pitch + Yaw + Altitude).
  * Cela évite la saturation prématurée d'un axe qui empêcherait les autres
  * corrections de s'exprimer.
  *
@@ -184,18 +184,19 @@ void FlightController::update(const IMUData& imu, const PressureData& press,
     out[6] -= pidRoll;   /* M7 Ar-G - */
     out[7] -= pidRoll;   /* M8 Av-G - */
 
+    /* ---- PID Pitch (cible = 0° → assiette horizontale) ----
+     * Actif dans AUTO_ROULIS (roulis + tangage) ET AUTO_FULL. */
+    float pitchError = 0.0f - imu.euler[1];
+    float pidPitch = pidCompute(_config->pitch, pitchError, dt);
+
+    /* Mixage Pitch sur moteurs verticaux :
+     * Pitch positif (nez en haut) → pousser arrière vers le bas, avant vers le haut */
+    out[4] -= pidPitch;   /* M5 Av-D : nez monte → moins de poussée avant */
+    out[5] += pidPitch;   /* M6 Ar-D : arrière descend */
+    out[6] += pidPitch;   /* M7 Ar-G : arrière descend */
+    out[7] -= pidPitch;   /* M8 Av-G : nez monte */
+
     if (_activeMode == MODE_AUTO_FULL) {
-        /* ---- PID Pitch (cible = 0° → assiette horizontale) ---- */
-        float pitchError = 0.0f - imu.euler[1];
-        float pidPitch = pidCompute(_config->pitch, pitchError, dt);
-
-        /* Mixage Pitch sur moteurs verticaux :
-         * Pitch positif (nez en haut) → pousser arrière vers le bas, avant vers le haut */
-        out[4] -= pidPitch;   /* M5 Av-D : nez monte → moins de poussée avant */
-        out[5] += pidPitch;   /* M6 Ar-D : arrière descend */
-        out[6] += pidPitch;   /* M7 Ar-G : arrière descend */
-        out[7] -= pidPitch;   /* M8 Av-G : nez monte */
-
         /* ---- PID Yaw (cible = Yaw actuel → maintien du cap) ---- */
         static float _yawSetpoint = 0.0f;
         static bool _yawSetpointInit = false;
@@ -209,29 +210,28 @@ void FlightController::update(const IMUData& imu, const PressureData& press,
         while (yawError < -180.0f) yawError += 360.0f;
         float pidYaw = pidCompute(_config->yaw, yawError, dt);
 
-        /* Mixage Yaw sur verticaux (torsion diagonale) :
-         * Yaw positif (CW vu du dessus) → couple CCW */
-        out[4] += pidYaw;   /* M5 Av-D */
-        out[5] -= pidYaw;   /* M6 Ar-D */
-        out[6] += pidYaw;   /* M7 Ar-G */
-        out[7] -= pidYaw;   /* M8 Av-G */
-
-        /* Mixage Yaw sur horizontaux (poussée différentielle) :
-         * Avant pousse droite, arrière pousse gauche → rotation CW */
-        out[0] += pidYaw;   /* M1 Av-D */
+        /* Mixage vectoriel Yaw sur M1-M4 uniquement (configuration X) :
+         * Axes physiques : M1/M3 sur 135° (poussée positive vers l'avant-gauche),
+         *                  M2/M4 sur 45°  (poussée positive vers l'avant-droite).
+         * pidYaw > 0 (cap à augmenter, CW vu du dessus) :
+         *   M1/M2 (côté droit) en inverse + M3/M4 (côté gauche) en avant
+         *   → l'avant part à droite, l'arrière à gauche → rotation CW.
+         * Les verticaux M5-M8 ne gèrent STRICTEMENT que Roll / Pitch / Altitude. */
+        out[0] -= pidYaw;   /* M1 Av-D */
         out[1] -= pidYaw;   /* M2 Ar-D */
-        out[2] -= pidYaw;   /* M3 Ar-G */
+        out[2] += pidYaw;   /* M3 Ar-G */
         out[3] += pidYaw;   /* M4 Av-G */
 
-        /* ---- PID Profondeur (maintien de la profondeur cible) ---- */
-        float depthError = _depthTarget - press.depth_m;
-        float pidDepth = pidCompute(_config->depth, depthError, dt);
+        /* ---- PID Altitude (maintien de l'altitude cible) ----
+         * Erreur > 0 (sous la cible) → poussée verticale vers le haut. */
+        float altError = _altTarget - press.altitude_m;
+        float pidAlt = pidCompute(_config->alt, altError, dt);
 
-        /* Mixage Depth : uniforme sur tous les verticaux */
-        out[4] += pidDepth;   /* M5 */
-        out[5] += pidDepth;   /* M6 */
-        out[6] += pidDepth;   /* M7 */
-        out[7] += pidDepth;   /* M8 */
+        /* Mixage Altitude : uniforme sur tous les verticaux */
+        out[4] += pidAlt;   /* M5 */
+        out[5] += pidAlt;   /* M6 */
+        out[6] += pidAlt;   /* M7 */
+        out[7] += pidAlt;   /* M8 */
     }
 
     /* ---- CLAMP FINAL après somme de toutes les corrections ---- */

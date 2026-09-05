@@ -19,8 +19,8 @@
 /**
  * @brief Paramètres d'un contrôleur PID simple.
  *
- * Structure utilisée pour les trois boucles d'asservissement
- * (roll, pitch, depth). Les gains sont appliqués dans la tâche
+ * Structure utilisée pour les quatre boucles d'asservissement
+ * (roll, pitch, yaw, altitude). Les gains sont appliqués dans la tâche
  * vTaskControl lorsque le mode autopilote est actif.
  */
 struct PIDParams {
@@ -44,7 +44,7 @@ struct AutopilotConfig {
     PIDParams roll;             ///< PID stabilisation roulis
     PIDParams pitch;            ///< PID stabilisation tangage
     PIDParams yaw;              ///< PID stabilisation cap/lacet
-    PIDParams depth;            ///< PID maintien profondeur
+    PIDParams alt;              ///< PID maintien d'altitude (verticaux)
     uint32_t  watchdog_ms;      ///< Timeout watchdog série (ms), défaut 500
 };
 
@@ -61,8 +61,8 @@ inline AutopilotConfig getDefaultAutopilotConfig() {
     cfg.pitch = {2.0f, 0.05f, 0.5f, 0.0f, 0.0f, -200.0f, 200.0f, 100.0f};
     /* PID Yaw : stabilisation cap/lacet */
     cfg.yaw = {1.5f, 0.02f, 0.3f, 0.0f, 0.0f, -150.0f, 150.0f, 80.0f};
-    /* PID Depth : maintien de profondeur */
-    cfg.depth = {3.0f, 0.1f, 1.0f, 0.0f, 0.0f, -300.0f, 300.0f, 150.0f};
+    /* PID Altitude : maintien de l'altitude cible (erreur > 0 → poussée vers le haut) */
+    cfg.alt = {3.0f, 0.1f, 1.0f, 0.0f, 0.0f, -300.0f, 300.0f, 150.0f};
     /* Watchdog série : 500 ms par défaut */
     cfg.watchdog_ms = 500;
     return cfg;

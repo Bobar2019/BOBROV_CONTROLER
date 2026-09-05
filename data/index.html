@@ -218,6 +218,21 @@
             </div>
 
             <div class="content-area">
+                <!-- Vue schématique 2D : châssis + 8 propulseurs (temps réel WebSocket) -->
+                <div class="card rov-schematic-card">
+                    <h3>Vue de Dessus — Propulsion (M1–M8)</h3>
+                    <div class="rov-schematic-wrap">
+                        <svg id="rov-schematic" viewBox="0 0 480 400" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Schéma du ROV vu de dessus : action des 8 propulseurs en temps réel"></svg>
+                    </div>
+                    <div class="rov-legend">
+                        <span class="rov-lg"><span class="lg-dot lg-fwd"></span>Poussée positive (&gt; 1500 µs)</span>
+                        <span class="rov-lg"><span class="lg-dot lg-rev"></span>Poussée négative (&lt; 1500 µs)</span>
+                        <span class="rov-lg"><span class="lg-dot lg-neu"></span>Neutre (1500 µs)</span>
+                        <span class="rov-lg rov-lg-note">M1–M4 : vecteurs 45° · M5–M8 : poussée verticale ↑/↓</span>
+                    </div>
+                </div>
+
+                <h4 class="pwm-bars-title">Barregraphes — 16 Canaux</h4>
                 <div class="pwm-grid"></div>
             </div>
         </div>
@@ -269,16 +284,24 @@
                         </div>
                     </div>
                     <div class="card">
-                        <h3>Pression / Profondeur</h3>
+                        <h3>Pression / Altitude</h3>
                         <div class="press-display">
                             <div class="euler-item"><span class="label">Pression</span><span id="val-mbar" class="value">1013.3 mbar</span></div>
-                            <div class="euler-item"><span class="label">Profondeur</span><span id="val-depth" class="value">0.00 m</span></div>
+                            <div class="euler-item"><span class="label">Altitude</span><span id="val-alt" class="value">0.00 m</span></div>
                             <div class="euler-item"><span class="label">Température</span><span id="val-temp" class="value">20.5 °C</span></div>
                         </div>
                     </div>
                 </div>
-                <!-- Instruments aviation : Horizon artificiel + HSI -->
+                <!-- Instruments aviation : VSI + Horizon artificiel + HSI -->
                 <div class="telem-row instruments-row">
+                    <div class="card av-card">
+                        <h3>Variomètre (VSI)</h3>
+                        <canvas id="cv-vsi" width="260" height="260"></canvas>
+                        <div class="av-readout">
+                            <span>VS <b id="av-vs">+0 cm/s</b></span>
+                            <span>ALT <b id="av-alt">0.00 m</b></span>
+                        </div>
+                    </div>
                     <div class="card av-card">
                         <h3>Horizon Artificiel</h3>
                         <canvas id="cv-horizon" width="260" height="260"></canvas>
@@ -307,7 +330,7 @@
                         </div>
                         <div class="mode-btn-group">
                             <button class="btn mode-btn active" data-mode="0" id="btn-mode-0">PASSIF</button>
-                            <button class="btn mode-btn" data-mode="1" id="btn-mode-1">AUTO ROULIS</button>
+                            <button class="btn mode-btn" data-mode="1" id="btn-mode-1">AUTO ROULIS ET TANGAGE</button>
                             <button class="btn mode-btn" data-mode="2" id="btn-mode-2">AUTO FULL</button>
                         </div>
                     </div>
@@ -448,7 +471,7 @@
                         <label>Kd <input type="number" id="pid-p-kd" step="0.01" value="0.5"></label>
                     </div>
                     <div class="card">
-                        <h3>PID Profondeur</h3>
+                        <h3>PID Altitude</h3>
                         <label>Kp <input type="number" id="pid-d-kp" step="0.01" value="3.0"></label>
                         <label>Ki <input type="number" id="pid-d-ki" step="0.01" value="0.1"></label>
                         <label>Kd <input type="number" id="pid-d-kd" step="0.01" value="1.0"></label>

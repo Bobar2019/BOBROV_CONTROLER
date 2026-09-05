@@ -344,6 +344,8 @@ function processTelemetry(data) {
             pwmValues[i] = data.pwm[i];
             updatePWMBar(i, data.pwm[i]);
         }
+        /* Vue schématique 2D des propulseurs (M1–M8) */
+        updateROVSchematic(pwmValues);
     }
 
     if (data.imu) {
@@ -362,8 +364,9 @@ function processTelemetry(data) {
 
     if (data.press) {
         setText('val-mbar',  (data.press.mbar  || 0).toFixed(1) + ' mbar');
-        setText('val-depth', (data.press.depth || 0).toFixed(2) + ' m');
+        setText('val-alt',    (data.press.alt   || 0).toFixed(2) + ' m');
         setText('val-temp',  (data.press.temp  || 0).toFixed(1) + ' °C');
+        updateVSI(data.press.alt || 0);
     }
 
     if (data.power && Array.isArray(data.power)) {
@@ -495,6 +498,199 @@ function updatePWMBar(ch, us) {
 }
 
 /* =========================================================================
+ * VUE SCHÉMATIQUE 2D — PROPULSION (PWM MONITOR)
+ * ========================================================================= */
+
+/*
+ * Géométrie des 8 propulseurs dans le viewBox SVG 480×400 (vue de dessus,
+ * avant = haut). Le schéma est construit dynamiquement par initROVSchematic().
+ *
+ *  - type 'H' : propulseur horizontal en configuration X. angleDeg = direction
+ *    du vecteur de poussée POSITIVE (> 1500 µs) dans le repère SVG (0° = droite,
+ *    90° = bas, sens horaire). La poussée négative (< 1500 µs) inverse le
+ *    vecteur de 180°.
+ *      Axe 135° (avant-gauche ↔ arrière-droite) :
+ *        M1 Av-D : 225° → poussée positive vers l'AVANT-GAUCHE
+ *        M3 Ar-G : 225° → poussée positive vers l'AVANT-GAUCHE
+ *      Axe 45° (avant-droite ↔ arrière-gauche) :
+ *        M2 Ar-D : 315° → poussée positive vers l'AVANT-DROITE
+ *        M4 Av-G : 315° → poussée positive vers l'AVANT-DROITE
+ *    Cohérent avec le mixage de flight_controller.cpp : les 4 positifs font
+ *    avancer le ROV ; Yaw : M1/M2 en négatif + M3/M4 en positif → rotation CW.
+ *    Pour inverser le sens réel d'un propulseur : ajouter 180 à son angleDeg.
+ *  - type 'V' : propulseur vertical (cercle vu de dessus). Poussée positive =
+ *    flèche vers le HAUT (ROV poussé vers la surface), négative = vers le bas.
+ *
+ * (lx, ly) = position absolue du label M1..M8, (vx, vy) = valeur en µs.
+ */
+const ROV_THRUSTERS = [
+    { ch: 0, label: 'M1', type: 'H', x: 346, y:  81, angleDeg: 225, lx: 418, ly:  77, vx: 418, vy:  92 },
+    { ch: 1, label: 'M2', type: 'H', x: 346, y: 319, angleDeg: 315, lx: 418, ly: 315, vx: 418, vy: 330 },
+    { ch: 2, label: 'M3', type: 'H', x: 134, y: 319, angleDeg: 225, lx:  62, ly: 315, vx:  62, vy: 330 },
+    { ch: 3, label: 'M4', type: 'H', x: 134, y:  81, angleDeg: 315, lx:  62, ly:  77, vx:  62, vy:  92 },
+    { ch: 4, label: 'M5', type: 'V', x: 275, y: 157, lx: 275, ly: 129, vx: 275, vy: 190 },
+    { ch: 5, label: 'M6', type: 'V', x: 275, y: 243, lx: 275, ly: 215, vx: 275, vy: 286 },
+    { ch: 6, label: 'M7', type: 'V', x: 205, y: 243, lx: 205, ly: 215, vx: 205, vy: 286 },
+    { ch: 7, label: 'M8', type: 'V', x: 205, y: 157, lx: 205, ly: 129, vx: 205, vy: 190 }
+];
+
+const ROV_NEUTRAL_COLOR = '#666b7a';   /* Gris neutre (proposé : --text-dim) */
+const rovThrEls = [];                  /* Références DOM des propulseurs (index = canal PWM) */
+
+/**
+ * Crée un élément SVG dans le namespace SVG correct.
+ * @param {string} tag Nom du tag (rect, circle, line...).
+ * @param {Object} attrs Attributs à appliquer (optionnel).
+ * @param {SVGElement} parent Élément parent (optionnel).
+ * @returns {SVGElement} Élément créé.
+ */
+function svgNew(tag, attrs, parent) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    if (attrs) {
+        for (const k in attrs) el.setAttribute(k, attrs[k]);
+    }
+    if (parent) parent.appendChild(el);
+    return el;
+}
+
+/**
+ * Interpole linéairement deux couleurs RGB. t ∈ [0..1].
+ * @param {number[]} c1 Couleur de départ [r, g, b].
+ * @param {number[]} c2 Couleur d'arrivée [r, g, b].
+ * @param {number} t Facteur d'interpolation.
+ * @returns {string} Couleur 'rgb(r,g,b)'.
+ */
+function lerpColor(c1, c2, t) {
+    const r = Math.round(c1[0] + (c2[0] - c1[0]) * t);
+    const g = Math.round(c1[1] + (c2[1] - c1[1]) * t);
+    const b = Math.round(c1[2] + (c2[2] - c1[2]) * t);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
+/**
+ * Construit le schéma SVG du ROV (châssis + 8 propulseurs) dans #rov-schematic.
+ * Appelée une fois au chargement de la page.
+ */
+function initROVSchematic() {
+    const svg = document.getElementById('rov-schematic');
+    if (!svg) return;
+
+    /* ---- Châssis (vue de dessus, avant vers le haut) ---- */
+    svgNew('text', { x: 240, y: 40, 'text-anchor': 'middle', class: 'rov-dir-label' }, svg).textContent = 'AVANT';
+    svgNew('path', { d: 'M240 56 L253 80 L245 80 L245 92 L235 92 L235 80 L227 80 Z', class: 'rov-nose' }, svg);
+    svgNew('rect', { x: 155, y: 102, width: 170, height: 196, rx: 22, class: 'rov-hull' }, svg);
+    svgNew('circle', { cx: 240, cy: 126, r: 10, class: 'rov-cam' }, svg);
+    svgNew('line', { x1: 228, y1: 200, x2: 252, y2: 200, class: 'rov-center' }, svg);
+    svgNew('line', { x1: 240, y1: 188, x2: 240, y2: 212, class: 'rov-center' }, svg);
+    svgNew('text', { x: 240, y: 388, 'text-anchor': 'middle', class: 'rov-dir-label' }, svg).textContent = 'ARRIÈRE';
+
+    /* ---- Propulseurs M1–M8 ---- */
+    ROV_THRUSTERS.forEach(cfg => {
+        const g = svgNew('g', { class: 'rov-thr', transform: 'translate(' + cfg.x + ',' + cfg.y + ')' }, svg);
+        svgNew('title', {}, g).textContent = 'CH' + cfg.ch + ' : ' + CH_NAMES[cfg.ch];
+
+        const el = { cfg: cfg, val: null, arrow: null, shaft: null, head: null, halo: null };
+
+        if (cfg.type === 'H') {
+            /* Carter du propulseur aligné sur l'axe de poussée + hélice centrale */
+            svgNew('rect', { x: -16, y: -8, width: 32, height: 16, rx: 5, class: 'thr-body',
+                             transform: 'rotate(' + cfg.angleDeg + ')' }, g);
+            svgNew('rect', { x: -21, y: -5, width: 6, height: 10, rx: 2, class: 'thr-nozzle',
+                             transform: 'rotate(' + cfg.angleDeg + ')' }, g);
+            svgNew('circle', { r: 4, class: 'thr-hub' }, g);
+            /* Vecteur de poussée : tracé le long de +x local puis pivoté */
+            el.arrow = svgNew('g', { class: 'thr-arrow' }, g);
+            el.shaft = svgNew('line', { x1: 20, y1: 0, x2: 28, y2: 0, class: 'thr-shaft' }, el.arrow);
+            el.head  = svgNew('polygon', { points: '0,-5.5 11,0 0,5.5', class: 'thr-head',
+                                            transform: 'translate(28,0)' }, el.arrow);
+        } else {
+            /* Propulseur vertical : cercle (vue de dessus) + halo d'intensité */
+            el.halo  = svgNew('circle', { r: 17, class: 'thr-halo' }, g);
+            svgNew('circle', { r: 17, class: 'vthr-body' }, g);
+            svgNew('circle', { r: 4, class: 'thr-hub' }, g);
+            /* Vecteur vertical : haut = poussée positive, bas = négative */
+            el.arrow = svgNew('g', { class: 'thr-arrow' }, g);
+            el.shaft = svgNew('line', { x1: 0, y1: 7, x2: 0, y2: -7, class: 'thr-shaft' }, el.arrow);
+            el.head  = svgNew('polygon', { points: '0,0 4.5,7 -4.5,7', class: 'thr-head',
+                                            transform: 'translate(0,-7)' }, el.arrow);
+        }
+
+        /* Label M1..M8 + valeur instantanée en µs */
+        svgNew('text', { x: cfg.lx - cfg.x, y: cfg.ly - cfg.y, 'text-anchor': 'middle',
+                         class: 'thr-label' }, g).textContent = cfg.label;
+        el.val = svgNew('text', { x: cfg.vx - cfg.x, y: cfg.vy - cfg.y, 'text-anchor': 'middle',
+                                  class: 'thr-value' }, g);
+        el.val.textContent = NEUTRAL_US + ' µs';
+
+        rovThrEls[cfg.ch] = el;
+    });
+
+    /* État initial : tout au neutre */
+    updateROVSchematic(new Array(16).fill(NEUTRAL_US));
+}
+
+/**
+ * Met à jour la vue schématique des propulseurs à partir des valeurs PWM (µs).
+ * Branchée sur la réception des trames de télémétrie WebSocket (data.pwm).
+ *
+ * Dynamique : neutre (1500 µs) = vecteur gris court · poussée positive =
+ * vecteur cyan→vert dont la longueur croît de 1500 à 2000 µs · poussée
+ * négative = vecteur inversé orange→rouge de 1500 à 1000 µs.
+ *
+ * @param {number[]} values Valeurs PWM des 16 canaux en microsecondes.
+ */
+function updateROVSchematic(values) {
+    for (let i = 0; i < ROV_THRUSTERS.length; i++) {
+        const cfg = ROV_THRUSTERS[i];
+        const el = rovThrEls[cfg.ch];
+        if (!el || !values || values[cfg.ch] === undefined) continue;
+
+        const us = values[cfg.ch];
+        el.val.textContent = us + ' µs';
+
+        /* Déviation normalisée [−1..+1] autour du neutre 1500 µs */
+        const dev = (us - NEUTRAL_US) / (MAX_US - NEUTRAL_US);
+        const mag = Math.min(1, Math.abs(dev));
+        const neutral = (mag < 0.02);   /* bande morte ±10 µs anti-scintillement */
+
+        let color;
+        if (neutral) {
+            color = ROV_NEUTRAL_COLOR;
+        } else if (dev > 0) {
+            color = lerpColor([0, 217, 255], [0, 230, 118], mag);   /* cyan → vert */
+        } else {
+            color = lerpColor([255, 179, 0], [255, 59, 48], mag);   /* orange → rouge */
+        }
+
+        el.val.style.fill = color;
+        el.arrow.setAttribute('color', color);   /* piloté par currentColor (CSS) */
+        /* Au neutre (1500 µs) : aucune flèche (poussée nulle) */
+        el.arrow.setAttribute('opacity', neutral ? 0 : 0.45 + 0.55 * mag);
+        el.arrow.classList.toggle('thr-active', !neutral);
+
+        if (cfg.type === 'H') {
+            /* Longueur ∝ poussée · direction inversée en marche arrière */
+            const len = neutral ? 8 : 10 + 26 * mag;
+            const ang = (dev >= 0) ? cfg.angleDeg : cfg.angleDeg + 180;
+            el.arrow.setAttribute('transform', 'rotate(' + ang + ')');
+            el.shaft.setAttribute('x2', 20 + len);
+            el.head.setAttribute('transform', 'translate(' + (20 + len) + ',0)');
+        } else {
+            /* Flèche vers le haut (poussée positive) ou vers le bas */
+            const len = neutral ? 6 : 7 + 9 * mag;
+            const ang = (dev >= 0) ? 0 : 180;
+            el.arrow.setAttribute('transform', 'rotate(' + ang + ')');
+            el.shaft.setAttribute('y2', 7 - len);
+            el.head.setAttribute('transform', 'translate(0,' + (7 - len) + ')');
+            /* Halo circulaire dont le rayon et l'opacité suivent l'intensité */
+            el.halo.setAttribute('r', 17 + 6 * mag);
+            el.halo.setAttribute('stroke', color);
+            el.halo.setAttribute('stroke-opacity', neutral ? 0 : 0.25 + 0.45 * mag);
+        }
+    }
+}
+
+/* =========================================================================
  * CÂBLAGE & SCHÉMAS — AFFICHAGE DYNAMIQUE
  * ========================================================================= */
 
@@ -582,11 +778,11 @@ function updateDryRunUI(enabled) {
  * CONTRÔLEUR DE VOL — MODE ET MAÎTRE
  * ========================================================================= */
 
-const MODE_LABELS = ['PASSIF', 'AUTO ROULIS', 'AUTO FULL'];
+const MODE_LABELS = ['PASSIF', 'AUTO ROULIS ET TANGAGE', 'AUTO FULL'];
 
 /**
  * Met à jour les boutons de mode pour refléter le mode actif.
- * @param {number} activeMode — 0=PASSIF, 1=AUTO_ROULIS, 2=AUTO_FULL
+ * @param {number} activeMode — 0=PASSIF, 1=AUTO_ROULIS (roulis+tangage), 2=AUTO_FULL
  */
 function updateFlightMode(activeMode) {
     document.querySelectorAll('.mode-btn').forEach(btn => {
@@ -1384,8 +1580,126 @@ function drawHeadingWheel(yaw) {
     ctx.restore(); /* pop translate */
 }
 
+/* =========================================================================
+ * VARIOMÈTRE (VSI) — VITESSE VERTICALE EN cm/s
+ * ========================================================================= */
+
+const VSI_MAX_CMS = 100;   /* Pleine échelle : ±100 cm/s */
+let _vsiPrevAlt = null;    /* Altitude précédente (m) */
+let _vsiPrevT   = 0;       /* Horodatage précédent (ms) */
+let _vsiRate    = 0;       /* Vitesse verticale lissée (cm/s) */
+
+/**
+ * Met à jour le variomètre à partir de l'altitude barométrique télémétrée.
+ * Dérivée temporelle lissée par filtre exponentiel (anti-gigue).
+ * @param {number} altM — Altitude courante en mètres
+ */
+function updateVSI(altM) {
+    const t = performance.now();
+    if (_vsiPrevAlt !== null) {
+        const dt = (t - _vsiPrevT) / 1000;
+        if (dt > 0.03 && dt < 2.0) {   /* ignore trous et doublons WS */
+            const raw = ((altM - _vsiPrevAlt) / dt) * 100;   /* m/s → cm/s */
+            _vsiRate += (raw - _vsiRate) * 0.25;
+        }
+    }
+    _vsiPrevAlt = altM;
+    _vsiPrevT = t;
+
+    drawVSI(_vsiRate);
+    setText('av-alt', altM.toFixed(2) + ' m');
+    const el = document.getElementById('av-vs');
+    if (el) {
+        el.textContent = (_vsiRate >= 0 ? '+' : '') + Math.round(_vsiRate) + ' cm/s';
+        el.style.color = (Math.abs(_vsiRate) < 5) ? '' : (_vsiRate > 0 ? '#00e676' : '#ffb300');
+    }
+}
+
+/**
+ * Dessine un variomètre style aviation : zéro à 9h, montée par le haut,
+ * descente par le bas, pleine échelle ±100 cm/s à 3h.
+ * @param {number} vsCms — Vitesse verticale en cm/s (+ = montée)
+ */
+function drawVSI(vsCms) {
+    const cv = document.getElementById('cv-vsi');
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    const W = cv.width, H = cv.height;
+    const cx = W / 2, cy = H / 2, R = Math.min(cx, cy) - 6;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(cx, cy);
+
+    /* Fond du cadran */
+    ctx.fillStyle = '#0d0e12';
+    ctx.beginPath();
+    ctx.arc(0, 0, R, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* Graduations : majeures tous les 50 (étiquetées), mineures tous les 25 */
+    ctx.strokeStyle = '#ffffff';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let v = -VSI_MAX_CMS; v <= VSI_MAX_CMS; v += 25) {
+        const a = Math.PI + (v / VSI_MAX_CMS) * Math.PI;
+        const major = (v % 50 === 0);
+        const r1 = R - (major ? 14 : 8);
+        ctx.lineWidth = major ? 2.5 : 1.5;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
+        ctx.lineTo(Math.cos(a) * (R - 2), Math.sin(a) * (R - 2));
+        ctx.stroke();
+        if (major) {
+            ctx.font = 'bold 11px monospace';
+            ctx.fillText(Math.abs(v) + '', Math.cos(a) * (R - 27), Math.sin(a) * (R - 27));
+        }
+    }
+
+    /* Signes montée / descente */
+    ctx.font = 'bold 15px monospace';
+    ctx.fillStyle = '#00e676';
+    ctx.fillText('+', -R * 0.42, -R * 0.5);
+    ctx.fillStyle = '#ffb300';
+    ctx.fillText('-', -R * 0.42, R * 0.5);
+
+    /* Aiguille (contrepoids court + branche utile) */
+    const v = Math.max(-VSI_MAX_CMS, Math.min(VSI_MAX_CMS, vsCms));
+    const a = Math.PI + (v / VSI_MAX_CMS) * Math.PI;
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-Math.cos(a) * 18, -Math.sin(a) * 18);
+    ctx.lineTo(Math.cos(a) * (R - 34), Math.sin(a) * (R - 34));
+    ctx.stroke();
+
+    /* Moyeu central */
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath();
+    ctx.arc(0, 0, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* Unité (fond opaque : reste lisible quand l'aiguille passe dessous) */
+    ctx.fillStyle = '#0d0e12';
+    ctx.fillRect(-24, R * 0.45 - 8, 48, 16);
+    ctx.fillStyle = '#9aa0b0';
+    ctx.font = 'bold 10px monospace';
+    ctx.fillText('cm/s', 0, R * 0.45);
+
+    /* Bordure circulaire */
+    ctx.strokeStyle = '#444857';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, R + 1, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.restore();
+}
+
 /* Dessin initial (valeurs à zéro) au chargement */
 function initAviationInstruments() {
+    drawVSI(0);
     drawArtificialHorizon(0, 0);
     drawHeadingWheel(0);
 
@@ -1418,6 +1732,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initTileNav();
     initDashboardEditor();
     initPWMGrid();
+    initROVSchematic();
     initDryRun();
     initTestBench();
     initWiFi();

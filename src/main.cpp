@@ -79,10 +79,10 @@ static void saveAutopilotConfig() {
     prefs.putFloat("y_ki", g_apConfig.yaw.ki);
     prefs.putFloat("y_kd", g_apConfig.yaw.kd);
 
-    /* PID Depth */
-    prefs.putFloat("d_kp", g_apConfig.depth.kp);
-    prefs.putFloat("d_ki", g_apConfig.depth.ki);
-    prefs.putFloat("d_kd", g_apConfig.depth.kd);
+    /* PID Altitude */
+    prefs.putFloat("d_kp", g_apConfig.alt.kp);
+    prefs.putFloat("d_ki", g_apConfig.alt.ki);
+    prefs.putFloat("d_kd", g_apConfig.alt.kd);
 
     /* Watchdog timeout */
     prefs.putUInt("wdg_ms", g_apConfig.watchdog_ms);
@@ -122,10 +122,10 @@ static void loadAutopilotConfig() {
     g_apConfig.yaw.ki = prefs.getFloat("y_ki", g_apConfig.yaw.ki);
     g_apConfig.yaw.kd = prefs.getFloat("y_kd", g_apConfig.yaw.kd);
 
-    /* PID Depth */
-    g_apConfig.depth.kp = prefs.getFloat("d_kp", g_apConfig.depth.kp);
-    g_apConfig.depth.ki = prefs.getFloat("d_ki", g_apConfig.depth.ki);
-    g_apConfig.depth.kd = prefs.getFloat("d_kd", g_apConfig.depth.kd);
+    /* PID Altitude */
+    g_apConfig.alt.kp = prefs.getFloat("d_kp", g_apConfig.alt.kp);
+    g_apConfig.alt.ki = prefs.getFloat("d_ki", g_apConfig.alt.ki);
+    g_apConfig.alt.kd = prefs.getFloat("d_kd", g_apConfig.alt.kd);
 
     /* Watchdog */
     g_apConfig.watchdog_ms = prefs.getUInt("wdg_ms", SERIAL_TIMEOUT_DEFAULT_MS);

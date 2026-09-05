@@ -54,8 +54,8 @@
  * ========================================================================= */
 
 #define MODE_PASSIF         0   ///< Mode Passif (Manuel direct — PWM_in = PWM_out)
-#define MODE_AUTO_ROULIS    1   ///< Stabilisation Roll automatique via PID (M5-M8)
-#define MODE_AUTO_FULL      2   ///< Stabilisation complète Roll+Pitch+Yaw+Profondeur
+#define MODE_AUTO_ROULIS    1   ///< Stabilisation Roll + Pitch automatique via PID (M5-M8)
+#define MODE_AUTO_FULL      2   ///< Stabilisation complète Roll+Pitch+Yaw+Altitude
 
 /* =========================================================================
  * CONSTANTES D'ÉTAT D'ARMEMENT

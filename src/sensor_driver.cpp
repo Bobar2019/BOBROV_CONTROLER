@@ -4,9 +4,11 @@
  *
  * Scanner I2C dynamique, abstraction HAL pour IMU (BNO085/MPU9250) et
  * baromètre (MS5803/BME280), forçage à zéro en mode réel si capteur absent.
+ * Fusion d'attitude Mahony 9-DOF (gyro + accéléro + magnéto AK8963) pour le
+ * MPU9250/GY-91 avec étalonnage du biais gyro au démarrage.
  *
  * @author Didier Dero
- * @version 1.1.0
+ * @version 1.2.0
  */
 
 #include "sensor_driver.h"
@@ -14,6 +16,7 @@
 #include <math.h>
 #include <Wire.h>
 #include <Preferences.h>
+#include <Adafruit_BNO08x.h>
 
 /* =========================================================================
  * INSTANCE GLOBALE
@@ -26,7 +29,7 @@ SensorDriver g_sensors;
 static constexpr float SIM_SWELL_PERIOD     = 6.0f;
 static constexpr float SIM_ROLL_AMP         = 5.0f;
 static constexpr float SIM_PITCH_AMP        = 3.0f;
-static constexpr float SIM_DEPTH_INIT       = 2.0f;
+static constexpr float SIM_ALT_INIT         = 2.0f;
 static constexpr uint16_t SIM_BATT_NOMINAL_MV = 12600;
 static constexpr uint16_t SIM_BATT_MIN_MV     = 10800;
 
@@ -63,10 +66,44 @@ static constexpr uint8_t MPU9250_USER_CTRL    = 0x6A;
 static constexpr uint8_t MPU9250_INT_PIN_CFG  = 0x37;
 /** @brief Registre WIA (WHO_AM_I) de l'AK8963 (doit retourner 0x48) */
 static constexpr uint8_t AK8963_WIA_REG       = 0x00;
+/** @brief Registre ST1 (status 1) : bit 0 = DRDY (donnée prête) */
+static constexpr uint8_t AK8963_ST1_REG       = 0x02;
 /** @brief Registre de contrôle du magnétomètre AK8963 */
 static constexpr uint8_t AK8963_CNTL1         = 0x0A;
 /** @brief Registre contrôle 2 (reset) du magnétomètre AK8963 */
 static constexpr uint8_t AK8963_CNTL2         = 0x0B;
+/** @brief Registre ST2 (status 2) : bit 3 = HOFL (saturation magnétique) */
+static constexpr uint8_t AK8963_ST2_REG       = 0x09;
+/** @brief Bit DRDY du registre ST1 : mesure magnétique prête */
+static constexpr uint8_t AK8963_ST1_DRDY      = 0x01;
+/** @brief Bit HOFL du registre ST2 : débordement / saturation du capteur */
+static constexpr uint8_t AK8963_ST2_HOFL      = 0x08;
+/** @brief Sensibilité AK8963 en mode 16-bit : 0.15 µT par LSB */
+static constexpr float   AK8963_UT_PER_LSB   = 0.15f;
+
+/* =========================================================================
+ * FILTRE MAHONY 9-DOF — GAINS ET GARDE-FOUS
+ * ========================================================================= */
+/**
+ * @brief Gain proportionnel du filtre Mahony (×2, cf. formulation Madgwick).
+ *
+ * Kp = 0.8 : le gyro domine à court terme (fluide), l'accéléro et le magnéto
+ * corrigent la dérive avec une constante de temps ≈ 1.25 s. Compatible avec
+ * le comportement "gyro-dominant" (98/2) de l'ancien filtre complémentaire.
+ */
+static constexpr float MAHONY_TWO_KP = 1.6f;
+
+/** @brief Gain intégral du filtre Mahony (0 : biais traité par l'étalonnage boot) */
+static constexpr float MAHONY_TWO_KI = 0.0f;
+
+/** @brief Norme accéléro acceptable pour la correction gravité (g) */
+static constexpr float MAHONY_ACC_MIN_G = 0.6f;
+static constexpr float MAHONY_ACC_MAX_G = 1.4f;
+
+/** @brief Norme champ magnétique acceptable pour la correction cap (µT)
+ *         (Champ terrestre ~20-50 µT en Suisse ; hors plage = distorsion) */
+static constexpr float MAHONY_MAG_MIN_UT = 10.0f;
+static constexpr float MAHONY_MAG_MAX_UT = 80.0f;
 
 /* =========================================================================
  * REGISTRES BME280
@@ -109,6 +146,7 @@ SensorDriver::SensorDriver()
     , _headingLastMs(0)
     , _bme280Initialized(false)
     , _bme280Addr(BME280_I2C_ADDR_PRI)
+    , _bno08x(nullptr)
 {
     memset(&_imu, 0, sizeof(_imu));
     memset(&_power, 0, sizeof(_power));
@@ -120,6 +158,8 @@ SensorDriver::SensorDriver()
     _currentSCL = I2C_SCL_PIN;
     _magReady = false;
     _mpu9250Yaw = 0.0f;
+    _q[0] = 1.0f; _q[1] = 0.0f; _q[2] = 0.0f; _q[3] = 0.0f;  /* Identité */
+    _gyroBias[0] = _gyroBias[1] = _gyroBias[2] = 0.0f;
 }
 
 /* =========================================================================
@@ -782,15 +822,40 @@ bool SensorDriver::_i2cDevicePresent(uint8_t addr) {
  * ========================================================================= */
 
 bool SensorDriver::_initBNO085() {
-    uint8_t whoami = _i2cRead8(BNO085_I2C_ADDR, 0x00);
-    if (whoami == 0xA0) {
-        _status.bno085 = SENSOR_CONNECTED;
-        Serial.println("[SENSORS] BNO085 détecté (0x4A)");
-        return true;
+    /* Libérer l'instance précédente si re-init */
+    if (_bno08x) {
+        delete _bno08x;
+        _bno08x = nullptr;
     }
-    _status.bno085 = SENSOR_DISCONNECTED;
-    Serial.println("[SENSORS] BNO085 NON détecté (whoami=0x" + String(whoami, HEX) + ")");
-    return false;
+
+    _bno08x = new Adafruit_BNO08x();
+
+    /* Tenter l'initialisation I2C à l'adresse 0x4A */
+    if (!_bno08x->begin_I2C(BNO085_I2C_ADDR)) {
+        _status.bno085 = SENSOR_DISCONNECTED;
+        Serial.println("[SENSORS] BNO085 : échec begin_I2C(0x4A)");
+        delete _bno08x;
+        _bno08x = nullptr;
+        return false;
+    }
+
+    /* Activer les rapports Game Rotation Vector (quaternions) à 50 Hz */
+    if (!_bno08x->enableReport(SH2_GAME_ROTATION_VECTOR, 20000)) {
+        _status.bno085 = SENSOR_DISCONNECTED;
+        Serial.println("[SENSORS] BNO085 : échec enableReport GAME_ROTATION_VECTOR");
+        delete _bno08x;
+        _bno08x = nullptr;
+        return false;
+    }
+
+    /* Activer le gyroscope à 50 Hz */
+    if (!_bno08x->enableReport(SH2_GYROSCOPE_CALIBRATED, 20000)) {
+        Serial.println("[SENSORS] BNO085 : avertissement enableReport GYROSCOPE_CALIBRATED échoué");
+    }
+
+    _status.bno085 = SENSOR_CONNECTED;
+    Serial.println("[SENSORS] BNO085 détecté et initialisé (0x4A) — Game Rotation Vector + Gyroscope @ 50 Hz");
+    return true;
 }
 
 /**
@@ -812,6 +877,7 @@ bool SensorDriver::_initBNO085() {
 bool SensorDriver::_initMPU9250() {
     _magReady = false;
     _mpu9250Yaw = 0.0f;
+    _gyroBias[0] = _gyroBias[1] = _gyroBias[2] = 0.0f;
 
     /* Étape 1 : Vérification WHO_AM_I */
     uint8_t whoami = _i2cRead8(MPU9250_I2C_ADDR, MPU9250_WHOAMI_REG);
@@ -827,28 +893,38 @@ bool SensorDriver::_initMPU9250() {
     _i2cWrite(MPU9250_I2C_ADDR, MPU9250_PWR_MGMT1, 0x01); /* Auto clock */
     delay(10);
 
-    /* Étape 3 : Désactiver maître I2C interne (bit 5 I2C_MST_EN) */
+    /* Étape 3 : Désactiver maître I2C interne (USER_CTRL = 0x00, bit 5 I2C_MST_EN=0)
+     * pour que l'AK8963 soit adressable directement sur le bus principal */
     _i2cWrite(MPU9250_I2C_ADDR, MPU9250_USER_CTRL, 0x00);
     delay(10);
+    Serial.println("[SENSORS] MPU9250 : USER_CTRL=0x00 (maître I2C interne désactivé)");
 
-    /* Étape 4 : Activer Bypass I2C (bit 1 BYPASS_EN) */
+    /* Étape 4 : Activer Bypass I2C (INT_PIN_CFG = 0x02, bit 1 BYPASS_EN=1)
+     * → l'AK8963 (0x0C) devient visible sur le bus I2C principal */
     _i2cWrite(MPU9250_I2C_ADDR, MPU9250_INT_PIN_CFG, 0x02);
     delay(10);
+    Serial.println("[SENSORS] MPU9250 : INT_PIN_CFG=0x02 (Bypass I2C activé)");
 
-    /* Étape 5 : Tenter init magnétomètre AK8963 */
+    /* Étape 5 : Initialisation du magnétomètre AK8963 (0x0C) */
     Wire.beginTransmission(AK8963_I2C_ADDR);
     uint8_t mag_err = Wire.endTransmission();
     if (mag_err == 0) {
         uint8_t wia = _i2cRead8(AK8963_I2C_ADDR, AK8963_WIA_REG);
         if (wia == 0x48) {
-            /* Reset magnéto */
+            Serial.println("[SENSORS] AK8963 détecté à 0x0C (WIA=0x48) — magnétomètre OK");
+
+            /* Soft-reset du magnéto puis séquence init : power-down → 10 ms → CNTL1 */
             _i2cWrite(AK8963_I2C_ADDR, AK8963_CNTL2, 0x01);
-            delay(100);
-            /* Mode continu 16-bit 8Hz : 0x12 */
-            _i2cWrite(AK8963_I2C_ADDR, AK8963_CNTL1, 0x12);
+            delay(10);
+            /* Power-down mode */
+            _i2cWrite(AK8963_I2C_ADDR, AK8963_CNTL1, 0x00);
+            delay(10);
+            /* Mode mesure continue 100 Hz, résolution 16-bit :
+             * 0x16 = 0b0001_0110 → bit4=1 (16-bit), bits[3:0]=0110 (100 Hz) */
+            _i2cWrite(AK8963_I2C_ADDR, AK8963_CNTL1, 0x16);
             delay(10);
             _magReady = true;
-            Serial.println("[SENSORS] MPU9250 : AK8963 magnétomètre OK (9-DOF)");
+            Serial.println("[SENSORS] AK8963 : mode continu 100 Hz / 16-bit (CNTL1=0x16)");
         } else {
             Serial.println("[SENSORS] MPU9250 : AK8963 WIA=0x" + String(wia, HEX)
                            + " (attendu 0x48) → mode 6-DOF");
@@ -862,12 +938,79 @@ bool SensorDriver::_initMPU9250() {
     _i2cWrite(MPU9250_I2C_ADDR, 0x1A, 0x03);               /* DLPF_CFG=3 → BW 42Hz (anti-jitter) */
     _i2cWrite(MPU9250_I2C_ADDR, MPU9250_GYRO_CONFIG, 0x08);    /* FS_SEL=1 → ±500°/s, 65.5 LSB/°/s */
     _i2cWrite(MPU9250_I2C_ADDR, MPU9250_ACCEL_CONFIG, 0x08);   /* AFS_SEL=1 → ±4g, 8192 LSB/g */
+    delay(10);
 
-    /* Étape 7 : Toujours CONNECTÉE si WHO_AM_I OK */
+    /* Étape 7 : Étalonnage du biais gyro (200 échantillons immobiles, ~1 s) */
+    _calibrateGyroBias();
+
+    /* Étape 8 : Réinitialiser l'état du filtre Mahony (attitude = identité) */
+    _q[0] = 1.0f; _q[1] = 0.0f; _q[2] = 0.0f; _q[3] = 0.0f;
+    _imu.euler[0] = _imu.euler[1] = _imu.euler[2] = 0.0f;
+    _imu.mag[0] = _imu.mag[1] = _imu.mag[2] = 0.0f;
+    _imu.quat[0] = 10000; _imu.quat[1] = _imu.quat[2] = _imu.quat[3] = 0;
+
+    /* Étape 9 : Toujours CONNECTÉE si WHO_AM_I OK */
     _status.mpu9250 = SENSOR_CONNECTED;
     Serial.println("[SENSORS] MPU9250/GY-91 initialisé en mode "
-                   + String(_magReady ? "9-DOF" : "6-DOF") + " (0x68)");
+                   + String(_magReady ? "9-DOF (Mahony gyro+accel+mag)" : "6-DOF (Mahony gyro+accel)")
+                   + " (0x68)");
     return true;
+}
+
+/* =========================================================================
+ * ÉTALONNAGE BIAIS GYROSCOPE (200 échantillons immobiles)
+ * ========================================================================= */
+
+void SensorDriver::_calibrateGyroBias() {
+    const uint16_t NUM_SAMPLES = 200;
+    int32_t sum[3] = {0, 0, 0};
+    int16_t vmin[3] = {32767, 32767, 32767};
+    int16_t vmax[3] = {-32768, -32768, -32768};
+    uint16_t valid = 0;
+
+    Serial.println("[SENSORS] Étalonnage biais gyro : " + String(NUM_SAMPLES)
+                   + " échantillons (garder le ROV immobile)...");
+
+    for (uint16_t i = 0; i < NUM_SAMPLES; i++) {
+        Wire.beginTransmission(MPU9250_I2C_ADDR);
+        Wire.write(MPU9250_GYRO_XOUT_H);
+        if (Wire.endTransmission(false) == 0) {
+            Wire.requestFrom((uint8_t)MPU9250_I2C_ADDR, (uint8_t)6);
+            if (Wire.available() >= 6) {
+                for (uint8_t a = 0; a < 3; a++) {
+                    int16_t raw = (int16_t)((Wire.read() << 8) | Wire.read());
+                    sum[a] += raw;
+                    if (raw < vmin[a]) vmin[a] = raw;
+                    if (raw > vmax[a]) vmax[a] = raw;
+                }
+                valid++;
+            }
+        }
+        delay(5);   /* 200 × 5 ms ≈ 1 s */
+    }
+
+    if (valid == 0) {
+        _gyroBias[0] = _gyroBias[1] = _gyroBias[2] = 0.0f;
+        Serial.println("[SENSORS] Étalonnage biais gyro : ÉCHEC (aucune lecture valide)");
+        return;
+    }
+
+    for (uint8_t a = 0; a < 3; a++) {
+        /* 65.5 LSB/°/s (±500°/s) : moyenne brute → °/s */
+        _gyroBias[a] = ((float)sum[a] / (float)valid) / 65.5f;
+    }
+
+    /* Détection de mouvement : plage max-min sur 200 échantillons */
+    int16_t range = vmax[0] - vmin[0];
+    for (uint8_t a = 1; a < 3; a++) {
+        int16_t r = (int16_t)(vmax[a] - vmin[a]);
+        if (r > range) range = r;
+    }
+
+    Serial.println("[SENSORS] Biais gyro : X=" + String(_gyroBias[0], 3)
+                   + "°/s Y=" + String(_gyroBias[1], 3)
+                   + "°/s Z=" + String(_gyroBias[2], 3) + "°/s"
+                   + (range > 400 ? " (ATTENTION : mouvement détecté ?)" : " (OK)"));
 }
 
 bool SensorDriver::_initMS5803() {
@@ -917,7 +1060,9 @@ bool SensorDriver::_initMS5803() {
  * @brief Initialise le BME280.
  *
  * Vérifie le registre ID (0xD0) → 0x60.
- * Configure : oversampling ×1 T, ×1 P, mode normal, standby 1000ms.
+ * Configure : oversampling ×2 T, ×16 P, mode normal, standby 0.5 ms,
+ * filtre IIR ×4 → une nouvelle mesure toutes les ~25 ms (ODR ≈ 40 Hz),
+ * pour une pression/altitude/VSI réactive sans bruit excessif.
  * Lit les coefficients de calibration pression et température.
  */
 bool SensorDriver::_initBME280() {
@@ -948,10 +1093,11 @@ bool SensorDriver::_initBME280() {
 
     /* Configuration : humidity oversampling ×1 */
     _i2cWrite(_bme280Addr, BME280_CTRL_HUM, 0x01);
-    /* Temp ×1, Pression ×1, mode NORMAL (0x27 = 0b00100111) */
-    _i2cWrite(_bme280Addr, BME280_CTRL_MEAS, 0x27);
-    /* Standby 500ms, filter ×4 (IIR) pour lisser le bruit */
-    _i2cWrite(_bme280Addr, BME280_CONFIG_REG, 0x94);
+    /* Temp ×2, Pression ×16, mode NORMAL (0x57 = 0b01010111) :
+     * mesure ≈ 25 ms → ODR ≈ 40 Hz (réactivité pression / altitude / VSI) */
+    _i2cWrite(_bme280Addr, BME280_CTRL_MEAS, 0x57);
+    /* Standby 0.5 ms, filtre IIR ×4 (lissage sans latence excessive) */
+    _i2cWrite(_bme280Addr, BME280_CONFIG_REG, 0x08);
 
     /* Lecture des coefficients de calibration température */
     _bme280_dig_T1 = (uint16_t)(_i2cRead8(_bme280Addr, 0x89) << 8 | _i2cRead8(_bme280Addr, 0x88));
@@ -1026,7 +1172,7 @@ void SensorDriver::_readPressure() {
         /* Baromètre absent en mode réel → forcer à zéro */
         _pressure.pressure_mbar = 0;
         _pressure.temperature   = 0;
-        _pressure.depth_m       = 0.0f;
+        _pressure.altitude_m    = 0.0f;
     }
 }
 
@@ -1054,46 +1200,49 @@ void SensorDriver::_readPower() {
  * ========================================================================= */
 
 void SensorDriver::_readBNO085() {
-    /* Quaternions : registres 0x20-0x27 */
-    Wire.beginTransmission(BNO085_I2C_ADDR);
-    Wire.write(0x20);
-    if (Wire.endTransmission(false) == 0) {
-        Wire.requestFrom((uint8_t)BNO085_I2C_ADDR, (uint8_t)8);
-        if (Wire.available() >= 8) {
-            int16_t raw[4];
-            for (uint8_t i = 0; i < 4; i++) {
-                raw[i] = (int16_t)(Wire.read() | (Wire.read() << 8));
-            }
-            _imu.quat[0] = (int16_t)((float)raw[3] / 32768.0f * 10000.0f);
-            _imu.quat[1] = (int16_t)((float)raw[0] / 32768.0f * 10000.0f);
-            _imu.quat[2] = (int16_t)((float)raw[1] / 32768.0f * 10000.0f);
-            _imu.quat[3] = (int16_t)((float)raw[2] / 32768.0f * 10000.0f);
+    if (!_bno08x) return;
+
+    /* Lire les rapports disponibles (non-bloquant) */
+    sh2_SensorValue_t report;
+    bool hasNewQuat = false;
+    bool hasNewGyro = false;
+
+    while (_bno08x->getSensorEvent(&report)) {
+        if (report.sensorId == SH2_GAME_ROTATION_VECTOR) {
+            /* Quaternion i, j, k, real */
+            _imu.quat[0] = (int16_t)(report.un.gameRotationVector.real * 10000.0f);
+            _imu.quat[1] = (int16_t)(report.un.gameRotationVector.i * 10000.0f);
+            _imu.quat[2] = (int16_t)(report.un.gameRotationVector.j * 10000.0f);
+            _imu.quat[3] = (int16_t)(report.un.gameRotationVector.k * 10000.0f);
+            hasNewQuat = true;
+        } else if (report.sensorId == SH2_GYROSCOPE_CALIBRATED) {
+            /* Gyroscope en rad/s → convertir en °/s et scaler ×100 */
+            const float rad_to_deg = 180.0f / M_PI;
+            _imu.gyro[0] = (int16_t)(report.un.gyroscope.x * rad_to_deg * 100.0f);
+            _imu.gyro[1] = (int16_t)(report.un.gyroscope.y * rad_to_deg * 100.0f);
+            _imu.gyro[2] = (int16_t)(report.un.gyroscope.z * rad_to_deg * 100.0f);
+            hasNewGyro = true;
         }
     }
 
-    /* Gyroscope : registres 0x18-0x1D */
-    Wire.beginTransmission(BNO085_I2C_ADDR);
-    Wire.write(0x18);
-    if (Wire.endTransmission(false) == 0) {
-        Wire.requestFrom((uint8_t)BNO085_I2C_ADDR, (uint8_t)6);
-        if (Wire.available() >= 6) {
-            for (uint8_t i = 0; i < 3; i++) {
-                int16_t raw = (int16_t)(Wire.read() | (Wire.read() << 8));
-                _imu.gyro[i] = (int16_t)((float)raw / 256.0f * 100.0f);
-            }
-        }
-    }
+    /* Conversion quaternion → Euler uniquement si nouveau quaternion */
+    if (hasNewQuat) {
+        float w = (float)_imu.quat[0] / 10000.0f;
+        float x = (float)_imu.quat[1] / 10000.0f;
+        float y = (float)_imu.quat[2] / 10000.0f;
+        float z = (float)_imu.quat[3] / 10000.0f;
 
-    /* Conversion quaternion → Euler */
-    float w = (float)_imu.quat[0] / 10000.0f;
-    float x = (float)_imu.quat[1] / 10000.0f;
-    float y = (float)_imu.quat[2] / 10000.0f;
-    float z = (float)_imu.quat[3] / 10000.0f;
-    _imu.euler[0] = atan2f(2.0f*(w*x+y*z), 1.0f-2.0f*(x*x+y*y)) * 180.0f/M_PI;
-    float sinp = 2.0f*(w*y-z*x);
-    if (fabsf(sinp) >= 1.0f) sinp = copysignf(1.0f, sinp);
-    _imu.euler[1] = asinf(sinp) * 180.0f / M_PI;
-    _imu.euler[2] = atan2f(2.0f*(w*z+x*y), 1.0f-2.0f*(y*y+z*z)) * 180.0f/M_PI;
+        /* Roll (X) */
+        _imu.euler[0] = atan2f(2.0f*(w*x+y*z), 1.0f-2.0f*(x*x+y*y)) * 180.0f/M_PI;
+
+        /* Pitch (Y) */
+        float sinp = 2.0f*(w*y-z*x);
+        if (fabsf(sinp) >= 1.0f) sinp = copysignf(1.0f, sinp);
+        _imu.euler[1] = asinf(sinp) * 180.0f / M_PI;
+
+        /* Yaw (Z) */
+        _imu.euler[2] = atan2f(2.0f*(w*z+x*y), 1.0f-2.0f*(y*y+z*z)) * 180.0f/M_PI;
+    }
 }
 
 /* =========================================================================
@@ -1101,16 +1250,19 @@ void SensorDriver::_readBNO085() {
  * ========================================================================= */
 
 /**
- * @brief Lit les données brutes du MPU9250 avec fusion 6-DOF / 9-DOF.
+ * @brief Lit les données brutes du MPU9250 et exécute la fusion Mahony.
  *
  * Accéléro ±4g : sensibilité 8192 LSB/g → registres 0x3B-0x40
  * Gyroscope ±500°/s : sensibilité 65.5 LSB/°/s → registres 0x43-0x48
+ * Magnéto AK8963 : mode continu 100 Hz 16-bit (0.15 µT/LSB) → burst 0x02-0x09
  *
- * Mode 6-DOF (sans magnéto) :
- *   - Roll/Pitch : filtre complémentaire (accéléro 98% + gyro 2%)
- *   - Yaw : intégration du gyroscope Z (dérive acceptable court terme)
+ * Fusion d'attitude :
+ *   - 9-DOF (AK8963 disponible + mesure valide) : Mahony gyro+accel+mag,
+ *     le cap (Yaw) est référencé au nord magnétique et ne dérive plus.
+ *   - 6-DOF (fallback) : Mahony gyro+accel, le Yaw dérive lentement
+ *     (biais gyro corrigé par l'étalonnage au démarrage).
  *
- * Mode 9-DOF (AK8963 disponible) : non implémenté ici (lecture mag future).
+ * Le biais gyro mesuré à l'init (_gyroBias) est soustrait avant intégration.
  */
 void SensorDriver::_readMPU9250() {
     static unsigned long _lastMpuMicros = 0;
@@ -1137,7 +1289,7 @@ void SensorDriver::_readMPU9250() {
         }
     }
 
-    /* ---- Lecture gyroscope (6 octets depuis 0x43) ---- */
+    /* ---- Lecture gyroscope (6 octets depuis 0x43) + correction biais ---- */
     float gx_dps = 0, gy_dps = 0, gz_dps = 0;
     bool gyro_ok = false;
     Wire.beginTransmission(MPU9250_I2C_ADDR);
@@ -1148,59 +1300,208 @@ void SensorDriver::_readMPU9250() {
             int16_t gx_r = (int16_t)(Wire.read() << 8 | Wire.read());
             int16_t gy_r = (int16_t)(Wire.read() << 8 | Wire.read());
             int16_t gz_r = (int16_t)(Wire.read() << 8 | Wire.read());
-            /* 65.5 LSB/°/s */
-            gx_dps = (float)gx_r / 65.5f;
-            gy_dps = (float)gy_r / 65.5f;
-            gz_dps = (float)gz_r / 65.5f;
+            /* 65.5 LSB/°/s, puis soustraction du biais étalonné au boot */
+            gx_dps = (float)gx_r / 65.5f - _gyroBias[0];
+            gy_dps = (float)gy_r / 65.5f - _gyroBias[1];
+            gz_dps = (float)gz_r / 65.5f - _gyroBias[2];
             gyro_ok = true;
 
-            /* Télémétrie gyro ×100 */
+            /* Télémétrie gyro ×100 (valeur corrigée du biais) */
             _imu.gyro[0] = (int16_t)(gx_dps * 100.0f);
             _imu.gyro[1] = (int16_t)(gy_dps * 100.0f);
             _imu.gyro[2] = (int16_t)(gz_dps * 100.0f);
         }
     }
 
-    /* ---- Filtre complémentaire + intégration Yaw ---- */
-    if (accel_ok) {
-        /* Roll/Pitch depuis accéléro */
-        float accelRoll  = atan2f(ay_g, az_g) * 180.0f / M_PI;
-        float accelPitch = atan2f(-ax_g, sqrtf(ay_g*ay_g + az_g*az_g)) * 180.0f / M_PI;
+    /* Sans gyro, pas d'intégration possible ce cycle */
+    if (!gyro_ok) return;
 
-        if (gyro_ok) {
-            /* Filtre complémentaire : 98% gyro intégré + 2% accéléro (anti-dérive) */
-            _imu.euler[0] = 0.98f * (_imu.euler[0] + gx_dps * dt) + 0.02f * accelRoll;
-            _imu.euler[1] = 0.98f * (_imu.euler[1] + gy_dps * dt) + 0.02f * accelPitch;
-        } else {
-            _imu.euler[0] = accelRoll;
-            _imu.euler[1] = accelPitch;
-        }
+    /* ---- Lecture magnétomètre AK8963 (si 9-DOF disponible) ---- */
+    bool mag_ok = false;
+    if (_magReady) {
+        mag_ok = _readAK8963();   /* remplit _imu.mag[] en µT (axes MPU9250) */
+    }
 
-        /* Yaw : intégration gyro Z (6-DOF) + tare */
-        if (gyro_ok) {
-            _mpu9250Yaw += gz_dps * dt;
-            /* Normaliser dans [0..360) */
-            while (_mpu9250Yaw >= 360.0f) _mpu9250Yaw -= 360.0f;
-            while (_mpu9250Yaw < 0.0f)    _mpu9250Yaw += 360.0f;
-            /* Appliquer l'offset de tare */
-            float yawTared = _mpu9250Yaw - _yawOffset;
-            while (yawTared >= 360.0f) yawTared -= 360.0f;
-            while (yawTared < 0.0f)    yawTared += 360.0f;
-            _imu.euler[2] = yawTared;
+    /* ---- Fusion Mahony : gyro (rad/s) + accel (g) + mag (µT) ---- */
+    _mahonyUpdate(gx_dps * M_PI / 180.0f,
+                  gy_dps * M_PI / 180.0f,
+                  gz_dps * M_PI / 180.0f,
+                  ax_g, ay_g, az_g,
+                  _imu.mag[0], _imu.mag[1], _imu.mag[2],
+                  dt, accel_ok && mag_ok);
+
+    /* ---- Extraction Euler + quaternion depuis l'état Mahony ---- */
+    float w = _q[0], x = _q[1], y = _q[2], z = _q[3];
+
+    /* Gravité estimée dans le repère capteur (terre Z-up) */
+    float gx_b = 2.0f * (x * z - w * y);
+    float gy_b = 2.0f * (y * z + w * x);
+    float gz_b = w * w - x * x - y * y + z * z;
+
+    /* Roll / Pitch : mêmes conventions que l'ancien filtre complémentaire */
+    _imu.euler[0] = atan2f(gy_b, gz_b) * (180.0f / M_PI);
+    _imu.euler[1] = atan2f(-gx_b, sqrtf(gy_b * gy_b + gz_b * gz_b)) * (180.0f / M_PI);
+
+    /* Yaw : cap magnétique brut [0..360) puis application de la tare Nord */
+    float yawRaw = atan2f(2.0f * (x * y + w * z), 1.0f - 2.0f * (y * y + z * z))
+                   * (180.0f / M_PI);
+    if (yawRaw < 0.0f) yawRaw += 360.0f;
+    _mpu9250Yaw = yawRaw;
+
+    float yawTared = _mpu9250Yaw - _yawOffset;
+    while (yawTared >= 360.0f) yawTared -= 360.0f;
+    while (yawTared < 0.0f)    yawTared += 360.0f;
+    _imu.euler[2] = yawTared;
+
+    /* Quaternion de télémétrie ×10000 (issu directement du filtre) */
+    _imu.quat[0] = (int16_t)(w * 10000.0f);
+    _imu.quat[1] = (int16_t)(x * 10000.0f);
+    _imu.quat[2] = (int16_t)(y * 10000.0f);
+    _imu.quat[3] = (int16_t)(z * 10000.0f);
+}
+
+/* =========================================================================
+ * LECTURE AK8963 (burst ST1→ST2, 8 octets, petit-boutiste)
+ * ========================================================================= */
+
+bool SensorDriver::_readAK8963() {
+    /* Burst 8 octets depuis ST1 (0x02) :
+     * [ST1][HXL][HXH][HYL][HYH][HZL][HZH][ST2]
+     * La lecture de ST2 en fin de burst débloque la mesure suivante. */
+    Wire.beginTransmission(AK8963_I2C_ADDR);
+    Wire.write(AK8963_ST1_REG);
+    if (Wire.endTransmission(false) != 0) return false;
+    Wire.requestFrom((uint8_t)AK8963_I2C_ADDR, (uint8_t)8);
+    if (Wire.available() < 8) return false;
+
+    uint8_t buf[8];
+    for (uint8_t i = 0; i < 8; i++) buf[i] = Wire.read();
+
+    /* ST1 bit 0 (DRDY) : une nouvelle mesure est-elle prête ? */
+    if (!(buf[0] & AK8963_ST1_DRDY)) return false;
+
+    /* ST2 bit 3 (HOFL) : saturation magnétique → mesure invalide */
+    if (buf[7] & AK8963_ST2_HOFL) return false;
+
+    /* AK8963 = PETIT-boutiste (registres HXL=octet bas, HXH=octet haut),
+     * contrairement au MPU9250 qui est gros-boutiste */
+    int16_t hx = (int16_t)(buf[2] << 8 | buf[1]);
+    int16_t hy = (int16_t)(buf[4] << 8 | buf[3]);
+    int16_t hz = (int16_t)(buf[6] << 8 | buf[5]);
+
+    /* Conversion en µT (0.15 µT/LSB en 16-bit) + remappage des axes.
+     *
+     * Le die AK8963 est tourné de 90° à l'intérieur du MPU9250 (GY-91) :
+     * matrice de montage eMPL InvenSense {0,1,0; -1,0,0; 0,0,1} :
+     *     mx_mpu = +HY    my_mpu = -HX    mz_mpu = +HZ
+     * Si le cap apparaît inversé de 180° après test terrain, inverser
+     * les deux signes (mx=-HY, my=+HX) — la tare Nord absorbe l'offset. */
+    _imu.mag[0] =  (float)hy * AK8963_UT_PER_LSB;
+    _imu.mag[1] = -(float)hx * AK8963_UT_PER_LSB;
+    _imu.mag[2] =  (float)hz * AK8963_UT_PER_LSB;
+
+    return true;
+}
+
+/* =========================================================================
+ * FILTRE MAHONY 9-DOF / 6-DOF
+ * ========================================================================= */
+
+/**
+ * @brief Implémentation Mahony (forme Madgwick) avec correction proportionnelle.
+ *
+ * État : _q = (w,x,y,z) quaternion corps→terre, terre Z-up, X = nord magnétique.
+ * q̇ = ½ · q ⊗ (0, ω) ; l'erreur croisée (mesure × estimation) sur la gravité
+ * et le champ magnétique est réinjectée en vitesse angulaire (gain Kp).
+ */
+void SensorDriver::_mahonyUpdate(float gx, float gy, float gz,
+                                 float ax, float ay, float az,
+                                 float mx, float my, float mz,
+                                 float dt, bool magValid) {
+    float w = _q[0], x = _q[1], y = _q[2], z = _q[3];
+
+    /* ---- Correction gravité (accéléro) ---- */
+    float aNorm = sqrtf(ax * ax + ay * ay + az * az);
+    bool accUsable = (aNorm >= MAHONY_ACC_MIN_G && aNorm <= MAHONY_ACC_MAX_G);
+
+    float ex = 0.0f, ey = 0.0f, ez = 0.0f;
+    bool haveCorrection = false;
+
+    if (accUsable) {
+        float inv = 1.0f / aNorm;
+        ax *= inv; ay *= inv; az *= inv;
+
+        /* Gravité estimée dans le repère capteur (facteur 2 divisé) */
+        float vx = x * z - w * y;
+        float vy = w * x + y * z;
+        float vz = w * w - 0.5f + z * z;
+
+        /* Erreur = accéléro_mesuré × gravité_estimée */
+        ex = ay * vz - az * vy;
+        ey = az * vx - ax * vz;
+        ez = ax * vy - ay * vx;
+        haveCorrection = true;
+    }
+
+    /* ---- Correction cap (magnétomètre) ---- */
+    if (magValid) {
+        float mNorm = sqrtf(mx * mx + my * my + mz * mz);
+        if (mNorm >= MAHONY_MAG_MIN_UT && mNorm <= MAHONY_MAG_MAX_UT) {
+            float inv = 1.0f / mNorm;
+            mx *= inv; my *= inv; mz *= inv;
+
+            /* Produits croisés quaternion précalculés */
+            float xx = x * x, yy = y * y, zz = z * z;
+            float wx_ = w * x, wy_ = w * y, wz_ = w * z;
+            float xy_ = x * y, xz_ = x * z, yz_ = y * z;
+
+            /* Champ magnétique exprimé dans le repère terre :
+             * X terre = nord magnétique (composante horizontale) */
+            float hx = (1.0f - 2.0f * (yy + zz)) * mx
+                     + 2.0f * (xy_ - wz_) * my
+                     + 2.0f * (xz_ + wy_) * mz;
+            float hy = 2.0f * (xy_ + wz_) * mx
+                     + (1.0f - 2.0f * (xx + zz)) * my
+                     + 2.0f * (yz_ - wx_) * mz;
+            float bz = 2.0f * (xz_ - wy_) * mx
+                     + 2.0f * (yz_ + wx_) * my
+                     + (1.0f - 2.0f * (xx + yy)) * mz;
+            float bx = sqrtf(hx * hx + hy * hy);
+
+            /* Champ magnétique estimé dans le repère capteur */
+            float wxm = (1.0f - 2.0f * (yy + zz)) * bx + 2.0f * (xz_ - wy_) * bz;
+            float wym = 2.0f * (xy_ - wz_) * bx + 2.0f * (yz_ + wx_) * bz;
+            float wzm = 2.0f * (xz_ + wy_) * bx + (1.0f - 2.0f * (xx + yy)) * bz;
+
+            /* Erreur = magnéto_mesuré × champ_estimé */
+            ex += my * wzm - mz * wym;
+            ey += mz * wxm - mx * wzm;
+            ez += mx * wym - my * wxm;
+            haveCorrection = true;
         }
     }
 
-    /* ---- Construire quaternion approximatif depuis Euler ---- */
-    float roll_r = _imu.euler[0] * M_PI / 180.0f;
-    float pitch_r = _imu.euler[1] * M_PI / 180.0f;
-    float yaw_r = _imu.euler[2] * M_PI / 180.0f;
-    float cr = cosf(roll_r), sr = sinf(roll_r);
-    float cp = cosf(pitch_r), sp = sinf(pitch_r);
-    float cy = cosf(yaw_r), sy = sinf(yaw_r);
-    _imu.quat[0] = (int16_t)((cr*cp*cy + sr*sp*sy) * 10000.0f);
-    _imu.quat[1] = (int16_t)((sr*cp*cy - cr*sp*sy) * 10000.0f);
-    _imu.quat[2] = (int16_t)((cr*sp*cy + sr*cp*sy) * 10000.0f);
-    _imu.quat[3] = (int16_t)((cr*cp*sy - sr*sp*cy) * 10000.0f);
+    /* ---- Réinjection de l'erreur (gain proportionnel Kp) ---- */
+    if (haveCorrection) {
+        gx += MAHONY_TWO_KP * ex;
+        gy += MAHONY_TWO_KP * ey;
+        gz += MAHONY_TWO_KP * ez;
+    }
+
+    /* ---- Intégration du quaternion : q̇ = ½ · q ⊗ (0, ω) ---- */
+    float halfDt = 0.5f * dt;
+    float dw = (-x * gx - y * gy - z * gz) * halfDt;
+    float dx = ( w * gx + y * gz - z * gy) * halfDt;
+    float dy = ( w * gy - x * gz + z * gx) * halfDt;
+    float dz = ( w * gz + x * gy - y * gx) * halfDt;
+    w += dw; x += dx; y += dy; z += dz;
+
+    /* ---- Normalisation ---- */
+    float norm = sqrtf(w * w + x * x + y * y + z * z);
+    if (norm > 1e-6f) {
+        float inv = 1.0f / norm;
+        _q[0] = w * inv; _q[1] = x * inv; _q[2] = y * inv; _q[3] = z * inv;
+    }
 }
 
 /* =========================================================================
@@ -1236,8 +1537,10 @@ void SensorDriver::_readMS5803() {
                     _pressure.pressure_mbar = P;
                     _pressure.temperature   = TEMP;
                     float press_mbar = (float)P * 0.1f;
+                    /* Capteur immergé : profondeur positive vers le bas,
+                     * stockée comme altitude négative (repère vertical unifié) */
                     float depth = (press_mbar - 1013.25f) / (1025.0f * 9.81f * 0.01f);
-                    _pressure.depth_m = (depth > 0.0f) ? depth : 0.0f;
+                    _pressure.altitude_m = -(depth > 0.0f ? depth : 0.0f);
                 }
             }
         }
@@ -1313,10 +1616,10 @@ void SensorDriver::_readBME280() {
         _pressure.pressure_mbar = (int32_t)(p / 10.0f);
     }
 
-    /* Profondeur relative : 0 en surface (air libre) */
+    /* Altitude barométrique (formule internationale du nivellement,
+     * 0 m au niveau de la mer, négatif si pression > 1013.25 mbar) */
     float press_mbar = (float)_pressure.pressure_mbar * 0.1f;
-    float depth = (press_mbar - 1013.25f) / (1025.0f * 9.81f * 0.01f);
-    _pressure.depth_m = (depth > 0.0f) ? depth : 0.0f;
+    _pressure.altitude_m = 44330.0f * (1.0f - powf(press_mbar / 1013.25f, 0.190263f));
 }
 
 /* =========================================================================
@@ -1338,9 +1641,10 @@ void SensorDriver::_updateSimulation() {
     float t  = millis() / 1000.0f;
     float dt = (float)TASK_SENSORS_PERIOD_MS / 1000.0f;
     _simAttitude(t);
-    _simDepth(dt);
+    _simAltitude(dt);
     _simPowerData(t);
-    _pressure.pressure_mbar = (int32_t)((1013.25f + _pressure.depth_m * 100.0f) * 10.0f);
+    /* Pression cohérente avec l'altitude simulée (inverse du nivellement) */
+    _pressure.pressure_mbar = (int32_t)(1013.25f * powf(1.0f - _pressure.altitude_m / 44330.0f, 5.255f) * 10.0f);
     _pressure.temperature = 2050;
 }
 
@@ -1363,15 +1667,15 @@ void SensorDriver::_simAttitude(float t) {
     _imu.gyro[2] = (int16_t)(5.0f*0.1f*cosf(t*0.1f)*100.0f);
 }
 
-void SensorDriver::_simDepth(float dt) {
-    static float simDepth = SIM_DEPTH_INIT;
+void SensorDriver::_simAltitude(float dt) {
+    static float simAlt = SIM_ALT_INIT;
     static float simVSpeed = 0.0f;
     simVSpeed += ((float)(random(-10,10))/1000.0f)*dt;
     simVSpeed *= 0.99f;
-    simDepth += simVSpeed * dt;
-    if (simDepth < 0.0f)  { simDepth=0.0f;  simVSpeed=0.0f; }
-    if (simDepth > 30.0f) { simDepth=30.0f; simVSpeed=0.0f; }
-    _pressure.depth_m = simDepth;
+    simAlt += simVSpeed * dt;
+    if (simAlt < 0.0f)  { simAlt=0.0f;  simVSpeed=0.0f; }
+    if (simAlt > 30.0f) { simAlt=30.0f; simVSpeed=0.0f; }
+    _pressure.altitude_m = simAlt;
 }
 
 void SensorDriver::_simPowerData(float t) {
@@ -1418,8 +1722,8 @@ void SensorDriver::_taskLoop() {
 
         /* Pression : lecture réelle ou simulation */
         if (_simPressure) {
-            _simDepth(dt);
-            _pressure.pressure_mbar = (int32_t)((1013.25f + _pressure.depth_m * 100.0f) * 10.0f);
+            _simAltitude(dt);
+            _pressure.pressure_mbar = (int32_t)(1013.25f * powf(1.0f - _pressure.altitude_m / 44330.0f, 5.255f) * 10.0f);
             _pressure.temperature = 2050;
         } else {
             _readPressure();

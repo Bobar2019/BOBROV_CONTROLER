@@ -12,8 +12,11 @@
  * Scanner dynamique I2C au boot, sélection manuelle/auto via NVS,
  * forçage à zéro en mode réel si capteur absent.
  *
+ * Fusion d'attitude 9-DOF : filtre Mahony (gyro + accéléro + magnéto AK8963)
+ * avec étalonnage du biais gyro au démarrage (200 échantillons).
+ *
  * @author Didier Dero
- * @version 1.1.0
+ * @version 1.2.0
  * @date Août 2026
  */
 
@@ -25,6 +28,9 @@
 #include <vector>
 #include "config.h"
 
+/* Forward declaration de la bibliothèque BNO08x */
+class Adafruit_BNO08x;
+
 /* =========================================================================
  * STRUCTURES DE DONNÉES CAPTEURS
  * ========================================================================= */
@@ -34,6 +40,7 @@ struct IMUData {
     int16_t quat[4];    ///< Quaternions W, X, Y, Z scalés ×10000
     int16_t gyro[3];    ///< Vitesse angulaire X, Y, Z scalés ×100 (°/s)
     float   euler[3];   ///< Angles d'Euler Roll, Pitch, Yaw en degrés
+    float   mag[3];     ///< Champ magnétique AK8963 en µT (axes remappés MPU9250)
 };
 
 /** @brief Données de puissance des 3 wattmètres INA226 */
@@ -46,7 +53,7 @@ struct PowerData {
 struct PressureData {
     int32_t pressure_mbar;  ///< Pression en dixièmes de mbar
     int32_t temperature;    ///< Température en centièmes de °C
-    float   depth_m;        ///< Profondeur estimée en mètres
+    float   altitude_m;     ///< Altitude barométrique en mètres (0 = niveau mer, + = haut)
 };
 
 /**
@@ -244,6 +251,9 @@ private:
     uint16_t _i2cRead16(uint8_t addr, uint8_t reg);
     bool _i2cDevicePresent(uint8_t addr);
 
+    /* -- BNO085 via bibliothèque Adafruit -- */
+    Adafruit_BNO08x* _bno08x;          ///< Instance BNO08x (null si non initialisé)
+
     /* -- Scanner I2C -- */
     void _scanI2CBus();
 
@@ -264,6 +274,47 @@ private:
     void _readBME280();
     void _readINA226();
 
+    /* -- Magnétomètre AK8963 + fusion Mahony 9-DOF -- */
+    /**
+     * @brief Lecture burst du magnétomètre AK8963 (ST1..ST2, 8 octets).
+     *
+     * Vérifie ST1.DRDY (donnée prête) et ST2.HOFL (saturation), lit ST2
+     * pour débloquer la mesure suivante, convertit en µT (0.15 µT/LSB en
+     * 16-bit) et remappe les axes AK8963 → MPU9250 (die tourné de 90° :
+     * mx = +HY, my = -HX, mz = +HZ, matrice eMPL InvenSense).
+     *
+     * @return true si une mesure valide fraîche a été lue ce cycle.
+     */
+    bool _readAK8963();
+
+    /**
+     * @brief Étalonnage du biais gyro au démarrage (200 échantillons immobiles).
+     *
+     * Moyenne les 3 axes sur 200 lectures (~1 s), détecte un éventuel
+     * mouvement pendant la mesure (plage max-min) et stocke le biais en °/s.
+     * Le biais est soustrait de chaque lecture gyro ultérieure.
+     */
+    void _calibrateGyroBias();
+
+    /**
+     * @brief Filtre d'attitude Mahony 9-DOF (ou 6-DOF si magnéto invalide).
+     *
+     * Convention : quaternion q = (w,x,y,z) unitaire, corps→terre, terre Z-up
+     * avec X aligné sur le nord magnétique. Correction proportionnelle Kp sur
+     * l'erreur croisée accéléro×gravité_estimée (+ magnéto×champ_estimé si
+     * disponible). Garde-fous : |a| ∈ [0.6, 1.4] g, |m| ∈ [10, 80] µT.
+     *
+     * @param gx,gy,gz  Vitesse angulaire en rad/s (biais corrigé)
+     * @param ax,ay,az  Accélération en g (non normalisée)
+     * @param mx,my,mz  Champ magnétique en µT (axes MPU9250)
+     * @param dt        Pas de temps en secondes
+     * @param magValid  true = fusion 9-DOF, false = 6-DOF
+     */
+    void _mahonyUpdate(float gx, float gy, float gz,
+                       float ax, float ay, float az,
+                       float mx, float my, float mz,
+                       float dt, bool magValid);
+
     /* -- Zéros en mode réel pour capteurs absents -- */
     void _zeroMissingSensors();
 
@@ -277,7 +328,7 @@ private:
     /* -- Moteur de simulation -- */
     void _updateSimulation();
     void _simAttitude(float t);
-    void _simDepth(float dt);
+    void _simAltitude(float dt);
     void _simPowerData(float t);
 
     /* -- Tâche FreeRTOS -- */
@@ -293,8 +344,12 @@ private:
 
     /* -- MPU9250 mode -- */
     volatile bool _magReady;            ///< true = magnétomètre AK8963 accessible (9-DOF)
-    float _mpu9250Yaw;                  ///< Yaw accumulé en 6-DOF (intégration gyro Z)
+    float _mpu9250Yaw;                  ///< Yaw brut (avant tare) issu de la fusion, [0..360)
     float _yawOffset = 0.0f;            ///< Offset de tare (degrés, soustrait au Yaw)
+
+    /* -- Fusion Mahony (état du filtre) -- */
+    float _q[4];                        ///< Quaternion d'attitude Mahony (w, x, y, z), unitaire
+    float _gyroBias[3];                 ///< Biais gyro mesuré à l'init (°/s), soustrait aux lectures
 };
 
 /* Instance globale extern (définie dans sensor_driver.cpp) */

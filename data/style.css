@@ -488,6 +488,67 @@ h3 {
 .pwm-bar-bg.bidir .pwm-bar-fill { position: absolute; height: 100%; }
 .pwm-bar-bg.bidir .pwm-center { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: rgba(255,255,255,0.35); }
 
+/* ===== VUE SCHÉMATIQUE PROPULSION (PWM MONITOR) ===== */
+.rov-schematic-card { text-align: left; }
+.rov-schematic-wrap {
+    display: flex;
+    justify-content: center;
+    background: #0d0e12;
+    border: 1px solid rgba(68, 72, 87, 0.3);
+    border-radius: var(--radius-sm);
+    padding: 8px;
+}
+#rov-schematic { width: 100%; max-width: 560px; height: auto; display: block; }
+
+/* Châssis (vue de dessus) */
+.rov-hull { fill: rgba(0, 217, 255, 0.05); stroke: var(--accent-cyan); stroke-opacity: 0.5; stroke-width: 2; }
+.rov-nose { fill: var(--accent-cyan); opacity: 0.65; }
+.rov-cam { fill: none; stroke: var(--text-dim); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.rov-center { stroke: var(--text-dim); stroke-width: 1; }
+.rov-dir-label { fill: var(--text-secondary); font-family: var(--font-body); font-size: 11px; letter-spacing: 3px; }
+
+/* Carters des propulseurs */
+.thr-body { fill: #2e3340; stroke: var(--text-secondary); stroke-width: 1.5; }
+.thr-nozzle { fill: #2e3340; stroke: var(--text-secondary); stroke-width: 1.5; }
+.thr-hub { fill: var(--text-dim); }
+.vthr-body { fill: rgba(0, 217, 255, 0.03); stroke: var(--text-secondary); stroke-width: 1.5; }
+.thr-halo { fill: none; stroke: var(--text-dim); stroke-width: 2; stroke-opacity: 0; }
+
+/* Vecteurs de poussée (couleur et intensité pilotées par attribut color) */
+.thr-arrow { transition: opacity 0.12s linear; }   /* fondu apparition/disparition au neutre */
+.thr-arrow .thr-shaft { stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+.thr-arrow .thr-head { fill: currentColor; }
+.thr-arrow.thr-active { filter: drop-shadow(0 0 4px currentColor); }
+
+/* Labels et valeurs instantanées */
+.thr-label { fill: var(--text-primary); font-family: var(--font-body); font-size: 12px; font-weight: 700; }
+.thr-value { fill: var(--text-secondary); font-family: var(--font-body); font-size: 10.5px; }
+
+/* Légende sous le schéma */
+.rov-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    justify-content: center;
+    margin-top: 10px;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+.lg-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.lg-fwd { background: #00d9ff; box-shadow: 0 0 6px rgba(0, 217, 255, 0.7); }
+.lg-rev { background: #ffb300; box-shadow: 0 0 6px rgba(255, 179, 0, 0.7); }
+.lg-neu { background: #666b7a; }
+.rov-lg-note { color: var(--text-dim); font-style: italic; }
+
+.pwm-bars-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 4px 0 10px 0;
+}
+
 /* ===== TÉLÉMETRIE ===== */
 .telem-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 14px; }
 .telem-row.center { justify-items: center; }

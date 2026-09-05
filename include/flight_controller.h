@@ -4,8 +4,8 @@
  *
  * Gère trois modes de pilotage :
  * - PASSIF (0)      : consignes PWM appliquées telles quelles.
- * - AUTO_ROULIS (1) : stabilisation PID du roulis sur les moteurs verticaux M5-M8.
- * - AUTO_FULL (2)   : stabilisation complète Roll + Pitch + Yaw + Profondeur.
+ * - AUTO_ROULIS (1) : stabilisation PID roulis + tangage sur les verticaux M5-M8.
+ * - AUTO_FULL (2)   : stabilisation complète Roll + Pitch + Yaw + Altitude.
  *
  * La priorité du maître (RPi 5 vs interface Web) est gérée par détection
  * de heartbeat : si aucune trame RPi 5 n'est reçue depuis RPI5_TIMEOUT_MS,
@@ -130,8 +130,8 @@ private:
     volatile bool     _rpiMaster;           ///< true = RPi 5 est maître
     unsigned long     _lastRPi5FrameTime;   ///< Timestamp dernière trame RPi 5 valide
 
-    /** @brief Cible de profondeur pour le PID (en mètres, 0 = surface) */
-    float _depthTarget;
+    /** @brief Cible d'altitude pour le PID (en mètres, 0 = niveau mer) */
+    float _altTarget;
 
     /** @brief Applique le clamp 1000-2000 µs sur un tableau PWM */
     void _clampPWM(uint16_t* pwm, uint8_t count);
