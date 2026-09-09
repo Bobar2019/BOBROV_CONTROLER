@@ -117,7 +117,6 @@ h3 {
 }
 .badge-ok   { background: rgba(0, 230, 118, 0.12); color: var(--success); border: 1px solid rgba(0, 230, 118, 0.3); }
 .badge-off  { background: rgba(255, 59, 48, 0.12); color: var(--danger);  border: 1px solid rgba(255, 59, 48, 0.3); }
-.badge-sim  { background: rgba(255, 179, 0, 0.12); color: var(--warning); border: 1px solid rgba(255, 179, 0, 0.3); }
 .badge-real { background: rgba(0, 217, 255, 0.12); color: var(--accent-cyan); border: 1px solid rgba(0, 217, 255, 0.3); }
 
 /* ===== DASHBOARD (index) ===== */
@@ -264,6 +263,8 @@ h3 {
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
+    -webkit-user-drag: none;
+    user-drag: none;
 }
 .nav-grid.editing .nav-tile:active { cursor: grabbing; }
 
@@ -576,57 +577,6 @@ h3 {
     font-family: var(--font-mono, monospace); letter-spacing: 0.5px;
 }
 .av-readout b { color: var(--accent-cyan); font-weight: 700; }
-.av-tare-btn {
-    margin-top: 8px; width: 100%; padding: 8px 0;
-    background: transparent; border: 1px solid var(--accent-cyan);
-    color: var(--accent-cyan); font-size: 0.82rem; font-weight: 700;
-    letter-spacing: 0.5px; cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    transition: background 0.2s, color 0.2s;
-}
-.av-tare-btn:hover { background: var(--accent-cyan); color: var(--bg-primary); }
-.av-tare-btn:active { background: var(--accent-magenta); border-color: var(--accent-magenta); color: #fff; }
-
-/* ===== FORÇAGE DE CAP (HEADING OVERRIDE) ===== */
-.heading-override-card { border-color: rgba(176, 132, 255, 0.2); }
-.heading-override-card h3 { color: var(--accent-purple); }
-.heading-toggle {
-    display: flex; align-items: center; gap: 10px;
-    font-size: 0.85rem; color: var(--text-secondary);
-    cursor: pointer; margin-bottom: 12px;
-}
-.heading-toggle input[type="checkbox"] {
-    width: 18px; height: 18px; accent-color: var(--accent-purple); cursor: pointer;
-}
-.heading-slider-wrap { margin: 8px 0 14px; }
-.heading-slider-wrap input[type="range"] {
-    width: 100%; height: 8px; -webkit-appearance: none; appearance: none;
-    background: linear-gradient(90deg, var(--accent-cyan), var(--accent-magenta), var(--accent-cyan));
-    border-radius: 4px; outline: none; cursor: pointer;
-}
-.heading-slider-wrap input[type="range"]:disabled {
-    opacity: 0.35; cursor: not-allowed;
-}
-.heading-slider-wrap input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%;
-    background: var(--accent-purple); border: 2px solid #fff;
-    box-shadow: 0 0 8px rgba(176, 132, 255, 0.6);
-}
-.heading-value {
-    text-align: center; font-size: 2rem; font-weight: 700;
-    font-family: var(--font-title); color: var(--accent-purple);
-    margin: 8px 0 4px;
-}
-.heading-scale {
-    display: flex; justify-content: space-between;
-    font-size: 0.65rem; color: var(--text-dim); margin-top: 2px;
-}
-.heading-status {
-    display: grid; grid-template-columns: auto 1fr; gap: 4px 12px;
-    padding-top: 10px; border-top: 1px solid var(--border-color);
-}
-.heading-status .label { color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; }
-.heading-status .value { color: var(--accent-cyan); font-weight: 600; font-size: 0.9rem; text-align: right; }
 
 /* ===== BANC DE TEST ===== */
 .safety-bar {
@@ -1202,48 +1152,4 @@ footer { text-align: center; padding: 14px; font-size: 0.7rem; color: var(--text
     border-color: var(--accent-cyan);
     color: var(--accent-cyan);
     box-shadow: 0 0 8px rgba(0, 217, 255, 0.2);
-}
-
-/* ===== BOUTON TOGGLE SIMULATEUR/RÉEL ===== */
-.sim-toggle-group {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    justify-content: center;
-}
-.btn-mode-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 28px;
-    border-radius: 30px;
-    font-size: 0.88rem;
-    font-weight: 700;
-    letter-spacing: 0.6px;
-    cursor: pointer;
-    border: 2px solid;
-    transition: all 0.3s ease;
-    font-family: 'Source Code Pro', monospace;
-}
-.btn-mode-toggle.mode-real {
-    background: rgba(76, 175, 80, 0.08);
-    border-color: #4caf50;
-    color: #4caf50;
-}
-.btn-mode-toggle.mode-real:hover {
-    background: rgba(76, 175, 80, 0.18);
-    box-shadow: 0 0 12px rgba(76, 175, 80, 0.3);
-}
-.btn-mode-toggle.mode-sim {
-    background: rgba(255, 152, 0, 0.08);
-    border-color: #ff9800;
-    color: #ff9800;
-}
-.btn-mode-toggle.mode-sim:hover {
-    background: rgba(255, 152, 0, 0.18);
-    box-shadow: 0 0 12px rgba(255, 152, 0, 0.3);
-}
-.mode-toggle-icon {
-    font-size: 1.1rem;
-    line-height: 1;
 }

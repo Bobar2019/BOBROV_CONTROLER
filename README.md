@@ -5,10 +5,10 @@ Firmware temps réel embarqué sur **ESP32-S3** pour le contrôle basse couche d
 ## Matériel
 
 - **MCU :** ESP32-S3 (PlatformIO, Arduino Core, FreeRTOS)
-- **IMU :** GY-91 (MPU9250 + AK8963 + BMP280) sur bus I2C
+- **IMU :** BNO085 (`0x4A`) via Adafruit BNO08x (protocole SH-2)
 - **PWM :** PCA9685 (16 canaux, 50 Hz)
 - **Propulseurs :** 8 × ESC brushless (M1-M4 horizontaux, M5-M8 verticaux)
-- **Capteurs :** 3 × INA226 (wattmètres), MS5803/BME280 (pression)
+- **Capteurs :** 3 × INA226 (wattmètres), MS5803/MS5837 (pression/profondeur)
 - **Liaison :** RPi 5 via USB-CDC natif ou UART GPIO (921 600 bauds)
 
 ## Fonctionnalités
@@ -16,11 +16,11 @@ Firmware temps réel embarqué sur **ESP32-S3** pour le contrôle basse couche d
 - **Protocole binaire** RPi 5 ↔ ESP32-S3 avec CRC16-CCITT et watchdog failsafe
 - **3 modes de pilotage** avec PID 4 axes et mixage différentiel :
   - `PASSIF` — Manuel direct (consignes appliquées telles quelles)
-  - `AUTO ROULIS` — Stabilisation PID du roulis sur M5-M8
+  - `AUTO ROULIS ET TANGAGE` — Stabilisation PID du roulis et du tangage sur M5-M8
   - `AUTO FULL` — Stabilisation complète Roll + Pitch + Yaw + Profondeur
 - **Interface Web embarquée** (LittleFS) avec portail captif automatique
 - **WebSocket temps réel** : télémétrie IMU, pression, PWM, puissance (20 Hz)
-- **API REST** : configuration Wi-Fi, capteurs, I2C, PID, mode série
+- **API REST** : configuration Wi-Fi, I2C, PID, mode série
 - **Instruments aviation** : horizon artificiel + HSI (Canvas 2D, lissage LERP)
 - **Mode Témoin (Dry-Run)** : sorties physiques neutralisées pour banc de test
 - **Gestion de priorité** : RPi 5 maître absolu < 1s, sinon bascule Web ESP32

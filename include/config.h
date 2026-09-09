@@ -43,29 +43,8 @@ constexpr uint8_t  PCA9685_I2C_ADDR     = 0x40;
 /** @brief Adresse I2C de la centrale inertielle BNO085 (9-DOF) */
 constexpr uint8_t  BNO085_I2C_ADDR      = 0x4A;
 
-/** @brief Adresse I2C du MPU9250 / GY-91 (accéléro+gyro) */
-constexpr uint8_t  MPU9250_I2C_ADDR     = 0x68;
-
-/** @brief Adresse I2C du magnétomètre AK8963 (interne au MPU9250) */
-constexpr uint8_t  AK8963_I2C_ADDR      = 0x0C;
-
-/** @brief Adresse I2C du capteur de pression MS5803-30BA */
+/** @brief Adresse I2C du capteur de pression MS5803-30BA / MS5837 */
 constexpr uint8_t  MS5803_I2C_ADDR      = 0x76;
-
-/** @brief Adresse I2C du BME280 / BMP280 (primary) */
-constexpr uint8_t  BME280_I2C_ADDR_PRI  = 0x76;
-
-/** @brief Adresse I2C du BME280 / BMP280 (secondary) */
-constexpr uint8_t  BME280_I2C_ADDR_SEC  = 0x77;
-
-/** @brief Adresse I2C alternative BMP280 (certaines cartes GY-91) */
-constexpr uint8_t  BMP280_I2C_ADDR_ALT  = 0x4C;
-
-/** @brief ID du BME280 (registre 0xD0) */
-constexpr uint8_t  BME280_ID_VALUE      = 0x60;
-
-/** @brief ID du BMP280 (registre 0xD0) */
-constexpr uint8_t  BMP280_ID_VALUE      = 0x58;
 
 /** @brief Adresse I2C du wattmètre INA226 n°1 (alimentation RPi 5) */
 constexpr uint8_t  INA226_1_I2C_ADDR    = 0x41;
@@ -85,31 +64,7 @@ constexpr uint8_t  INA226_3_I2C_ADDR    = 0x45;
  */
 enum SensorStatus : uint8_t {
     SENSOR_DISCONNECTED = 0,    ///< Non détecté sur le bus I2C
-    SENSOR_CONNECTED    = 1,    ///< Détecté et opérationnel
-    SENSOR_EMULATED     = 2     ///< Non détecté, valeurs simulées
-};
-
-/**
- * @brief Profil de sélection de l'IMU active.
- *
- * Utilisé pour la configuration NVS et l'interface Web.
- * En mode AUTO, le scanner I2C détermine la puce présente.
- */
-enum IMUProfile : uint8_t {
-    IMU_TYPE_AUTO   = 0,    ///< Détection automatique (BNO085 prioritaire, puis MPU9250)
-    IMU_TYPE_BNO085 = 1,    ///< Forcer BNO085 (adresse 0x4A)
-    IMU_TYPE_MPU9250 = 2    ///< Forcer MPU9250 / GY-91 (adresse 0x68)
-};
-
-/**
- * @brief Profil de sélection du baromètre/capteur de pression actif.
- *
- * En mode AUTO, le scanner I2C détermine la puce présente.
- */
-enum BaroProfile : uint8_t {
-    BARO_TYPE_AUTO   = 0,   ///< Détection automatique (MS5803 prioritaire, puis BME280)
-    BARO_TYPE_MS5803 = 1,   ///< Forcer MS5803-30BA (adresse 0x76)
-    BARO_TYPE_BME280 = 2    ///< Forcer BME280 / BMP280 (adresse 0x76 ou 0x77)
+    SENSOR_CONNECTED    = 1     ///< Détecté et opérationnel
 };
 
 /* =========================================================================

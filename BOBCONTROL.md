@@ -1,6 +1,6 @@
-# BOB-CONTROL - Contrôleur Temps Réel & Simulateur ROV
+# BOB-CONTROL - Contrôleur Temps Réel ROV
 
-**Version :** 1.2.0  
+**Version :** 2.0.0  
 **Plateforme :** ESP32-S3 (PlatformIO / Arduino Core / FreeRTOS)  
 **Auteur :** Didier Dero  
 **Projet associé :** BOB-ROV (Cockpit Raspberry Pi 5)  
@@ -13,10 +13,9 @@
 **BOB-CONTROL** est le micrologiciel temps réel dédié à la gestion basse couche du sous-marin **BOB-ROV**. Embarqué sur un **ESP32-S3**, il isole les fonctions critiques de pilotage matériel et d'acquisition de données du système d'exploitation hôte (Raspberry Pi 5).
 
 Il remplit un triple rôle :
-1. **Acquisition & Fusion Capteurs :** Lecture haute fréquence du bus I2C (Centrale inertielle, Pression/Profondeur, Wattmètres de puissance).
+1. **Acquisition & Fusion Capteurs :** Lecture haute fréquence du bus I2C (centrale inertielle BNO085, pression/profondeur MS5803/MS5837, wattmètres INA226).
 2. **Contrôleur de Vol PID :** Stabilisation automatique roulis/tangage/cap/profondeur avec mixage différentiel sur les 8 propulseurs.
-3. **Génération PWM Matérielle :** Contrôle autonome de 16 canaux PWM indépendants via PCA9685 (8 propulseurs, servos pan/tilt, pince, gradateurs d'éclairage).
-4. **Simulateur Embarqué & Banc de Test :** Émulation logicielle dynamique de l'ensemble des capteurs avec serveur Web/WebSocket autonome et portail captif pour validation sans matériel connecté.
+3. **Génération PWM Matérielle :** Contrôle autonome de 16 canaux PWM indépendants via PCA9685 (8 propulseurs, servos pan/tilt, pince, gradateurs d'éclairage), avec serveur Web/WebSocket autonome et portail captif pour la configuration et le banc de test.
 
 ---
 
@@ -26,10 +25,8 @@ Il remplit un triple rôle :
 
 | Composant | Rôle | Adresse I2C | Description technique |
 | :--- | :--- | :--- | :--- |
-| **BNO085** | IMU 9-DOF | `0x4A` | Fusion inertielle embarquée, Quaternions, Vitesse angulaire |
-| **MPU9250 / GY-91** | IMU 9-DOF + magnéto AK8963 | `0x68` + `0x0C` | Gyro + Accéléro + Magnéto, filtre complémentaire gyro-dominant (98% gyro, DLPF 42Hz) |
-| **BMP280 / BME280** | Pression & Température | `0x76` ou `0x77` | Compensation 32-bit float (Adafruit), mode NORMAL continu, filtre IIR ×4 |
-| **MS5803-30BA** | Pression & Profondeur | `0x76` | Capteur piézorésistif haute résolution étanche (30 bar) |
+| **BNO085** | IMU 9-DOF | `0x4A` | Fusion inertielle embarquée (protocole SH-2 via Adafruit BNO08x) : Game Rotation Vector (quaternions) + gyroscope calibré @ 50 Hz |
+| **MS5803-30BA / MS5837** | Pression & Profondeur | `0x76` | Capteur piézorésistif haute résolution étanche, compensation 24-bit (coefficients C1-C6) |
 | **INA226 (Bus 1)** | Puissance RPi 5 | `0x41` | Tension, courant et puissance consommée par le Pi 5 |
 | **INA226 (Bus 2)** | Puissance Aux/LEDs | `0x44` | Mesure de ligne d'éclairage et accessoires 12V |
 | **INA226 (Bus 3)** | Puissance Moteurs | `0x45` | Mesure de ligne de puissance batterie/propulsion principale |
@@ -75,7 +72,7 @@ La communication s'effectue à **921 600 bauds** sur l'interface sélectionnée 
 
 * **Header :** `0xAA`, `0x55` (2 octets)
 * **Type :** `0x01` (1 octet)
-* **Mode :** `uint8_t` (`0` = Passif, `1` = Auto-Roulis, `2` = Auto-Full)
+* **Mode :** `uint8_t` (`0` = Passif, `1` = AUTO Roulis et Tangage, `2` = Auto-Full)
 * **Arm State :** `uint8_t` (`0` = Disarmed, `1` = Armed, `2` = Emergency Stop)
 * **PWM Channels (0–15) :** `uint16_t[16]` (32 octets, consigne en $\mu\text{s}$)
 * **CRC16 :** `uint16_t` (2 octets, polynôme 0x1021)
@@ -88,7 +85,7 @@ La communication s'effectue à **921 600 bauds** sur l'interface sélectionnée 
 
 * **Header :** `0x55`, `0xAA` (2 octets)
 * **Type :** `0x02` (1 octet)
-* **Status Flags :** `uint8_t` (Bit 0: Mode Simu actif, Bit 1: Armé, Bit 2: Autopilote actif, Bit 3: Watchdog déclenché, Bit 4: Sorties physiques neutralisées / Dry-Run)
+* **Status Flags :** `uint8_t` (Bit 0: réservé, Bit 1: Armé, Bit 2: Autopilote actif, Bit 3: Watchdog déclenché, Bit 4: Sorties physiques neutralisées / Dry-Run)
 * **Quaternions IMU :** `int16_t[4]` (8 octets, $W, X, Y, Z$ scalés $\times 10\,000$)
 * **Gyroscope :** `int16_t[3]` (6 octets, $\omega_x, \omega_y, \omega_z$ scalés $\times 100$)
 * **Pression & Température :** `int32_t[2]` (8 octets, $0.1\text{ mbar}$ et $0.01\,^\circ\text{C}$)
@@ -135,9 +132,9 @@ L'interface principale est un **tableau de bord** composé de tuiles cliquables 
 | :--- | :--- |
 | **Wi-Fi** | **Connexion actuelle** temps réel : SSID, adresse IP, passerelle (DHCP), masque, RSSI, MAC. Infos point d'accès local (SSID, IP, clients). Scan des réseaux environnants. Connexion STA non-bloquante (sans tuer le point d'accès). |
 | **PWM Monitor** | 16 barregraphes temps réel (WebSocket). 8 jauges moteurs bidirectionnelles centrées à $1500\,\mu\text{s}$, servos, gradateurs, auxiliaires. **Commutateur Sorties Matérielles** (Mode Témoin / Dry-Run) : badge d'avertissement ambre/vert. |
-| **Télémétrie** | Assiette Euler (Roll/Pitch/Yaw), profondeur, pression, température. 3 wattmètres instantanés. **Forçage Cap Manuel** : slider 0°–359° avec rampe fluide (45°/s) et recalcul des quaternions vers le RPi 5. **Sélecteur de Mode de Pilotage** : 3 boutons radio (PASSIF / AUTO ROULIS / AUTO FULL) avec badge Maître (RPi 5 vert / Manuel ESP32 orange). **Simulation par capteur** : 3 boutons toggle indépendants (MPU9250 / BME280 / INA226) avec état RÉEL par défaut. Instruments aviation : horizon artificiel et HSI (Heading Situation Indicator) avec lissage LERP. Bouton bascule **SIMULATEUR ↔ RÉEL**. Bouton **Tare Nord** (Yaw = 0°). |
+| **Télémétrie** | Assiette Euler (Roll/Pitch/Yaw), profondeur, pression, température. 3 wattmètres instantanés. **Sélecteur de Mode de Pilotage** : 3 boutons radio (PASSIF / AUTO ROULIS ET TANGAGE / AUTO FULL) avec badge Maître (RPi 5 vert / Manuel ESP32 orange). Instruments aviation : horizon artificiel et HSI (Heading Situation Indicator) avec lissage LERP. Diagnostic capteurs (LED BNO085, MS5803, INA226 ×3, PCA9685). |
 | **Banc de Test** | 16 sliders de commande manuelle avec verrou de sécurité matériel. Bouton "Tout au Neutre". |
-| **Paramètres** | Sélection liaison série RPi 5 (USB-CDC / UART GPIO 1/2). Configuration capteurs (IMU, Pression). **Configuration I2C** : broches SDA/SCL avec sauvegarde NVS. **Scanner I2C** : scan complet 0x01–0x7F avec identification des périphériques. PID (Roll, Pitch, Yaw, Profondeur) : Kp, Ki, Kd. Timeout watchdog série réglable. |
+| **Paramètres** | Sélection liaison série RPi 5 (USB-CDC / UART GPIO 1/2). **Configuration I2C** : broches SDA/SCL avec sauvegarde NVS. **Scanner I2C** : scan complet 0x01–0x7F avec identification des périphériques. PID (Roll, Pitch, Yaw, Profondeur) : Kp, Ki, Kd. Timeout watchdog série réglable. |
 | **Câblage** | Schéma visuel ESP32-S3 (`esp32s3.png`). Liaison RPi 5 dynamique selon le mode actif (USB-CDC ou UART GPIO 1/2) avec diagrammes ASCII et tables de correspondance. Tableau complet du bus I2C : broches SDA/SCL, adresses et fonctions de chaque module (IMU, baromètre, INA226, PCA9685). |
 
 ### Connexion Wi-Fi Externe (Mode STA)
@@ -166,9 +163,6 @@ lib_deps =
     bblanchon/ArduinoJson @ ^7.0.0
     adafruit/Adafruit PWM Servo Driver Library @ ^3.0.1
     adafruit/Adafruit BNO08x @ ^1.2.5
-    adafruit/Adafruit BME280 Library @ ^2.2.4
-    adafruit/Adafruit BMP280 Library @ ^2.6.8
-    hideakitai/MPU9250 @ ^0.4.8
     robtillaart/INA226 @ ^0.6.0
 ```
 
@@ -196,7 +190,7 @@ BOB-CONTROL/
     ├── main.cpp               # Setup séquentiel + tâche vTaskControl (Core 1, 100 Hz) + corrections PID
     ├── web_server.cpp         # Serveur HTTP, DNS captif OS-aware, WebSocket, REST API
     ├── serial_comm.cpp        # USB-CDC / UART GPIO : abstraction Stream*, machine à états, watchdog failsafe
-    ├── sensor_driver.cpp      # Drivers I2C réels + moteur de simulation + forçage cap (rampe Yaw 45°/s)
+    ├── sensor_driver.cpp      # Drivers I2C réels (BNO085 via Adafruit SH-2, MS5803/MS5837, INA226 ×3)
     ├── flight_controller.cpp  # PID 4 axes (Roll/Pitch/Yaw/Depth) + mixage M5-M8 + gestion priorité maître
     └── pwm_controller.cpp     # PCA9685 : conversion µs→ticks, failsafe + mode Témoin (Dry-Run)
 ```
@@ -223,15 +217,13 @@ pio device monitor -b 115200
 * **Mémoire :** RAM ~14%, Flash ~36% (marge confortable pour extensions).
 * **Contrôleur de Vol (Flight Controller) :** 3 modes de pilotage avec PID 4 axes et mixage différentiel sur les 8 propulseurs :
   - **PASSIF (0)** — Consignes PWM appliquées telles quelles (manuel direct).
-  - **AUTO ROULIS (1)** — Stabilisation PID du roulis (cible 0°) sur les moteurs verticaux M5-M8.
+  - **AUTO ROULIS ET TANGAGE (1)** — Stabilisation PID du roulis et du tangage (cible 0°) sur les moteurs verticaux M5-M8.
   - **AUTO FULL (2)** — Stabilisation complète Roll + Pitch + Yaw + Profondeur avec mixage sur M1-M8.
   Le clamp 1000-2000 µs est appliqué après la somme totale de toutes les corrections pour éviter la saturation prématurée. En mode Web sans RPi 5, les propulseurs sont forcés à 1500 µs pour validation sur établi.
 * **Gestion de Priorité Maître :** Le RPi 5 est maître absolu tant qu'une trame est reçue (< 1s). En l'absence de communication RPi 5, l'interface Web ESP32 prend le contrôle. Si le Web tente de changer le mode pendant que le RPi 5 est maître, la commande est ignorée et un message série est émis.
 * **Mode Témoin / Dry-Run :** Au boot, les sorties physiques PCA9685 sont neutralisées par défaut (`physicalOutputsEnabled = false`). Les consignes PWM reçues (RPi 5 ou simulateur) sont mémorisées dans le buffer d'état et affichées dans les 16 barregraphes, mais le PCA9685 envoie le neutre (1500 µs canaux 0–11, 0 % canaux 12–15). Un commutateur dans l'onglet PWM Monitor permet d'activer/désactiver les sorties. Le Bit 4 de la trame montante (`STATUS_BIT_DRYRUN = 0x10`) signale cet état au RPi 5. Commande WebSocket `{output_enable: true/false}` ou REST `POST /api/pwm/output-enable`.
-* **Mode Simulateur par Capteur :** Simulation indépendante pour chaque type de capteur (IMU MPU9250, Pression BME280/BMP280, Puissance INA226). Chaque capteur peut être basculé individuellement entre mode RÉEL et SIMULATEUR via 3 boutons toggle dans l'onglet Télémétrie. Le badge header affiche « SIMULATEUR » si au moins un capteur est en mode simu. Par défaut, tous les capteurs sont en mode RÉEL. Si un capteur n'est pas détecté au boot, il bascule automatiquement en simulation.
+* **Centrale Inertielle BNO085 :** Intégrée via la bibliothèque **Adafruit BNO08x** (protocole SH-2 par paquets, et non par lectures de registres). Rapports activés à 50 Hz : Game Rotation Vector (quaternions) et gyroscope calibré. Conversion quaternion → Euler embarquée. Le capteur peut nécessiter un court délai après la mise sous tension ; un reboot relance l'initialisation si le BNO085 n'était pas prêt au premier démarrage.
 * **Protection du Bus I2C :** Flag `_i2cBusy` volatile empêche les accès concurrents entre la tâche capteurs (Core 1) et le scan/reinit I2C (Core 0). Séquence de récupération de bus bloqué (9 impulsions SCL + condition STOP) avant chaque scan pour libérer un SDA coincé. Timeout Wire réduit à 10 ms pendant le scan pour un temps total < 1.3 s.
-* **BMP280/BME280 :** Mode NORMAL continu (`ctrl_meas` = `0x27`) avec mesures toutes les 500 ms et filtre IIR coefficient ×4 pour lisser le bruit. La formule de compensation pression utilise la version 32-bit float (Adafruit-compatible) pour éviter l'overflow silencieux de la formule 64-bit Bosch.
-* **Forçage Cap Manuel (Yaw) :** Slider 0°–359° dans l'onglet Télémétrie. Rampe fluide à 45°/s avec gestion du passage par le Nord (359°↔0° par plus court chemin). Recalcule les quaternions W,X,Y,Z et le gyro Z depuis les angles Euler forcés, propagés dans la trame montante vers le RPi 5. Fonctionne en mode Réel et Simulateur. Commande WebSocket `{heading_override: {enabled, target}}`.
 * **Persistance NVS :** Les identifiants Wi-Fi, paramètres PID (Roll, Pitch, Yaw, Depth), choix d'interface série et **broches I2C (SDA/SCL)** sont sauvegardés en NVS via la classe `Preferences`.
-* **Diagnostic I2C :** Scanner complet du bus I2C (adresses 0x01–0x7F) accessible depuis l'onglet Paramètres. Identification automatique des périphériques (AK8963, PCA9685, INA226 ×3, BNO085, MPU9250/6050, MS5803/BMP280/BME280). Configuration dynamique des broches SDA/SCL avec réinitialisation du bus sans reflash (`POST /api/i2c/config`). Récupération automatique de bus bloqué avant chaque scan. Persistance NVS : les broches configurées sont rechargées au boot. API REST : `GET /api/i2c/scan`, `GET /api/i2c/config`.
+* **Diagnostic I2C :** Scanner complet du bus I2C (adresses 0x01–0x7F) accessible depuis l'onglet Paramètres. Identification automatique des périphériques (PCA9685, INA226 ×3, BNO085, MS5803/MS5837). Configuration dynamique des broches SDA/SCL avec réinitialisation du bus sans reflash (`POST /api/i2c/config`). Récupération automatique de bus bloqué avant chaque scan. Persistance NVS : les broches configurées sont rechargées au boot. API REST : `GET /api/i2c/scan`, `GET /api/i2c/config`.
 * **Architecture FreeRTOS :** Tâches épinglées par cœur (Core 0 : Wi-Fi/WebServer/DNS, Core 1 : Série/Capteurs/PWM/Contrôle).

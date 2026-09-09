@@ -248,9 +248,7 @@
                     <h3>Diagnostic Capteurs</h3>
                     <div class="sensor-grid">
                         <div class="sensor-badge" id="sens-bno085"><span class="led led-off"></span>BNO085</div>
-                        <div class="sensor-badge" id="sens-mpu9250"><span class="led led-off"></span>MPU9250</div>
                         <div class="sensor-badge" id="sens-ms5803"><span class="led led-off"></span>MS5803</div>
-                        <div class="sensor-badge" id="sens-bme280"><span class="led led-off"></span>BME280</div>
                         <div class="sensor-badge" id="sens-ina0"><span class="led led-off"></span>INA226 #1</div>
                         <div class="sensor-badge" id="sens-ina1"><span class="led led-off"></span>INA226 #2</div>
                         <div class="sensor-badge" id="sens-ina2"><span class="led led-off"></span>INA226 #3</div>
@@ -264,23 +262,6 @@
                             <div class="euler-item"><span class="label">Roll</span><span id="val-roll" class="value">0.0°</span></div>
                             <div class="euler-item"><span class="label">Pitch</span><span id="val-pitch" class="value">0.0°</span></div>
                             <div class="euler-item"><span class="label">Yaw</span><span id="val-yaw" class="value">0.0°</span></div>
-                        </div>
-                    </div>
-                    <div class="card heading-override-card">
-                        <h3>Forçage Cap Manuel</h3>
-                        <label class="heading-toggle">
-                            <input type="checkbox" id="chk-heading"> Activer le forçage
-                        </label>
-                        <div class="heading-slider-wrap">
-                            <input type="range" id="slider-heading" min="0" max="359" step="1" value="0" disabled>
-                            <div class="heading-value" id="heading-value">0°</div>
-                            <div class="heading-scale">
-                                <span>0° N</span><span>90° E</span><span>180° S</span><span>270° O</span><span>360°</span>
-                            </div>
-                        </div>
-                        <div class="heading-status">
-                            <span class="label">Cap cible</span><span id="heading-target" class="value">—</span>
-                            <span class="label">Cap actuel</span><span id="heading-current" class="value">—</span>
                         </div>
                     </div>
                     <div class="card">
@@ -316,7 +297,6 @@
                         <div class="av-readout">
                             <span>HDG <b id="av-hdg">000°</b></span>
                         </div>
-                        <button id="btn-yaw-tare" class="btn btn-sm av-tare-btn">⟳ Tare Nord</button>
                     </div>
                 </div>
 
@@ -341,22 +321,7 @@
                     <div class="card" id="power-card-1"><h3>Wattmètre 2 — Aux/LED</h3><div class="power-val"><span id="p1-v">0 mV</span> / <span id="p1-i">0 mA</span></div></div>
                     <div class="card" id="power-card-2"><h3>Wattmètre 3 — Propulsion</h3><div class="power-val"><span id="p2-v">0 mV</span> / <span id="p2-i">0 mA</span></div></div>
                 </div>
-                <div class="telem-row center">
-                    <div class="sim-toggle-group">
-                        <button id="btn-sim-imu" class="btn-mode-toggle mode-real" data-sensor="imu">
-                            <span class="mode-toggle-icon">📐</span>
-                            <span class="mode-toggle-label" id="label-sim-imu">MPU9250 : RÉEL</span>
-                        </button>
-                        <button id="btn-sim-pressure" class="btn-mode-toggle mode-real" data-sensor="pressure">
-                            <span class="mode-toggle-icon">🌊</span>
-                            <span class="mode-toggle-label" id="label-sim-pressure">BME280 : RÉEL</span>
-                        </button>
-                        <button id="btn-sim-power" class="btn-mode-toggle mode-real" data-sensor="power">
-                            <span class="mode-toggle-icon">⚡</span>
-                            <span class="mode-toggle-label" id="label-sim-power">INA226 : RÉEL</span>
-                        </button>
-                    </div>
-                </div>
+
             </div>
         </div>
     </section>
@@ -396,27 +361,7 @@
                     </div>
                     <button id="btn-save-comm" class="btn btn-primary">Appliquer la liaison série</button>
                 </div>
-                <!-- Sélection Matérielle Capteurs -->
-                <div class="card">
-                    <h3>Configuration Capteurs</h3>
-                    <div class="settings-grid">
-                        <label>IMU
-                            <select id="sel-imu">
-                                <option value="0">Auto (détection)</option>
-                                <option value="1">BNO085 (0x4A)</option>
-                                <option value="2">MPU9250 / GY-91 (0x68)</option>
-                            </select>
-                        </label>
-                        <label>Pression
-                            <select id="sel-baro">
-                                <option value="0">Auto (détection)</option>
-                                <option value="1">MS5803-30BA (0x76)</option>
-                                <option value="2">BME280 / BMP280</option>
-                            </select>
-                        </label>
-                    </div>
-                    <button id="btn-save-sensors" class="btn btn-primary">Appliquer la config capteurs</button>
-                </div>
+
                 <!-- Configuration Broches I2C -->
                 <div class="card">
                     <h3>Configuration Broches I2C</h3>
@@ -575,10 +520,8 @@
                     <table class="wiring-table wiring-table-i2c">
                         <thead><tr><th>Module</th><th>Adresse I2C</th><th>Fonction</th><th>Remarque</th></tr></thead>
                         <tbody>
-                            <tr><td>BNO085</td><td>0x4A</td><td>IMU 9-DOF (fusion inertielle)</td><td>Quaternions natifs, prioritaire</td></tr>
-                            <tr><td>GY-91 / MPU9250</td><td>0x68 (+0x0C mag)</td><td>IMU 9-DOF (Euler calculé)</td><td>Alternative si BNO085 absent</td></tr>
-                            <tr><td>MS5803-30BA</td><td>0x76</td><td>Pression / Profondeur</td><td>Résolution 0.01 mbar</td></tr>
-                            <tr><td>BME280</td><td>0x76 / 0x77</td><td>Pression + Température</td><td>Alternative au MS5803</td></tr>
+                            <tr><td>BNO085</td><td>0x4A</td><td>IMU 9-DOF (fusion inertielle)</td><td>Quaternions natifs</td></tr>
+                            <tr><td>MS5803 / MS5837</td><td>0x76</td><td>Pression / Profondeur</td><td>Résolution 0.01 mbar</td></tr>
                             <tr><td>INA226 #1</td><td>0x41</td><td>Wattmètre RPi (V + I)</td><td>Tension et courant carte RPi</td></tr>
                             <tr><td>INA226 #2</td><td>0x44</td><td>Wattmètre Auxiliaire</td><td>Éclairage, capteurs, etc.</td></tr>
                             <tr><td>INA226 #3</td><td>0x45</td><td>Wattmètre Propulsion</td><td>Courant moteurs + ESC</td></tr>

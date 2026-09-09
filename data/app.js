@@ -151,6 +151,7 @@ function attachDragHandlers(grid) {
     grid.querySelectorAll('.nav-tile').forEach(tile => {
         tile.addEventListener('pointerdown', onPointerDown);
         tile.addEventListener('click', clickGuard);
+        tile.addEventListener('dragstart', dragStartGuard);
         tile.addEventListener('touchstart', touchGuard, { passive: false });
         tile.addEventListener('touchmove', touchGuard, { passive: false });
     });
@@ -160,6 +161,7 @@ function detachDragHandlers(grid) {
     grid.querySelectorAll('.nav-tile').forEach(tile => {
         tile.removeEventListener('pointerdown', onPointerDown);
         tile.removeEventListener('click', clickGuard);
+        tile.removeEventListener('dragstart', dragStartGuard);
         tile.removeEventListener('touchstart', touchGuard);
         tile.removeEventListener('touchmove', touchGuard);
         tile.classList.remove('drop-before', 'drop-after', 'dragging-ghost');
@@ -167,6 +169,8 @@ function detachDragHandlers(grid) {
 }
 
 function clickGuard(e) { e.preventDefault(); }
+/* Bloque le drag-and-drop natif des ancres <a href> qui interrompt les Pointer Events */
+function dragStartGuard(e) { e.preventDefault(); }
 function touchGuard(e) {
     const grid = e.currentTarget && e.currentTarget.parentElement;
     if (grid && grid.classList.contains('editing')) e.preventDefault();
@@ -174,7 +178,10 @@ function touchGuard(e) {
 
 function onPointerDown(e) {
     if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
     const tile = e.currentTarget;
+    /* Capturer le pointeur : garantit la réception des pointermove et empêche le drag natif */
+    try { tile.setPointerCapture(e.pointerId); } catch (_) {}
     const grid = tile.parentElement;
     const rect = tile.getBoundingClientRect();
 
@@ -229,8 +236,8 @@ function onPointerMove(e) {
         closest.classList.add(before ? 'drop-before' : 'drop-after');
 
         // Live reorder
-        const desiredNext = before ? closest : closest.nextSibling;
-        if (d.sourceTile.nextSibling !== desiredNext && d.sourceTile !== desiredNext) {
+        const desiredNext = before ? closest : closest.nextElementSibling;
+        if (d.sourceTile.nextElementSibling !== desiredNext && d.sourceTile !== desiredNext) {
             d.grid.insertBefore(d.sourceTile, desiredNext);
         }
     }
@@ -323,16 +330,6 @@ function processTelemetry(data) {
         }
     }
 
-    if (data.sim_imu !== undefined) {
-        updateSimToggleBtn('imu', data.sim_imu);
-    }
-    if (data.sim_pressure !== undefined) {
-        updateSimToggleBtn('pressure', data.sim_pressure);
-    }
-    if (data.sim_power !== undefined) {
-        updateSimToggleBtn('power', data.sim_power);
-    }
-
     if (data.wdg !== undefined) {
         const el = document.getElementById('badge-wdg');
         el.textContent = data.wdg ? 'WDG: ALERTE' : 'WDG: OK';
@@ -379,9 +376,7 @@ function processTelemetry(data) {
     /* Statut capteurs (badges LED) */
     if (data.sensors) {
         updateSensorBadge('sens-bno085',  data.sensors.bno085);
-        updateSensorBadge('sens-mpu9250', data.sensors.mpu9250);
         updateSensorBadge('sens-ms5803',  data.sensors.ms5803);
-        updateSensorBadge('sens-bme280',  data.sensors.bme280);
         updateSensorBadge('sens-ina0',    data.sensors.ina0);
         updateSensorBadge('sens-ina1',    data.sensors.ina1);
         updateSensorBadge('sens-ina2',    data.sensors.ina2);
@@ -399,20 +394,6 @@ function processTelemetry(data) {
         }
         /* Mettre à jour la page Câblage : afficher le bon schéma selon le mode */
         updateWiringMode(data.rpi_link.interface);
-    }
-
-    /* Forçage de cap (synchronisation UI ← ESP32) */
-    if (data.heading) {
-        const hdg = data.heading;
-        setText('heading-target',  hdg.enabled ? hdg.target.toFixed(1) + '°' : '—');
-        setText('heading-current', hdg.enabled ? hdg.current.toFixed(1) + '°' : '—');
-        /* Synchroniser le checkbox si l'ESP32 a changé l'état (ex: reboot) */
-        const chk = document.getElementById('chk-heading');
-        if (chk && chk.checked !== hdg.enabled) {
-            chk.checked = hdg.enabled;
-            const slider = document.getElementById('slider-heading');
-            if (slider) slider.disabled = !hdg.enabled;
-        }
     }
 
     /* Sorties physiques Dry-Run (synchronisation UI ← ESP32) */
@@ -963,58 +944,6 @@ function renderWifiList(networks) {
  * MODE & PARAMÈTRES
  * ========================================================================= */
 
-function initModeToggle() {
-    document.querySelectorAll('.sim-toggle-group .btn-mode-toggle').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const sensor = btn.dataset.sensor;
-            const isSim = btn.classList.contains('mode-sim');
-            const newMode = isSim ? 'reel' : 'simulateur';
-            try {
-                const body = new URLSearchParams();
-                body.set(sensor, newMode);
-                await fetch('/api/mode', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: body.toString()
-                });
-            } catch (e) { console.error('Bascule mode ' + sensor + ':', e); }
-        });
-    });
-}
-
-/**
- * Met à jour un bouton toggle Simulateur/Réel pour un capteur donné.
- * @param {string} sensor — 'imu', 'pressure' ou 'power'
- * @param {boolean} isSim — true si mode simulateur actif pour ce capteur
- */
-function updateSimToggleBtn(sensor, isSim) {
-    const btn = document.getElementById('btn-sim-' + sensor);
-    const label = document.getElementById('label-sim-' + sensor);
-    if (!btn || !label) return;
-
-    const names = { imu: 'MPU9250', pressure: 'BME280', power: 'INA226' };
-    const icons = { imu: '📐', pressure: '🌊', power: '⚡' };
-    const name = names[sensor] || sensor.toUpperCase();
-
-    if (isSim) {
-        btn.className = 'btn-mode-toggle mode-sim';
-        btn.querySelector('.mode-toggle-icon').textContent = '🧪';
-        label.textContent = name + ' : SIMULATEUR';
-    } else {
-        btn.className = 'btn-mode-toggle mode-real';
-        btn.querySelector('.mode-toggle-icon').textContent = icons[sensor] || '🔧';
-        label.textContent = name + ' : RÉEL';
-    }
-
-    /* Mettre à jour le badge header (sim si au moins un capteur en simu) */
-    const anySim = document.querySelector('.sim-toggle-group .mode-sim') !== null;
-    const badge = document.getElementById('badge-mode');
-    if (badge) {
-        badge.textContent = anySim ? 'SIMULATEUR' : 'RÉEL';
-        badge.className = anySim ? 'badge badge-sim' : 'badge badge-real';
-    }
-}
-
 function initSettings() {
     /* Sauvegarde PID via REST API */
     document.getElementById('btn-save-pid').addEventListener('click', async () => {
@@ -1041,28 +970,6 @@ function initSettings() {
             else alert('Erreur : ' + (data.error || 'inconnue'));
         } catch (e) { alert('Erreur réseau : ' + e.message); }
     });
-
-    /* Sauvegarde config capteurs */
-    const btnSensors = document.getElementById('btn-save-sensors');
-    if (btnSensors) {
-        btnSensors.addEventListener('click', async () => {
-            const imu = document.getElementById('sel-imu').value;
-            const baro = document.getElementById('sel-baro').value;
-            try {
-                const res = await fetch('/api/sensors/config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: `imu=${imu}&baro=${baro}`
-                });
-                const data = await res.json();
-                if (data.status === 'ok') alert('Config capteurs appliquée.');
-                else alert('Erreur : ' + (data.error || 'inconnue'));
-            } catch (e) { alert('Erreur réseau : ' + e.message); }
-        });
-    }
-
-    /* Charger la config capteurs actuelle depuis l'API */
-    loadSensorConfig();
 
     /* Bouton sauvegarde liaison série RPi5 */
     const btnComm = document.getElementById('btn-save-comm');
@@ -1123,19 +1030,6 @@ function initSettings() {
     if (btnScan) {
         btnScan.addEventListener('click', runI2CScan);
     }
-}
-
-async function loadSensorConfig() {
-    try {
-        const res = await fetch('/api/sensors/config');
-        const data = await res.json();
-        if (data.imu_profile !== undefined) {
-            document.getElementById('sel-imu').value = data.imu_profile;
-        }
-        if (data.baro_profile !== undefined) {
-            document.getElementById('sel-baro').value = data.baro_profile;
-        }
-    } catch (_) { /* silencieux si pas de connexion */ }
 }
 
 async function loadCommConfig() {
@@ -1227,68 +1121,6 @@ async function runI2CScan() {
         if (spinner) spinner.style.display = 'none';
         if (btn) btn.disabled = false;
     }
-}
-
-/* =========================================================================
- * FORÇAGE DE CAP MANUEL (HEADING OVERRIDE)
- * ========================================================================= */
-
-/**
- * Initialise les contrôles de forçage de cap (checkbox + slider).
- * Envoie les commandes heading_override via WebSocket à chaque changement.
- */
-function initHeadingOverride() {
-    const chk = document.getElementById('chk-heading');
-    const slider = document.getElementById('slider-heading');
-    const valueDisplay = document.getElementById('heading-value');
-
-    if (!chk || !slider) return;
-
-    /* Activation / désactivation du forçage */
-    chk.addEventListener('change', () => {
-        const enabled = chk.checked;
-        slider.disabled = !enabled;
-        if (enabled) {
-            /* Initialiser le slider à la valeur courante pour un départ fluide */
-            sendHeadingOverride(true, parseInt(slider.value, 10));
-        } else {
-            sendHeadingOverride(false, 0);
-            setText('heading-target', '—');
-            setText('heading-current', '—');
-        }
-    });
-
-    /* Mise à jour en temps réel pendant le déplacement du slider */
-    slider.addEventListener('input', () => {
-        const val = parseInt(slider.value, 10);
-        if (valueDisplay) valueDisplay.textContent = val + '°';
-        if (chk.checked) {
-            sendHeadingOverride(true, val);
-        }
-    });
-
-    /* Événement change (relâchement) pour confirmation */
-    slider.addEventListener('change', () => {
-        const val = parseInt(slider.value, 10);
-        if (valueDisplay) valueDisplay.textContent = val + '°';
-        if (chk.checked) {
-            sendHeadingOverride(true, val);
-        }
-    });
-}
-
-/**
- * Envoie une commande de forçage de cap via WebSocket.
- * Format JSON : { "heading_override": { "enabled": bool, "target": float } }
- *
- * @param {boolean} enabled  Activation du forçage
- * @param {number}  target   Cap cible en degrés [0..359]
- */
-function sendHeadingOverride(enabled, target) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({
-        heading_override: { enabled: enabled, target: target }
-    }));
 }
 
 /* =========================================================================
@@ -1546,9 +1378,6 @@ function drawHeadingWheel(yaw) {
     ctx.closePath();
     ctx.fill();
 
-    /* --- Bug de cap (heading bug) — petit triangle --- */
-    /* (Pourrait être lié au cap cible du forçage manuel) */
-
     /* --- Ligne avion centrale --- */
     ctx.strokeStyle = '#ffcc00';
     ctx.lineWidth = 2.5;
@@ -1702,26 +1531,6 @@ function initAviationInstruments() {
     drawVSI(0);
     drawArtificialHorizon(0, 0);
     drawHeadingWheel(0);
-
-    /* Bouton Tare Nord : enregistre le cap actuel comme 0° */
-    const tareBtn = document.getElementById('btn-yaw-tare');
-    if (tareBtn) {
-        tareBtn.addEventListener('click', async () => {
-            tareBtn.disabled = true;
-            tareBtn.textContent = '⏳ Tare…';
-            try {
-                const res = await fetch('/api/yaw/tare', { method: 'POST' });
-                const data = await res.json();
-                tareBtn.textContent = data.status === 'ok'
-                    ? '✓ Tare : ' + data.offset.toFixed(1) + '°'
-                    : '✗ Erreur';
-                setTimeout(() => { tareBtn.textContent = '⟳ Tare Nord'; tareBtn.disabled = false; }, 2500);
-            } catch (e) {
-                tareBtn.textContent = '✗ Réseau';
-                setTimeout(() => { tareBtn.textContent = '⟳ Tare Nord'; tareBtn.disabled = false; }, 2500);
-            }
-        });
-    }
 }
 
 /* =========================================================================
@@ -1736,8 +1545,6 @@ document.addEventListener('DOMContentLoaded', () => {
     initDryRun();
     initTestBench();
     initWiFi();
-    initModeToggle();
-    initHeadingOverride();
     initSettings();
     initAviationInstruments();
     initFlightModeButtons();

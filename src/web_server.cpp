@@ -3,7 +3,8 @@
  * @brief Implémentation du serveur Web embarqué (HTTP, WebSocket, DNS captif).
  *
  * Gère le point d'accès Wi-Fi, le portail captif DNS, les endpoints REST
- * (/api/wifi/scan, /api/wifi/connect, /api/mode) et le serveur WebSocket
+ * (/api/wifi/scan, /api/wifi/connect, /api/settings/save, /api/comm/config,
+ * /api/i2c/scan, /api/i2c/config, /api/pwm/output-enable) et le serveur WebSocket
  * diffusant la télémétrie temps réel en JSON.
  *
  * @author Didier Dero
@@ -168,7 +169,8 @@ void BobWebServer::processDNS() {
  *
  * - Portail captif : redirection 302 vers 192.168.4.1 pour tous les OS
  * - Fichiers statiques : racine "/" sert index.html depuis LittleFS
- * - REST API : /api/wifi/scan, /api/wifi/connect, /api/mode
+ * - REST API : /api/wifi/scan, /api/wifi/connect, /api/settings/save,
+ *   /api/comm/config, /api/i2c/scan, /api/i2c/config, /api/pwm/output-enable
  * - Handler catchall : redirection pour les hôtes non reconnus
  */
 void BobWebServer::_setupRoutes() {
@@ -232,17 +234,7 @@ void BobWebServer::_setupRoutes() {
     _server.on("/api/wifi/connect", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handleWifiConnect(request); });
 
-    /* REST : Lecture/modification du mode (SIMULATEUR/RÉEL) */
-    _server.on("/api/mode", HTTP_GET,
-        [this](AsyncWebServerRequest* request) { _handleMode(request); });
-    _server.on("/api/mode", HTTP_POST,
-        [this](AsyncWebServerRequest* request) { _handleMode(request); });
 
-    /* REST : Configuration capteurs (lecture et écriture) */
-    _server.on("/api/sensors/config", HTTP_GET,
-        [this](AsyncWebServerRequest* request) { _handleSensorConfigGet(request); });
-    _server.on("/api/sensors/config", HTTP_POST,
-        [this](AsyncWebServerRequest* request) { _handleSensorConfigPost(request); });
 
     /* REST : Sauvegarde paramètres PID + watchdog */
     _server.on("/api/settings/save", HTTP_POST,
@@ -268,13 +260,7 @@ void BobWebServer::_setupRoutes() {
     _server.on("/api/i2c/config", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handleI2CConfigPost(request); });
 
-    /* REST : Tare Yaw (POST) — enregistre le cap actuel comme 0° */
-    _server.on("/api/yaw/tare", HTTP_POST,
-        [this](AsyncWebServerRequest* request) {
-            float offset = g_sensors.tareYaw();
-            request->send(200, "application/json",
-                "{\"status\":\"ok\",\"offset\":" + String(offset, 1) + "}");
-        });
+
 
     /* =====================================================================
      * FICHIERS STATIQUES LITTLEFS (après les routes spécifiques)
@@ -442,118 +428,6 @@ void BobWebServer::_handleWifiConnect(AsyncWebServerRequest* request) {
     }
 }
 
-/**
- * @brief Handler GET/POST /api/mode - Contrôle individuel simulation par capteur.
- *
- * GET : retourne {"imu":bool,"pressure":bool,"power":bool}
- * POST : accepte les paramètres imu, pressure, power (simulateur|reel)
- *
- * @param request Requête HTTP entrante.
- */
-void BobWebServer::_handleMode(AsyncWebServerRequest* request) {
-    if (request->method() == HTTP_GET) {
-        String json = "{\"imu\":" + String(g_sensors.isSimIMU() ? "true" : "false")
-                    + ",\"pressure\":" + String(g_sensors.isSimPressure() ? "true" : "false")
-                    + ",\"power\":" + String(g_sensors.isSimPower() ? "true" : "false")
-                    + "}";
-        request->send(200, "application/json", json);
-    } else if (request->method() == HTTP_POST) {
-        /* Paramètre IMU (simulateur|reel) */
-        if (request->hasParam("imu", true)) {
-            String v = request->getParam("imu", true)->value();
-            g_sensors.setSimIMU(v == "simulateur" || v == "sim");
-        }
-        /* Paramètre pression (simulateur|reel) */
-        if (request->hasParam("pressure", true)) {
-            String v = request->getParam("pressure", true)->value();
-            g_sensors.setSimPressure(v == "simulateur" || v == "sim");
-        }
-        /* Paramètre puissance (simulateur|reel) */
-        if (request->hasParam("power", true)) {
-            String v = request->getParam("power", true)->value();
-            g_sensors.setSimPower(v == "simulateur" || v == "sim");
-        }
-        /* Réponse avec l'état actuel */
-        String json = "{\"status\":\"ok\""
-                    ",\"imu\":" + String(g_sensors.isSimIMU() ? "\"simulateur\"" : "\"reel\"")
-                    + ",\"pressure\":" + String(g_sensors.isSimPressure() ? "\"simulateur\"" : "\"reel\"")
-                    + ",\"power\":" + String(g_sensors.isSimPower() ? "\"simulateur\"" : "\"reel\"")
-                    + "}";
-        request->send(200, "application/json", json);
-    }
-}
-
-/**
- * @brief Handler GET /api/sensors/config — Lecture de la config capteurs.
- *
- * Retourne les profils IMU et baro actifs ainsi que le statut de détection
- * de chaque composant matériel (connecté, déconnecté, émulé).
- */
-void BobWebServer::_handleSensorConfigGet(AsyncWebServerRequest* request) {
-    JsonDocument doc;
-
-    /* Profils actifs */
-    doc["imu_profile"]  = (uint8_t)g_sensors.getActiveIMU();
-    doc["baro_profile"] = (uint8_t)g_sensors.getActiveBaro();
-
-    /* Statut de détection par composant */
-    SensorBankStatus st;
-    g_sensors.getSensorStatus(st);
-    JsonObject sensors = doc["sensors"].to<JsonObject>();
-    sensors["bno085"]  = (uint8_t)st.bno085;
-    sensors["mpu9250"] = (uint8_t)st.mpu9250;
-    sensors["ms5803"]  = (uint8_t)st.ms5803;
-    sensors["bme280"]  = (uint8_t)st.bme280;
-    sensors["ina226_0"] = (uint8_t)st.ina226[0];
-    sensors["ina226_1"] = (uint8_t)st.ina226[1];
-    sensors["ina226_2"] = (uint8_t)st.ina226[2];
-    sensors["pca9685"]  = (uint8_t)st.pca9685;
-
-    String response;
-    serializeJson(doc, response);
-    request->send(200, "application/json", response);
-}
-
-/**
- * @brief Handler POST /api/sensors/config — Modification des profils capteurs.
- *
- * Attend un corps form-data : imu=0|1|2&baro=0|1|2
- * Sauvegarde en NVS et applique les nouveaux profils.
- */
-void BobWebServer::_handleSensorConfigPost(AsyncWebServerRequest* request) {
-    if (!request->hasParam("imu", true) || !request->hasParam("baro", true)) {
-        request->send(400, "application/json",
-                       "{\"error\":\"Paramètres 'imu' et 'baro' requis\"}");
-        return;
-    }
-
-    uint8_t imuVal  = request->getParam("imu", true)->value().toInt();
-    uint8_t baroVal = request->getParam("baro", true)->value().toInt();
-
-    if (imuVal > 2 || baroVal > 2) {
-        request->send(400, "application/json",
-                       "{\"error\":\"Valeurs invalides (0=Auto,1=Type1,2=Type2)\"}");
-        return;
-    }
-
-    /* Sauvegarde en NVS */
-    Preferences prefs;
-    prefs.begin("sensors", false);
-    prefs.putUChar("imu_type", imuVal);
-    prefs.putUChar("baro_type", baroVal);
-    prefs.end();
-
-    /* Application à chaud */
-    g_sensors.setIMUProfile((IMUProfile)imuVal);
-    g_sensors.setBaroProfile((BaroProfile)baroVal);
-
-    Serial.println("[WEB] Config capteurs mise à jour : IMU=" + String(imuVal)
-                   + ", Baro=" + String(baroVal));
-
-    request->send(200, "application/json",
-                   "{\"status\":\"ok\",\"imu\":" + String(imuVal) +
-                   ",\"baro\":" + String(baroVal) + "}");
-}
 
 /**
  * @brief Handler POST /api/settings/save — Sauvegarde PID + watchdog en NVS.
@@ -827,16 +701,6 @@ void BobWebServer::_onWSEvent(AsyncWebSocket* server, AsyncWebSocketClient* clie
                         g_pwm.setAllPWM(values);
                     }
 
-                    /* Commande de forçage de cap (Yaw) depuis la télémétrie */
-                    if (doc["heading_override"].is<JsonObject>()) {
-                        JsonObject ho = doc["heading_override"].as<JsonObject>();
-                        bool enabled = ho["enabled"] | false;
-                        float target = ho["target"] | 0.0f;
-                        g_sensors.setHeadingOverride(target, enabled);
-                        Serial.println("[WS] Heading override : " +
-                                       String(enabled ? "ON" : "OFF") +
-                                       " target=" + String((int)target) + "°");
-                    }
 
                     /* Commande d'activation des sorties physiques (Dry-Run) */
                     if (doc["output_enable"].is<bool>()) {
@@ -933,10 +797,6 @@ void BobWebServer::_taskLoop() {
             if (_ws.count() > 0) {
                 JsonDocument doc;
 
-                /* Statut simulation par capteur */
-                doc["sim_imu"]      = g_sensors.isSimIMU();
-                doc["sim_pressure"] = g_sensors.isSimPressure();
-                doc["sim_power"]    = g_sensors.isSimPower();
                 doc["wdg"] = g_serial.isWatchdogTriggered();
                 doc["physical_outputs_enabled"] = g_pwm.isPhysicalOutputsEnabled();
 
@@ -983,13 +843,7 @@ void BobWebServer::_taskLoop() {
                 imuObj["pitch"] = roundf(imu.euler[1] * 10.0f) / 10.0f;
                 imuObj["yaw"]   = roundf(imu.euler[2] * 10.0f) / 10.0f;
 
-                /* Champ magnétique brut AK8963 (µT, axes remappés MPU9250) */
-                imuObj["mag_x"] = roundf(imu.mag[0] * 100.0f) / 100.0f;
-                imuObj["mag_y"] = roundf(imu.mag[1] * 100.0f) / 100.0f;
-                imuObj["mag_z"] = roundf(imu.mag[2] * 100.0f) / 100.0f;
-                imuObj["mag_ready"] = g_sensors.isMagReady();
-
-                /* Pression et altitude barométrique */
+                /* Pression et altitude */
                 PressureData press;
                 g_sensors.getPressureData(press);
                 JsonObject pressObj = doc["press"].to<JsonObject>();
@@ -1012,28 +866,16 @@ void BobWebServer::_taskLoop() {
                 g_sensors.getSensorStatus(st);
                 JsonObject sens = doc["sensors"].to<JsonObject>();
                 sens["bno085"]  = (uint8_t)st.bno085;
-                sens["mpu9250"] = (uint8_t)st.mpu9250;
                 sens["ms5803"]  = (uint8_t)st.ms5803;
-                sens["bme280"]  = (uint8_t)st.bme280;
                 sens["ina0"] = (uint8_t)st.ina226[0];
                 sens["ina1"] = (uint8_t)st.ina226[1];
                 sens["ina2"] = (uint8_t)st.ina226[2];
                 sens["pca"]  = (uint8_t)st.pca9685;
 
-                /* Info IMU active : profil + mode magnéto */
-                sens["active_imu"]  = (uint8_t)g_sensors.getActiveIMU();
-                sens["mag_ready"]   = g_sensors.isMagReady();
-
                 /* Statut liaison série RPi5 (interface active + heartbeat) */
                 JsonObject rpi = doc["rpi_link"].to<JsonObject>();
                 rpi["interface"] = g_serial.getInterfaceLabel();
                 rpi["connected"] = !g_serial.isWatchdogTriggered();
-
-                /* Forçage de cap (état actuel pour synchronisation UI) */
-                JsonObject hdg = doc["heading"].to<JsonObject>();
-                hdg["enabled"] = g_sensors.isHeadingOverride();
-                hdg["target"]  = roundf(g_sensors.getHeadingTarget() * 10.0f) / 10.0f;
-                hdg["current"] = roundf(g_sensors.getHeadingCurrent() * 10.0f) / 10.0f;
 
                 /* Contrôleur de vol (mode + maître) */
                 doc["flight_mode"] = g_flightCtrl.getActiveMode();

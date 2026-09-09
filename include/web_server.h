@@ -3,7 +3,7 @@
  * @brief Serveur Web embarqué avec DNS captif, REST API et WebSocket.
  *
  * Héberge l'interface Web SPA depuis LittleFS, fournit les endpoints REST
- * pour la configuration Wi-Fi et le mode, et diffuse la télémétrie en
+ * pour la configuration Wi-Fi, les paramètres et le diagnostic I2C, et diffuse la télémétrie en
  * temps réel via WebSocket.
  *
  * @author Didier Dero
@@ -64,9 +64,6 @@ private:
     /* -- Handlers REST API -- */
     void _handleWifiScan(AsyncWebServerRequest* request);
     void _handleWifiConnect(AsyncWebServerRequest* request);
-    void _handleMode(AsyncWebServerRequest* request);
-    void _handleSensorConfigGet(AsyncWebServerRequest* request);
-    void _handleSensorConfigPost(AsyncWebServerRequest* request);
     void _handleSettingsSave(AsyncWebServerRequest* request);
     void _handleCommConfigGet(AsyncWebServerRequest* request);
     void _handleCommConfigPost(AsyncWebServerRequest* request);

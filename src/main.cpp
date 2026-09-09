@@ -223,7 +223,6 @@ static void vTaskControl(void* param) {
 
         /* Bits de statut */
         ul.status = 0;
-        if (g_sensors.isSimMode())              ul.status |= STATUS_BIT_SIMU;
         if (g_serial.getLastFrameTime() > 0)     ul.status |= STATUS_BIT_ARMED;
         if (g_serial.isWatchdogTriggered())      ul.status |= STATUS_BIT_WDG;
         if (!g_pwm.isPhysicalOutputsEnabled())   ul.status |= STATUS_BIT_DRYRUN;
@@ -306,24 +305,7 @@ void setup() {
     /* Création du mutex de protection de la configuration */
     g_mutexConfig = xSemaphoreCreateMutex();
 
-    /* ---- 3b. Chargement des profils capteurs depuis NVS ---- */
-    IMUProfile imuProf = IMU_TYPE_AUTO;
-    BaroProfile baroProf = BARO_TYPE_AUTO;
-    {
-        Preferences sprefs;
-        sprefs.begin("sensors", true);
-        if (sprefs.isKey("imu_type")) {
-            imuProf = (IMUProfile)sprefs.getUChar("imu_type", 0);
-        }
-        if (sprefs.isKey("baro_type")) {
-            baroProf = (BaroProfile)sprefs.getUChar("baro_type", 0);
-        }
-        sprefs.end();
-        Serial.println("[MAIN] Profils capteurs : IMU=" + String((uint8_t)imuProf)
-                       + ", Baro=" + String((uint8_t)baroProf));
-    }
-
-    /* ---- 4. Initialisation des capteurs I2C et simulateur ---- */
+    /* ---- 4. Initialisation des capteurs I2C ---- */
     /* Charger les broches I2C depuis NVS (si configurées) */
     {
         Preferences iprefs;
@@ -336,7 +318,7 @@ void setup() {
         }
         iprefs.end();
     }
-    g_sensors.begin(imuProf, baroProf);
+    g_sensors.begin();
 
     /* ---- 5. Initialisation du contrôleur PWM PCA9685 ---- */
     g_pwm.begin();

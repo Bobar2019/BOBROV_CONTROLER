@@ -69,8 +69,7 @@
  * BITS DE STATUT (TRAME MONTANTE)
  * ========================================================================= */
 
-#define STATUS_BIT_SIMU     0x01    ///< Bit 0 : Mode simulateur actif
-#define STATUS_BIT_ARMED    0x02    ///< Bit 1 : Système armé
+#define STATUS_BIT_ARMED    0x02    ///< Bit 1 : Système armé (bit 0 réservé)
 #define STATUS_BIT_AUTO     0x04    ///< Bit 2 : Autopilote actif
 #define STATUS_BIT_WDG      0x08    ///< Bit 3 : Watchdog série déclenché
 #define STATUS_BIT_DRYRUN   0x10    ///< Bit 4 : Sorties physiques neutralisées (Dry-run / Mode Témoin)
