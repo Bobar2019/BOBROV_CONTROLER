@@ -717,6 +717,13 @@ void BobWebServer::_onWSEvent(AsyncWebSocket* server, AsyncWebSocketClient* clie
                         Serial.println("[WS] Mode pilotage : " + String(mode) +
                                        (ok ? " appliqué" : " ignoré (RPi 5 maître)"));
                     }
+
+                    /* Commande d'étalonnage de la pression de surface (tare MS5803) :
+                     * à déclencher capteur HORS de l'eau pour mémoriser P_surface. */
+                    if (doc["tare_surface"].is<bool>() && doc["tare_surface"].as<bool>()) {
+                        g_sensors.requestSurfaceTare();
+                        Serial.println("[WS] Tare surface demandée (P_surface à recapturer)");
+                    }
                 }
             }
             break;
@@ -843,13 +850,17 @@ void BobWebServer::_taskLoop() {
                 imuObj["pitch"] = roundf(imu.euler[1] * 10.0f) / 10.0f;
                 imuObj["yaw"]   = roundf(imu.euler[2] * 10.0f) / 10.0f;
 
-                /* Pression et altitude */
+                /* Pression, profondeur et altitude (MS5803 avec tare surface) */
                 PressureData press;
                 g_sensors.getPressureData(press);
                 JsonObject pressObj = doc["press"].to<JsonObject>();
-                pressObj["mbar"]  = press.pressure_mbar / 10.0f;
-                pressObj["alt"]   = roundf(press.altitude_m * 100.0f) / 100.0f;
-                pressObj["temp"]  = press.temperature / 100.0f;
+                pressObj["mbar"]     = press.pressure_mbar / 10.0f;
+                pressObj["temp"]     = press.temperature / 100.0f;
+                pressObj["surface"]  = roundf(press.surface_mbar * 100.0f) / 100.0f;  /* tare P_surface */
+                pressObj["depth"]    = roundf(press.depth_m * 100.0f) / 100.0f;       /* profondeur eau douce */
+                pressObj["baro_alt"] = roundf(press.baro_alt_m * 100.0f) / 100.0f;    /* altitude barométrique */
+                pressObj["immersed"] = press.immersed;                                 /* statut immersion */
+                pressObj["alt"]      = roundf(press.altitude_m * 100.0f) / 100.0f;     /* repère PID (compat) */
 
                 /* Puissance (3 wattmètres) */
                 PowerData pwr;

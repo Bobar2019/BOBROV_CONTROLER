@@ -158,6 +158,36 @@ constexpr uint32_t TASK_CONTROL_PERIOD_MS   = 10;
 /** @brief Période de la tâche capteurs en ms (acquisition 100 Hz) */
 constexpr uint32_t TASK_SENSORS_PERIOD_MS   = 10;
 
+/**
+ * @brief Période de lecture du baromètre MS5803 en ms (2 Hz).
+ *
+ * La conversion ADC du MS5803 (OSR 4096) impose ~9 ms par canal, soit ~20 ms
+ * pour pression + température. Deux échantillons par seconde suffisent pour la
+ * profondeur : la lecture est donc ralentie à 2 Hz et effectuée HORS mutex dans
+ * _taskLoop, afin de ne plus bloquer la télémétrie WebSocket ni le PID.
+ */
+constexpr uint32_t MS5803_READ_PERIOD_MS    = 500;
+
+/**
+ * @brief Pression atmosphérique standard au niveau de la mer (mbar).
+ * Référence de la formule barométrique internationale pour l'altitude réelle
+ * affichée lorsque le capteur est hors de l'eau.
+ */
+constexpr float SEA_LEVEL_PRESSURE_MBAR     = 1013.25f;
+
+/**
+ * @brief Seuil d'immersion du MS5803 (mbar).
+ * Si ΔP = P_mesurée − P_surface > ce seuil, le capteur est considéré immergé
+ * (~15 cm d'eau douce). En dessous, il est « hors de l'eau » (mode altimètre).
+ */
+constexpr float MS5803_IMMERSION_THRESHOLD_MBAR = 15.0f;
+
+/** @brief Masse volumique de l'eau douce (kg/m³) pour le calcul de profondeur */
+constexpr float FRESH_WATER_DENSITY         = 1000.0f;
+
+/** @brief Accélération gravitationnelle (m/s²) */
+constexpr float GRAVITY_MSS                 = 9.81f;
+
 /** @brief Période d'émission de la télémétrie montante en ms */
 constexpr uint32_t TASK_SERIAL_TX_PERIOD_MS = 10;
 

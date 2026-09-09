@@ -41,6 +41,11 @@ SensorDriver::SensorDriver()
     _imu.quat[0] = 10000; /* Quaternion identité W=10000 */
     _currentSDA = I2C_SDA_PIN;
     _currentSCL = I2C_SCL_PIN;
+    _lastMS5803Read = 0;
+    /* Tare surface : P0 par défaut, (re)capturée à la 1re lecture MS5803 valide */
+    _surfaceMbar   = SEA_LEVEL_PRESSURE_MBAR;
+    _tareRequested = true;
+    _lastBaroAlt   = 0.0f;
 }
 
 /* =========================================================================
@@ -261,6 +266,13 @@ void SensorDriver::getSensorStatus(SensorBankStatus& out) {
     }
 }
 
+void SensorDriver::requestSurfaceTare() {
+    /* Simple signal volatile : la tâche capteurs recapture P_surface à la
+     * prochaine lecture MS5803 (voir _readMS5803). Thread-safe par atomicité
+     * d'un booléen. */
+    _tareRequested = true;
+}
+
 /* =========================================================================
  * I2C BAS NIVEAU
  * ========================================================================= */
@@ -405,17 +417,6 @@ void SensorDriver::_readIMU() {
     }
 }
 
-void SensorDriver::_readPressure() {
-    if (_status.ms5803 == SENSOR_CONNECTED) {
-        _readMS5803();
-    } else {
-        /* Baromètre absent → forcer à zéro */
-        _pressure.pressure_mbar = 0;
-        _pressure.temperature   = 0;
-        _pressure.altitude_m    = 0.0f;
-    }
-}
-
 void SensorDriver::_readPower() {
     const uint8_t addrs[3] = {INA226_1_I2C_ADDR, INA226_2_I2C_ADDR, INA226_3_I2C_ADDR};
     for (uint8_t i = 0; i < 3; i++) {
@@ -487,43 +488,70 @@ void SensorDriver::_readBNO085() {
  * LECTURE MS5803 (pression + température + profondeur)
  * ========================================================================= */
 
-void SensorDriver::_readMS5803() {
+bool SensorDriver::_readMS5803(PressureData& out) {
+    /* ---- Conversion D1 (pression), OSR 4096 : ~9 ms ---- */
     _i2cWrite(MS5803_I2C_ADDR, 0x48, 0x00);
     delay(10);
     Wire.beginTransmission(MS5803_I2C_ADDR);
     Wire.write(0x00);
-    if (Wire.endTransmission(false) == 0) {
-        Wire.requestFrom((uint8_t)MS5803_I2C_ADDR, (uint8_t)3);
-        if (Wire.available() >= 3) {
-            uint32_t D1 = ((uint32_t)Wire.read() << 16)
-                        | ((uint32_t)Wire.read() << 8) | Wire.read();
-            _i2cWrite(MS5803_I2C_ADDR, 0x58, 0x00);
-            delay(10);
-            Wire.beginTransmission(MS5803_I2C_ADDR);
-            Wire.write(0x00);
-            if (Wire.endTransmission(false) == 0) {
-                Wire.requestFrom((uint8_t)MS5803_I2C_ADDR, (uint8_t)3);
-                if (Wire.available() >= 3) {
-                    uint32_t D2 = ((uint32_t)Wire.read() << 16)
-                                | ((uint32_t)Wire.read() << 8) | Wire.read();
-                    int32_t dT = (int32_t)D2 - ((int32_t)_ms5803_cal[4] << 8);
-                    int32_t TEMP = 2000 + ((int64_t)dT * _ms5803_cal[5] >> 23);
-                    int64_t OFF  = ((int64_t)_ms5803_cal[1] << 16)
-                                 + (((int64_t)_ms5803_cal[3] * dT) >> 7);
-                    int64_t SENS = ((int64_t)_ms5803_cal[0] << 15)
-                                 + (((int64_t)_ms5803_cal[2] * dT) >> 8);
-                    int32_t P = (int32_t)(((int64_t)D1 * SENS >> 21) - OFF) >> 13;
-                    _pressure.pressure_mbar = P;
-                    _pressure.temperature   = TEMP;
-                    float press_mbar = (float)P * 0.1f;
-                    /* Capteur immergé : profondeur positive vers le bas,
-                     * stockée comme altitude négative (repère vertical unifié) */
-                    float depth = (press_mbar - 1013.25f) / (1025.0f * 9.81f * 0.01f);
-                    _pressure.altitude_m = -(depth > 0.0f ? depth : 0.0f);
-                }
-            }
-        }
+    if (Wire.endTransmission(false) != 0) return false;
+    Wire.requestFrom((uint8_t)MS5803_I2C_ADDR, (uint8_t)3);
+    if (Wire.available() < 3) return false;
+    uint32_t D1 = ((uint32_t)Wire.read() << 16)
+                | ((uint32_t)Wire.read() << 8) | Wire.read();
+
+    /* ---- Conversion D2 (température), OSR 4096 : ~9 ms ---- */
+    _i2cWrite(MS5803_I2C_ADDR, 0x58, 0x00);
+    delay(10);
+    Wire.beginTransmission(MS5803_I2C_ADDR);
+    Wire.write(0x00);
+    if (Wire.endTransmission(false) != 0) return false;
+    Wire.requestFrom((uint8_t)MS5803_I2C_ADDR, (uint8_t)3);
+    if (Wire.available() < 3) return false;
+    uint32_t D2 = ((uint32_t)Wire.read() << 16)
+                | ((uint32_t)Wire.read() << 8) | Wire.read();
+
+    /* ---- Compensation 24 bits (coefficients C1-C6) ---- */
+    int32_t dT   = (int32_t)D2 - ((int32_t)_ms5803_cal[4] << 8);
+    int32_t TEMP = 2000 + ((int64_t)dT * _ms5803_cal[5] >> 23);
+    int64_t OFF  = ((int64_t)_ms5803_cal[1] << 16)
+                 + (((int64_t)_ms5803_cal[3] * dT) >> 7);
+    int64_t SENS = ((int64_t)_ms5803_cal[0] << 15)
+                 + (((int64_t)_ms5803_cal[2] * dT) >> 8);
+    int32_t P = (int32_t)(((int64_t)D1 * SENS >> 21) - OFF) >> 13;
+
+    out.pressure_mbar = P;
+    out.temperature   = TEMP;
+    const float press_mbar = (float)P * 0.1f;   /* dixièmes de mbar → mbar */
+
+    /* ---- Tare surface : capturée à la 1re lecture valide ou sur demande (bouton).
+     *      P_surface = pression atmosphérique ambiante mesurée capteur hors de l'eau. ---- */
+    if (_tareRequested) {
+        _surfaceMbar   = press_mbar;
+        _tareRequested = false;
     }
+    out.surface_mbar = _surfaceMbar;
+
+    /* ---- Détection surface / immersion : ΔP = P_mesurée − P_surface ---- */
+    const float deltaP = press_mbar - _surfaceMbar;
+    if (deltaP > MS5803_IMMERSION_THRESHOLD_MBAR) {
+        /* IMMERGÉ (bathymètre) : profondeur eau douce = ΔP(Pa) / (ρ·g).
+         * ΔP en mbar × 100 → Pa ; /(1000·9.81) → mètres. Altitude figée. */
+        out.immersed   = true;
+        out.depth_m    = (deltaP * 100.0f) / (FRESH_WATER_DENSITY * GRAVITY_MSS);
+        out.baro_alt_m = _lastBaroAlt;              /* figée en immersion */
+        out.altitude_m = -out.depth_m;              /* repère PID : négatif sous la surface */
+    } else {
+        /* HORS DE L'EAU (altimètre) : profondeur nulle, altitude barométrique réelle
+         * via la formule internationale h = 44330·(1 − (P/P0)^0.190284). */
+        out.immersed = false;
+        out.depth_m  = 0.0f;
+        _lastBaroAlt = 44330.0f *
+            (1.0f - powf(press_mbar / SEA_LEVEL_PRESSURE_MBAR, 0.190284f));
+        out.baro_alt_m = _lastBaroAlt;
+        out.altitude_m = 0.0f;                      /* repère PID : à la surface */
+    }
+    return true;
 }
 
 /* =========================================================================
@@ -531,8 +559,8 @@ void SensorDriver::_readMS5803() {
  * ========================================================================= */
 
 void SensorDriver::_zeroMissingSensors() {
-    /* Géré implicitement par _readIMU/_readPressure/_readPower
-     * qui forcent à 0 si le capteur n'est pas SENSOR_CONNECTED. */
+    /* Géré implicitement par _readIMU/_readPower et par la publication sous
+     * mutex dans _taskLoop, qui forcent à 0 si le capteur n'est pas connecté. */
 }
 
 /* =========================================================================
@@ -552,13 +580,36 @@ void SensorDriver::_taskLoop() {
             continue;
         }
 
+        /* ---- Baromètre MS5803 : conversion ADC lente (~20 ms), throttée à 2 Hz
+         *      et exécutée HORS mutex. Les delay() de conversion ne bloquent donc
+         *      plus les autres tâches (contrôle PID, broadcast WebSocket) qui
+         *      attendent _mutex — c'était la cause du gel de l'affichage. ---- */
+        PressureData pressLocal;
+        bool pressUpdated = false;
+        uint32_t now = millis();
+        if (_status.ms5803 == SENSOR_CONNECTED &&
+            (now - _lastMS5803Read >= MS5803_READ_PERIOD_MS)) {
+            _lastMS5803Read = now;
+            pressUpdated = _readMS5803(pressLocal);
+        }
+
+        /* ---- IMU + puissance : lectures rapides, puis publication sous mutex ---- */
         xSemaphoreTake(_mutex, portMAX_DELAY);
-
         _readIMU();
-        _readPressure();
         _readPower();
-
+        if (pressUpdated) {
+            _pressure = pressLocal;                 /* copie rapide des nouvelles valeurs */
+        } else if (_status.ms5803 != SENSOR_CONNECTED) {
+            _pressure.pressure_mbar = 0;            /* baromètre absent → forcer à zéro */
+            _pressure.temperature   = 0;
+            _pressure.altitude_m    = 0.0f;
+            _pressure.surface_mbar  = 0.0f;
+            _pressure.depth_m       = 0.0f;
+            _pressure.baro_alt_m    = 0.0f;
+            _pressure.immersed      = false;
+        }
         xSemaphoreGive(_mutex);
+
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(TASK_SENSORS_PERIOD_MS));
     }
 }

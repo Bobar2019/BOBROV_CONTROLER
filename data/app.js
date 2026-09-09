@@ -398,10 +398,31 @@ function processTelemetry(data) {
     }
 
     if (data.press) {
-        setText('val-mbar',  (data.press.mbar  || 0).toFixed(1) + ' mbar');
-        setText('val-alt',    (data.press.alt   || 0).toFixed(2) + ' m');
-        setText('val-temp',  (data.press.temp  || 0).toFixed(1) + ' °C');
-        updateVSI(data.press.alt || 0);
+        /* Backend MS5803 avec tare surface : statut d'immersion, profondeur eau
+         * douce (m, positive vers le bas) et altitude barométrique réelle (m). */
+        const immersed = !!data.press.immersed;
+        const depthM   = data.press.depth    || 0;
+        const baroAlt  = data.press.baro_alt || 0;
+        setText('val-mbar',    (data.press.mbar    || 0).toFixed(1) + ' mbar');
+        setText('val-surface', (data.press.surface || 0).toFixed(1) + ' mbar');
+        setText('val-temp',    (data.press.temp    || 0).toFixed(1) + ' °C');
+
+        /* Statut d'immersion (bleu = immergé, ambre = hors de l'eau) */
+        const subEl = getEl('val-substate');
+        if (subEl) {
+            const stTxt = immersed ? 'En immersion' : 'Hors de l\'eau';
+            if (subEl.textContent !== stTxt) subEl.textContent = stTxt;
+            subEl.style.color = immersed ? '#29b6f6' : '#ffb300';
+        }
+
+        /* Profondeur : nulle hors de l'eau, calculée en immersion */
+        setText('val-depth', (immersed ? depthM : 0).toFixed(2) + ' m');
+
+        /* Altitude barométrique : réelle hors de l'eau, figée/masquée en immersion */
+        setText('val-alt', immersed ? '— (immersion)' : baroAlt.toFixed(1) + ' m');
+
+        /* Vitesse verticale basée sur la profondeur (0 hors de l'eau) */
+        updateVSI(immersed ? depthM : 0);
     }
 
     if (data.power && Array.isArray(data.power)) {
@@ -1493,45 +1514,69 @@ function drawHeadingWheel(yaw) {
 }
 
 /* =========================================================================
- * VARIOMÈTRE (VSI) — VITESSE VERTICALE EN cm/s
+ * VITESSE VERTICALE (VSI sous-marin) — TAUX DE REMONTÉE / DESCENTE EN cm/s
  * ========================================================================= */
 
 const VSI_MAX_CMS = 100;   /* Pleine échelle : ±100 cm/s */
-let _vsiPrevAlt = null;    /* Altitude précédente (m) */
-let _vsiPrevT   = 0;       /* Horodatage précédent (ms) */
-let _vsiRate    = 0;       /* Vitesse verticale lissée (cm/s) */
+const VSI_MIN_DT_S = 0.4;  /* Fenêtre minimale (s) entre deux calculs de dérivée
+                            * (~période baro 500 ms). Empêche les pics dus aux
+                            * re-broadcasts 20 Hz à profondeur inchangée. */
+const VSI_REST_EPS = 1.0;  /* En dessous (cm/s), l'aiguille est ramenée au repos franc */
+let _vsiPrevDepth = null;  /* Profondeur de la dernière fenêtre de mesure (m) */
+let _vsiPrevT   = 0;       /* Horodatage de la dernière fenêtre de mesure (ms) */
+let _vsiRate    = 0;       /* Vitesse verticale lissée (cm/s) : + = remontée, − = descente */
 
 /**
- * Met à jour le variomètre à partir de l'altitude barométrique télémétrée.
- * Dérivée temporelle lissée par filtre exponentiel (anti-gigue).
- * @param {number} altM — Altitude courante en mètres
+ * Met à jour l'indicateur de vitesse verticale à partir de la profondeur
+ * télémétrée (usage ROV / sous-marin).
+ *
+ * Convention : la profondeur est positive vers le bas. La vitesse affichée suit
+ * la convention « + = remontée, − = descente » (aiguille vers le haut quand le
+ * ROV remonte), cohérente avec le cadran. Dérivée temporelle lissée par filtre
+ * exponentiel (anti-gigue).
+ *
+ * @param {number} depthM — Profondeur courante en mètres (positive vers le bas)
  */
-function updateVSI(altM) {
+function updateVSI(depthM) {
     const t = performance.now();
-    if (_vsiPrevAlt !== null) {
+    /* Baromètre rafraîchi à ~2 Hz côté firmware, mais re-broadcasté à 20 Hz : la
+     * dérivée est recalculée sur une FENÊTRE TEMPORELLE (>= VSI_MIN_DT_S) et non
+     * à chaque changement de valeur. Ainsi, à profondeur stabilisée, Δdepth ≈ 0
+     * sur la fenêtre → la vitesse tend vers 0 et l'aiguille REVIENT AU REPOS
+     * (l'ancien déclenchement « si la valeur a changé » la laissait figée). */
+    if (_vsiPrevDepth === null) {
+        _vsiPrevDepth = depthM;
+        _vsiPrevT = t;
+    } else {
         const dt = (t - _vsiPrevT) / 1000;
-        if (dt > 0.03 && dt < 2.0) {   /* ignore trous et doublons WS */
-            const raw = ((altM - _vsiPrevAlt) / dt) * 100;   /* m/s → cm/s */
-            _vsiRate += (raw - _vsiRate) * 0.25;
+        if (dt >= VSI_MIN_DT_S) {
+            /* d(profondeur)/dt > 0 quand le ROV descend → signe inversé pour
+             * obtenir « + = remontée ». m/s → cm/s. */
+            const raw = -((depthM - _vsiPrevDepth) / dt) * 100;
+            _vsiRate += (raw - _vsiRate) * 0.4;
+            _vsiPrevDepth = depthM;
+            _vsiPrevT = t;
         }
     }
-    _vsiPrevAlt = altM;
-    _vsiPrevT = t;
+
+    /* Repos franc : évite une aiguille résiduelle asymptotique proche de 0 */
+    if (Math.abs(_vsiRate) < VSI_REST_EPS) _vsiRate = 0;
 
     drawVSI(_vsiRate);
-    setText('av-alt', altM.toFixed(2) + ' m');
+    setText('av-alt', depthM.toFixed(2) + ' m');
     const el = getEl('av-vs');
     if (el) {
         const vsTxt = (_vsiRate >= 0 ? '+' : '') + Math.round(_vsiRate) + ' cm/s';
         if (el.textContent !== vsTxt) el.textContent = vsTxt;
+        /* Vert = remontée, ambre = descente */
         el.style.color = (Math.abs(_vsiRate) < 5) ? '' : (_vsiRate > 0 ? '#00e676' : '#ffb300');
     }
 }
 
 /**
- * Dessine un variomètre style aviation : zéro à 9h, montée par le haut,
- * descente par le bas, pleine échelle ±100 cm/s à 3h.
- * @param {number} vsCms — Vitesse verticale en cm/s (+ = montée)
+ * Dessine l'indicateur de vitesse verticale sous-marin : zéro à 9h, remontée
+ * par le haut, descente par le bas, pleine échelle ±100 cm/s à 3h.
+ * @param {number} vsCms — Vitesse verticale en cm/s (+ = remontée, − = descente)
  */
 function drawVSI(vsCms) {
     const c = getCtx('cv-vsi');
@@ -1570,12 +1615,12 @@ function drawVSI(vsCms) {
         }
     }
 
-    /* Signes montée / descente */
-    ctx.font = 'bold 15px monospace';
+    /* Indicateurs remontée / descente (usage sous-marin) */
+    ctx.font = 'bold 13px monospace';
     ctx.fillStyle = '#00e676';
-    ctx.fillText('+', -R * 0.42, -R * 0.5);
+    ctx.fillText('▲', -R * 0.42, -R * 0.5);   /* remontée */
     ctx.fillStyle = '#ffb300';
-    ctx.fillText('-', -R * 0.42, R * 0.5);
+    ctx.fillText('▼', -R * 0.42, R * 0.5);    /* descente */
 
     /* Aiguille (contrepoids court + branche utile) */
     const v = Math.max(-VSI_MAX_CMS, Math.min(VSI_MAX_CMS, vsCms));
@@ -1617,6 +1662,23 @@ function initAviationInstruments() {
     drawHeadingWheel(0);
 }
 
+/**
+ * Initialise le bouton « Tare Surface » : envoie {tare_surface:true} au firmware
+ * pour ré-étalonner la pression de surface P_surface. À utiliser capteur HORS de
+ * l'eau (avant immersion) afin que la profondeur soit mesurée depuis la surface.
+ */
+function initTareButton() {
+    const btn = getEl('btn-tare-surface');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ tare_surface: true }));
+            btn.textContent = 'Tare demandée…';
+            setTimeout(() => { btn.textContent = 'Tare Surface'; }, 1500);
+        }
+    });
+}
+
 /* =========================================================================
  * INITIALISATION
  * ========================================================================= */
@@ -1627,6 +1689,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initPWMGrid();
     initROVSchematic();
     initDryRun();
+    initTareButton();
     initTestBench();
     initWiFi();
     initSettings();

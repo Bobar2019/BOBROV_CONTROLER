@@ -265,22 +265,26 @@
                         </div>
                     </div>
                     <div class="card">
-                        <h3>Pression / Altitude</h3>
+                        <h3>Pression / Profondeur</h3>
                         <div class="press-display">
                             <div class="euler-item"><span class="label">Pression</span><span id="val-mbar" class="value">1013.3 mbar</span></div>
+                            <div class="euler-item"><span class="label">Surface (tare)</span><span id="val-surface" class="value">1013.3 mbar</span></div>
+                            <div class="euler-item"><span class="label">Statut</span><span id="val-substate" class="value">Hors de l'eau</span></div>
+                            <div class="euler-item"><span class="label">Profondeur</span><span id="val-depth" class="value">0.00 m</span></div>
                             <div class="euler-item"><span class="label">Altitude</span><span id="val-alt" class="value">0.00 m</span></div>
                             <div class="euler-item"><span class="label">Température</span><span id="val-temp" class="value">20.5 °C</span></div>
                         </div>
+                        <button id="btn-tare-surface" class="btn btn-primary">Tare Surface</button>
                     </div>
                 </div>
                 <!-- Instruments aviation : VSI + Horizon artificiel + HSI -->
                 <div class="telem-row instruments-row">
                     <div class="card av-card">
-                        <h3>Variomètre (VSI)</h3>
+                        <h3>Vitesse Verticale</h3>
                         <canvas id="cv-vsi" width="260" height="260"></canvas>
                         <div class="av-readout">
-                            <span>VS <b id="av-vs">+0 cm/s</b></span>
-                            <span>ALT <b id="av-alt">0.00 m</b></span>
+                            <span>VZ <b id="av-vs">+0 cm/s</b></span>
+                            <span>PROF <b id="av-alt">0.00 m</b></span>
                         </div>
                     </div>
                     <div class="card av-card">
@@ -416,7 +420,7 @@
                         <label>Kd <input type="number" id="pid-p-kd" step="0.01" value="0.5"></label>
                     </div>
                     <div class="card">
-                        <h3>PID Altitude</h3>
+                        <h3>PID Profondeur</h3>
                         <label>Kp <input type="number" id="pid-d-kp" step="0.01" value="3.0"></label>
                         <label>Ki <input type="number" id="pid-d-ki" step="0.01" value="0.1"></label>
                         <label>Kd <input type="number" id="pid-d-kd" step="0.01" value="1.0"></label>

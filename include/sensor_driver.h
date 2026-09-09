@@ -43,11 +43,15 @@ struct PowerData {
     uint16_t current[3];    ///< Courant en mA pour chaque wattmètre
 };
 
-/** @brief Données de pression et température */
+/** @brief Données de pression, profondeur et altitude (MS5803) */
 struct PressureData {
-    int32_t pressure_mbar;  ///< Pression en dixièmes de mbar
+    int32_t pressure_mbar;  ///< Pression absolue en dixièmes de mbar
     int32_t temperature;    ///< Température en centièmes de °C
-    float   altitude_m;     ///< Altitude/profondeur en mètres (0 = surface, − = profondeur)
+    float   altitude_m;     ///< Repère vertical unifié (m) : 0 hors de l'eau, − = profondeur (utilisé par le PID)
+    float   surface_mbar;   ///< Pression de surface étalonnée (tare, mbar)
+    float   depth_m;        ///< Profondeur eau douce (m, ≥ 0) ; 0 si hors de l'eau
+    float   baro_alt_m;     ///< Altitude barométrique réelle (m) ; figée en immersion
+    bool    immersed;       ///< true si ΔP > seuil d'immersion (capteur sous l'eau)
 };
 
 /**
@@ -107,6 +111,15 @@ public:
     /** @brief Copie thread-safe du statut de détection des capteurs */
     void getSensorStatus(SensorBankStatus& out);
 
+    /**
+     * @brief Demande un nouvel étalonnage de la pression de surface (tare).
+     *
+     * La pression ambiante courante sera mémorisée comme P_surface à la
+     * prochaine lecture MS5803. À effectuer capteur HORS de l'eau. Thread-safe
+     * (simple signal volatile lu par la tâche capteurs).
+     */
+    void requestSurfaceTare();
+
     /* -----------------------------------------------------------------
      * DIAGNOSTIC I2C — SCAN & CONFIGURATION DYNAMIQUE DES BROCHES
      * ----------------------------------------------------------------- */
@@ -162,10 +175,9 @@ private:
 
     /* -- Lecture capteurs réels (HAL routage) -- */
     void _readIMU();
-    void _readPressure();
     void _readPower();
     void _readBNO085();
-    void _readMS5803();
+    bool _readMS5803(PressureData& out);   ///< Conversion ADC + compensation dans `out` ; true si lecture valide
     void _readINA226();
 
     /* -- Zéros en mode réel pour capteurs absents -- */
@@ -173,6 +185,12 @@ private:
 
     /* -- Calibrage MS5803 -- */
     uint16_t _ms5803_cal[6];            ///< Coefficients de calibration C1-C6
+    uint32_t _lastMS5803Read;           ///< Horodatage (ms) dernière lecture MS5803 — throttle 2 Hz
+
+    /* -- Tare surface / détection d'immersion MS5803 -- */
+    float   _surfaceMbar;               ///< Pression de surface étalonnée (tare, mbar)
+    volatile bool _tareRequested;       ///< true = tare à (re)capturer à la prochaine lecture
+    float   _lastBaroAlt;               ///< Dernière altitude barométrique (figée en immersion)
 
     /* -- Tâche FreeRTOS -- */
     static void _taskEntry(void* param);
