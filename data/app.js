@@ -33,6 +33,25 @@ let pwmValues = new Array(16).fill(NEUTRAL_US);
 let ws = null;
 let testUnlocked = false;
 
+/* --- Rendu découplé + caches DOM/Canvas (optimisation perf télémétrie 20 Hz) --- */
+let _pendingTelemetry = null;            /* dernière trame WS reçue, en attente de rendu */
+let _renderQueued = false;               /* un requestAnimationFrame de rendu est-il programmé ? */
+const _domCache = Object.create(null);   /* id → élément (évite getElementById répétés) */
+const _ctxCache = Object.create(null);   /* id canvas → { cv, ctx } (évite getContext répétés) */
+
+/* Renvoie un élément par son id, mis en cache (ne met pas en cache les absents). */
+function getEl(id) {
+    let el = _domCache[id];
+    if (!el) { el = document.getElementById(id); if (el) _domCache[id] = el; }
+    return el;
+}
+/* Renvoie { cv, ctx } d'un canvas par son id, mis en cache. */
+function getCtx(id) {
+    let c = _ctxCache[id];
+    if (!c) { const cv = getEl(id); if (!cv) return null; c = { cv: cv, ctx: cv.getContext('2d') }; _ctxCache[id] = c; }
+    return c;
+}
+
 /* =========================================================================
  * NAVIGATION PAR TUILES
  * ========================================================================= */
@@ -283,16 +302,31 @@ function connectWebSocket() {
     ws.onerror = () => { ws.close(); };
 
     ws.onmessage = (event) => {
-        try { processTelemetry(JSON.parse(event.data)); }
-        catch (e) { console.warn('[WS] JSON invalide:', e); }
+        /* Réception découplée du rendu : on stocke la trame, le rendu est fait une
+         * seule fois par frame (requestAnimationFrame). Évite l'accumulation des
+         * trames et les "forced reflow" quand la télémétrie arrive à 20 Hz. */
+        try { _pendingTelemetry = JSON.parse(event.data); }
+        catch (e) { console.warn('[WS] JSON invalide:', e); return; }
+        if (!_renderQueued) {
+            _renderQueued = true;
+            requestAnimationFrame(_flushTelemetry);
+        }
     };
+}
+
+/* Rend la dernière trame reçue (appelé par requestAnimationFrame, 1×/frame max). */
+function _flushTelemetry() {
+    _renderQueued = false;
+    const data = _pendingTelemetry;
+    _pendingTelemetry = null;
+    if (data) processTelemetry(data);
 }
 
 function processTelemetry(data) {
     /* Informations Wi-Fi temps réel (STA + AP) */
     if (data.wifi_info) {
         const w = data.wifi_info;
-        const staEl = document.getElementById('wifi-sta-status');
+        const staEl = getEl('wifi-sta-status');
         if (staEl) {
             if (w.sta_connected) {
                 staEl.textContent = 'Connecté';
@@ -306,7 +340,7 @@ function processTelemetry(data) {
         setText('wifi-sta-ip',   w.sta_ip || '—');
         setText('wifi-sta-gw',   w.sta_gateway || '—');
         setText('wifi-sta-mask', w.sta_mask || '—');
-        const rssiEl = document.getElementById('wifi-sta-rssi');
+        const rssiEl = getEl('wifi-sta-rssi');
         if (rssiEl) {
             if (w.sta_connected) {
                 const rssi = w.sta_rssi || 0;
@@ -324,16 +358,20 @@ function processTelemetry(data) {
         setText('wifi-ap-ip', w.ap_ip || '—');
         setText('wifi-ap-clients', w.ap_clients !== undefined ? String(w.ap_clients) : '—');
         /* Mettre à jour aussi l'IP dans la barre de statut Wi-Fi */
-        const ipEl = document.getElementById('wifi-ip');
+        const ipEl = getEl('wifi-ip');
         if (ipEl) {
             ipEl.textContent = w.sta_connected ? (w.sta_ip || '—') : (w.ap_ip || '—');
         }
     }
 
     if (data.wdg !== undefined) {
-        const el = document.getElementById('badge-wdg');
-        el.textContent = data.wdg ? 'WDG: ALERTE' : 'WDG: OK';
-        el.className = data.wdg ? 'badge badge-off' : 'badge badge-ok';
+        const el = getEl('badge-wdg');
+        if (el) {
+            const txt = data.wdg ? 'WDG: ALERTE' : 'WDG: OK';
+            const cls = data.wdg ? 'badge badge-off' : 'badge badge-ok';
+            if (el.textContent !== txt) el.textContent = txt;
+            if (el.className !== cls) el.className = cls;
+        }
     }
 
     if (data.pwm && Array.isArray(data.pwm)) {
@@ -385,7 +423,7 @@ function processTelemetry(data) {
 
     /* Statut liaison RPi5 (badge header + page Câblage) */
     if (data.rpi_link) {
-        const el = document.getElementById('badge-rpi');
+        const el = getEl('badge-rpi');
         if (el) {
             const label = data.rpi_link.interface || '--';
             const connected = data.rpi_link.connected;
@@ -414,12 +452,18 @@ function processTelemetry(data) {
  * Met à jour l'indicateur LED d'un capteur.
  * 0 = déconnecté (rouge), 1 = connecté (vert), 2 = émulé (jaune)
  */
+const _sensorLeds = Object.create(null);   /* id → élément .led (cache) */
 function updateSensorBadge(id, status) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const led = el.querySelector('.led');
-    if (!led) return;
-    led.className = 'led ' + (status === 1 ? 'led-ok' : status === 2 ? 'led-emu' : 'led-fail');
+    let led = _sensorLeds[id];
+    if (!led) {
+        const el = getEl(id);
+        if (!el) return;
+        led = el.querySelector('.led');
+        if (!led) return;
+        _sensorLeds[id] = led;
+    }
+    const cls = 'led ' + (status === 1 ? 'led-ok' : status === 2 ? 'led-emu' : 'led-fail');
+    if (led.className !== cls) led.className = cls;
 }
 
 /* =========================================================================
@@ -430,6 +474,8 @@ function initPWMGrid() {
     const grid = document.querySelector('.pwm-grid');
     if (!grid) return;
     grid.innerHTML = '';
+    _pwmEls.length = 0;
+    _pwmLast.fill(null);
 
     for (let i = 0; i < 16; i++) {
         const ch = document.createElement('div');
@@ -445,15 +491,21 @@ function initPWMGrid() {
                 <div class="pwm-bar-fill" id="pwm-fill-${i}"></div>
             </div>`;
         grid.appendChild(ch);
+        _pwmEls[i] = { val: ch.querySelector('.ch-value'), fill: ch.querySelector('.pwm-bar-fill') };
     }
 
     for (let i = 0; i < 16; i++) updatePWMBar(i, NEUTRAL_US);
 }
 
+const _pwmEls = [];                        /* Références DOM des 16 canaux (val, fill) */
+const _pwmLast = new Array(16).fill(null); /* Dernière valeur rendue par canal (anti-réécriture) */
+
 function updatePWMBar(ch, us) {
-    const valEl = document.getElementById(`pwm-val-${ch}`);
-    const fillEl = document.getElementById(`pwm-fill-${ch}`);
-    if (!valEl || !fillEl) return;
+    const refs = _pwmEls[ch];
+    if (!refs || !refs.val || !refs.fill) return;
+    if (_pwmLast[ch] === us) return;       /* inchangé → aucune écriture DOM */
+    _pwmLast[ch] = us;
+    const valEl = refs.val, fillEl = refs.fill;
     valEl.textContent = us + ' µs';
 
     const isMotor = (CH_TYPES[ch] === 'motor');
@@ -620,6 +672,8 @@ function initROVSchematic() {
  *
  * @param {number[]} values Valeurs PWM des 16 canaux en microsecondes.
  */
+const _rovLast = new Array(16).fill(null); /* Dernière valeur rendue par canal (schéma ROV) */
+
 function updateROVSchematic(values) {
     for (let i = 0; i < ROV_THRUSTERS.length; i++) {
         const cfg = ROV_THRUSTERS[i];
@@ -627,6 +681,8 @@ function updateROVSchematic(values) {
         if (!el || !values || values[cfg.ch] === undefined) continue;
 
         const us = values[cfg.ch];
+        if (_rovLast[cfg.ch] === us) continue;   /* inchangé → pas de réécriture SVG */
+        _rovLast[cfg.ch] = us;
         el.val.textContent = us + ' µs';
 
         /* Déviation normalisée [−1..+1] autour du neutre 1500 µs */
@@ -680,11 +736,14 @@ function updateROVSchematic(values) {
  * en fonction du mode série actif (USB-CDC ou UART GPIO).
  * @param {string} interfaceLabel Label du mode (ex: "USB-CDC", "UART (GPIO 1/2)")
  */
+let _lastWiring = null;
 function updateWiringMode(interfaceLabel) {
-    const modeEl = document.getElementById('wiring-comm-mode');
-    const usbBlock = document.getElementById('wiring-usb');
-    const uartBlock = document.getElementById('wiring-uart');
+    if (_lastWiring === interfaceLabel) return;   /* mode inchangé → pas de réécriture */
+    const modeEl = getEl('wiring-comm-mode');
+    const usbBlock = getEl('wiring-usb');
+    const uartBlock = getEl('wiring-uart');
     if (!usbBlock || !uartBlock) return;
+    _lastWiring = interfaceLabel;
 
     const isUart = (interfaceLabel && interfaceLabel.indexOf('UART') !== -1);
 
@@ -727,12 +786,15 @@ function initDryRun() {
  * Met à jour l'affichage UI du mode Dry-Run (switch, texte, badge).
  * @param {boolean} enabled true = sorties actives, false = Dry-Run.
  */
+let _lastDryRun = null;
 function updateDryRunUI(enabled) {
-    const chk = document.getElementById('chk-outputs-enabled');
-    const stateText = document.getElementById('dryrun-state-text');
-    const badge = document.getElementById('dryrun-badge');
+    const chk = getEl('chk-outputs-enabled');
+    const stateText = getEl('dryrun-state-text');
+    const badge = getEl('dryrun-badge');
 
     if (chk) chk.checked = enabled;
+    if (_lastDryRun === enabled) return;   /* état inchangé → badges déjà à jour */
+    _lastDryRun = enabled;
 
     if (stateText) {
         if (enabled) {
@@ -765,14 +827,15 @@ const MODE_LABELS = ['PASSIF', 'AUTO ROULIS ET TANGAGE', 'AUTO FULL'];
  * Met à jour les boutons de mode pour refléter le mode actif.
  * @param {number} activeMode — 0=PASSIF, 1=AUTO_ROULIS (roulis+tangage), 2=AUTO_FULL
  */
+let _modeBtns = null;
+let _lastFlightMode = null;
 function updateFlightMode(activeMode) {
-    document.querySelectorAll('.mode-btn').forEach(btn => {
+    if (_lastFlightMode === activeMode) return;   /* mode inchangé → pas de requête DOM */
+    _lastFlightMode = activeMode;
+    if (!_modeBtns) _modeBtns = document.querySelectorAll('.mode-btn');
+    _modeBtns.forEach(btn => {
         const m = parseInt(btn.dataset.mode, 10);
-        if (m === activeMode) {
-            btn.classList.add('active');
-        } else {
-            btn.classList.remove('active');
-        }
+        btn.classList.toggle('active', m === activeMode);
     });
 }
 
@@ -780,11 +843,14 @@ function updateFlightMode(activeMode) {
  * Met à jour le badge du maître actif.
  * @param {boolean} isRPi — true si le RPi 5 est maître
  */
+let _lastMaster = null;
 function updateMasterBadge(isRPi) {
-    const icon = document.getElementById('master-icon');
-    const label = document.getElementById('master-label');
-    const badge = document.getElementById('master-badge');
+    const icon = getEl('master-icon');
+    const label = getEl('master-label');
+    const badge = getEl('master-badge');
     if (!icon || !label || !badge) return;
+    if (_lastMaster === isRPi) return;   /* inchangé */
+    _lastMaster = isRPi;
 
     if (isRPi) {
         icon.className = 'master-icon master-rpi';
@@ -1127,7 +1193,7 @@ async function runI2CScan() {
  * UTILITAIRES
  * ========================================================================= */
 
-function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+function setText(id, text) { const el = getEl(id); if (el && el.textContent !== text) el.textContent = text; }
 
 function escapeHtml(str) {
     const div = document.createElement('div');
@@ -1156,14 +1222,31 @@ function _avLerpLoop() {
 
     drawArtificialHorizon(_avSmooth.roll, _avSmooth.pitch);
     drawHeadingWheel(_avSmooth.yaw);
-    _avSmooth._raf = requestAnimationFrame(_avLerpLoop);
+
+    /* Ne replanifier que tant que la convergence n'est pas atteinte : évite de
+     * redessiner les canvas 60×/s quand l'attitude est stable (perf). */
+    const settled =
+        Math.abs(_avSmooth._tRoll  - _avSmooth.roll)  < 0.05 &&
+        Math.abs(_avSmooth._tPitch - _avSmooth.pitch) < 0.05 &&
+        Math.abs(dy) < 0.05;
+    _avSmooth._raf = settled ? 0 : requestAnimationFrame(_avLerpLoop);
 }
 
 function avSetTargets(roll, pitch, yaw) {
     _avSmooth._tRoll  = roll;
     _avSmooth._tPitch = pitch;
     _avSmooth._tYaw   = yaw;
-    if (!_avSmooth._raf) _avLerpLoop();
+    if (_avSmooth._raf) return;   /* boucle déjà active : elle lira les nouvelles cibles */
+    /* Boucle arrêtée (convergée) : ne relancer que si les cibles ont vraiment bougé,
+     * sinon on redessinerait les canvas pour rien à chaque trame. */
+    let dy = yaw - _avSmooth.yaw;
+    if (dy > 180) dy -= 360;
+    if (dy < -180) dy += 360;
+    if (Math.abs(roll  - _avSmooth.roll)  > 0.05 ||
+        Math.abs(pitch - _avSmooth.pitch) > 0.05 ||
+        Math.abs(dy) > 0.05) {
+        _avLerpLoop();
+    }
 }
 
 /**
@@ -1172,9 +1255,9 @@ function avSetTargets(roll, pitch, yaw) {
  * @param {number} pitch — Tangage en degrés (+nez haut / -nez bas)
  */
 function drawArtificialHorizon(roll, pitch) {
-    const cv = document.getElementById('cv-horizon');
-    if (!cv) return;
-    const ctx = cv.getContext('2d');
+    const c = getCtx('cv-horizon');
+    if (!c) return;
+    const cv = c.cv, ctx = c.ctx;
     const W = cv.width, H = cv.height;
     const cx = W / 2, cy = H / 2, R = Math.min(cx, cy) - 6;
 
@@ -1292,9 +1375,9 @@ function drawArtificialHorizon(roll, pitch) {
  * @param {number} yaw — Cap en degrés [0–360)
  */
 function drawHeadingWheel(yaw) {
-    const cv = document.getElementById('cv-hsi');
-    if (!cv) return;
-    const ctx = cv.getContext('2d');
+    const c = getCtx('cv-hsi');
+    if (!c) return;
+    const cv = c.cv, ctx = c.ctx;
     const W = cv.width, H = cv.height;
     const cx = W / 2, cy = H / 2, R = Math.min(cx, cy) - 6;
 
@@ -1437,9 +1520,10 @@ function updateVSI(altM) {
 
     drawVSI(_vsiRate);
     setText('av-alt', altM.toFixed(2) + ' m');
-    const el = document.getElementById('av-vs');
+    const el = getEl('av-vs');
     if (el) {
-        el.textContent = (_vsiRate >= 0 ? '+' : '') + Math.round(_vsiRate) + ' cm/s';
+        const vsTxt = (_vsiRate >= 0 ? '+' : '') + Math.round(_vsiRate) + ' cm/s';
+        if (el.textContent !== vsTxt) el.textContent = vsTxt;
         el.style.color = (Math.abs(_vsiRate) < 5) ? '' : (_vsiRate > 0 ? '#00e676' : '#ffb300');
     }
 }
@@ -1450,9 +1534,9 @@ function updateVSI(altM) {
  * @param {number} vsCms — Vitesse verticale en cm/s (+ = montée)
  */
 function drawVSI(vsCms) {
-    const cv = document.getElementById('cv-vsi');
-    if (!cv) return;
-    const ctx = cv.getContext('2d');
+    const c = getCtx('cv-vsi');
+    if (!c) return;
+    const cv = c.cv, ctx = c.ctx;
     const W = cv.width, H = cv.height;
     const cx = W / 2, cy = H / 2, R = Math.min(cx, cy) - 6;
 
