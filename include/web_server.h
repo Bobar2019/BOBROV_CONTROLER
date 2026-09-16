@@ -55,6 +55,8 @@ private:
     AsyncWebSocket  _ws;            ///< Serveur WebSocket
     DNSServer       _dns;           ///< Serveur DNS captif
     bool            _staConnected;  ///< État de connexion STA
+    bool            _otaRejected;   ///< Upload OTA courant rejeté (fichier incompatible avec la cible)
+    bool            _otaWasFS;      ///< Upload OTA courant ciblant la partition LittleFS
 
     /* -- Configuration des endpoints -- */
     void _setupRoutes();            ///< Endpoints HTTP et fichiers statiques
@@ -71,6 +73,12 @@ private:
     void _handleI2CScan(AsyncWebServerRequest* request);
     void _handleI2CConfigGet(AsyncWebServerRequest* request);
     void _handleI2CConfigPost(AsyncWebServerRequest* request);
+
+    /* -- Mise à jour OTA (firmware + fichiers Web) -- */
+    void _handleSystemStatus(AsyncWebServerRequest* request);
+    void _handleOtaBody(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                        size_t index, size_t total, int partitionType);
+    void _handleOtaDone(AsyncWebServerRequest* request);
 
     /* -- Handler WebSocket -- */
     void _onWSEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,

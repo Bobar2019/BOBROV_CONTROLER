@@ -112,8 +112,8 @@ typedef struct {
     uint8_t  header2;                       ///< 0xAA
     uint8_t  type;                          ///< 0x02 (télémétrie)
     uint8_t  status;                        ///< Bits de statut (voir STATUS_BIT_*)
-    int16_t  quat[4];                       ///< Quaternions W,X,Y,Z (×10000)
-    int16_t  gyro[3];                       ///< Gyroscope X,Y,Z (×100, °/s)
+    int16_t  quat[4];                       ///< Quaternions W,X,Y,Z (×10000) — repère VÉHICULE (remappage montage BNO085_MOUNT_YAW_DEG à la source)
+    int16_t  gyro[3];                       ///< Gyroscope X,Y,Z (×100, °/s) — repère VÉHICULE (avant/droite/bas, comme le quaternion)
     int32_t  pressure;                      ///< Pression en 0.1 mbar
     int32_t  temperature;                   ///< Température en 0.01 °C
     uint16_t power[6];                      ///< [V1,I1, V2,I2, V3,I3] en mV/mA

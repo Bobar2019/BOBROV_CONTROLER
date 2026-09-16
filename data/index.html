@@ -254,15 +254,29 @@
                         <div class="sensor-badge" id="sens-ina2"><span class="led led-off"></span>INA226 #3</div>
                         <div class="sensor-badge" id="sens-pca"><span class="led led-off"></span>PCA9685</div>
                     </div>
+                    <div id="sens-bno085-err" style="margin-top:6px;min-height:14px;font-size:12px;color:#ffb300;"></div>
                 </div>
                 <div class="telem-row">
                     <div class="card">
-                        <h3>Attitude (IMU)</h3>
-                        <div class="euler-display">
-                            <div class="euler-item"><span class="label">Roll</span><span id="val-roll" class="value">0.0°</span></div>
-                            <div class="euler-item"><span class="label">Pitch</span><span id="val-pitch" class="value">0.0°</span></div>
-                            <div class="euler-item"><span class="label">Yaw</span><span id="val-yaw" class="value">0.0°</span></div>
+                        <h3>ROV 3D — Attitude (IMU / Cap)</h3>
+                        <!-- Visualiseur 3D : bob_rov_3D.glb animé par l'IMU (three.js
+                             local /vendor/ — aucun CDN : le ROV sert d'AP sans Internet).
+                             Glisser = orbite, molette = zoom, double-clic = vue initiale. -->
+                        <div id="rov-3d-view" class="rov-3d-view">
+                            <div id="rov-3d-status" class="rov-3d-status"></div>
                         </div>
+                        <div class="av-readout rov-3d-readout">
+                            <span>ROLL <b id="val-roll">0.0°</b></span>
+                            <span>PITCH <b id="val-pitch">0.0°</b></span>
+                            <span>CAP <b id="val-yaw">0.0°</b></span>
+                            <label class="rov-3d-wire-toggle"><input type="checkbox" id="chk-rov-wire"> Filaire</label>
+                            <label class="rov-3d-wire-toggle rov-3d-green-toggle"><input type="checkbox" id="chk-rov-green"> Vert</label>
+                        </div>
+                        <div class="rov-3d-north-row">
+                            <button id="btn-tare-north" class="btn btn-primary" title="ROV immobile, nez pointé vers le Nord réel (boussole ou repère connu) : le cap passe à 0°. Avec le magnétomètre actif (Rotation Vector), la tare corrige l'écart résiduel (déclinaison locale, léger biais) — une seule fois suffit. En secours relatif (magnéto indisponible), elle devient la référence obligatoire après chaque redémarrage. De préférence en mode PASSIF.">Régler Nord</button>
+                            <span id="north-offset" class="rov-3d-north-offset">offset +0.0°</span>
+                        </div>
+                        <div id="cap-source" class="rov-3d-cap-source">CAP : —</div>
                     </div>
                     <div class="card">
                         <h3>Pression / Profondeur</h3>
@@ -366,24 +380,41 @@
                     <button id="btn-save-comm" class="btn btn-primary">Appliquer la liaison série</button>
                 </div>
 
-                <!-- Configuration Broches I2C -->
+                <!-- Configuration Broches I2C (bus n°1) -->
                 <div class="card">
-                    <h3>Configuration Broches I2C</h3>
-                    <p class="card-hint">Broches SDA/SCL actuelles : <strong id="i2c-current-pins">—</strong></p>
+                    <h3>Configuration Bus I2C n°1</h3>
+                    <p class="card-hint">Bus n°1 — BNO085 + INA226 ×3. Broches SDA/SCL actuelles : <strong id="i2c-current-pins">—</strong></p>
                     <div class="settings-grid">
-                        <label>SDA (GPIO)
+                        <label>SDA bus n°1 (GPIO)
                             <input type="number" id="i2c-sda-pin" min="0" max="48" value="10">
                         </label>
-                        <label>SCL (GPIO)
+                        <label>SCL bus n°1 (GPIO)
                             <input type="number" id="i2c-scl-pin" min="0" max="48" value="11">
                         </label>
                     </div>
-                    <button id="btn-save-i2c-pins" class="btn btn-primary">Sauvegarder &amp; réinitialiser I2C</button>
+                    <button id="btn-save-i2c-pins" class="btn btn-primary">Sauvegarder &amp; redémarrer</button>
+                    <p class="card-hint">Sauvegarde NVS puis redémarrage du contrôleur après 3 s — broches appliquées au démarrage.</p>
                 </div>
-                <!-- Scanner I2C -->
+
+                <!-- Configuration Broches I2C n°2 (MS5837 + PCA9685) -->
+                <div class="card">
+                    <h3>Configuration Bus I2C n°2</h3>
+                    <p class="card-hint">Bus n°2 — MS5837 + PCA9685. Broches SDA/SCL actuelles : <strong id="i2c2-current-pins">—</strong></p>
+                    <div class="settings-grid">
+                        <label>SDA bus n°2 (GPIO)
+                            <input type="number" id="i2c2-sda-pin" min="0" max="48" value="6">
+                        </label>
+                        <label>SCL bus n°2 (GPIO)
+                            <input type="number" id="i2c2-scl-pin" min="0" max="48" value="7">
+                        </label>
+                    </div>
+                    <button id="btn-save-i2c2-pins" class="btn btn-primary">Sauvegarder &amp; redémarrer</button>
+                    <p class="card-hint">Sauvegarde NVS puis redémarrage du contrôleur après 3 s — broches appliquées au démarrage (bus partagé avec les sorties PWM).</p>
+                </div>
+                <!-- Scanner I2C (deux bus) -->
                 <div class="card">
                     <h3>Scanner I2C</h3>
-                    <p class="card-hint">Scan complet du bus I2C (adresses 0x01 à 0x7F)</p>
+                    <p class="card-hint">Scan complet des deux bus I2C (adresses 0x01 à 0x7F) — n°1 : BNO085 + INA226, n°2 : MS5837 + PCA9685</p>
                     <button id="btn-i2c-scan" class="btn btn-primary">
                         <span id="i2c-scan-spinner" class="btn-spinner" style="display:none"></span>
                         Lancer le scan I2C
@@ -394,6 +425,7 @@
                                 <tr>
                                     <th>Adresse (Hex)</th>
                                     <th>Adresse (Dec)</th>
+                                    <th>Bus</th>
                                     <th>Statut</th>
                                     <th>Périphérique détecté</th>
                                 </tr>
@@ -402,7 +434,28 @@
                         </table>
                     </div>
                     <div id="i2c-scan-empty" class="i2c-scan-empty" style="display:none">
-                        Aucun périphérique détecté sur le bus I2C. Vérifiez le câblage SDA/SCL.
+                        Aucun périphérique détecté sur les deux bus I2C. Vérifiez le câblage : bus n°1 (SDA=GPIO 10, SCL=GPIO 11), bus n°2 (SDA=GPIO 6, SCL=GPIO 7).
+                    </div>
+                </div>
+                <!-- Mise à jour OTA (micrologiciel + fichiers Web) -->
+                <div class="card">
+                    <h3>Mise à jour OTA</h3>
+                    <p class="card-hint">Téléversement sans câble USB — propulsion neutralisée pendant l'écriture, redémarrage automatique à la fin.</p>
+                    <div class="settings-grid">
+                        <label>Cible
+                            <select id="ota-target">
+                                <option value="firmware">Micrologiciel (firmware.bin)</option>
+                                <option value="filesystem">Fichiers Web (littlefs.bin)</option>
+                            </select>
+                        </label>
+                        <label class="ota-file-row">Fichier image (.bin)
+                            <input type="file" id="ota-file" accept=".bin">
+                        </label>
+                    </div>
+                    <button id="btn-ota-upload" class="btn btn-primary">Téléverser &amp; redémarrer</button>
+                    <div class="ota-paths">
+                        <div><strong>Firmware</strong> — <code>pio run</code> → <code>.pio/build/esp32-s3-devkitc-1/firmware.bin</code></div>
+                        <div><strong>Fichiers Web</strong> — <code>pio run -t buildfs</code> → <code>.pio/build/esp32-s3-devkitc-1/littlefs.bin</code></div>
                     </div>
                 </div>
                 <!-- PID -->
@@ -506,30 +559,67 @@
                     </div>
                 </div>
 
-                <!-- Bloc 2 : Bus I2C & Périphériques -->
+                <!-- Bloc 2 : Bus I2C & Périphériques (deux bus matériels) -->
                 <div class="card">
                     <h3>Bus I2C &amp; Périphériques</h3>
+                    <p class="card-hint">Deux bus I2C matériels indépendants : le MS5837 perturbe les lectures SHTP du
+                        BNO085 lorsqu'ils partagent le même bus — d'où la séparation physique.
+                        Chaque bus doit avoir ses propres résistances de pull-up (4,7 kΩ vers 3V3).</p>
+
+                    <h4 id="wiring-bus1-title">Bus n°1 — Wire (GPIO 10 / GPIO 11) : BNO085 + INA226 ×3</h4>
+                    <div class="wiring-diagram">
+                        <pre class="wiring-ascii" id="wiring-diagram-bus1">
+ GPIO 10 (SDA) ──┬─────────┬─────────┬─────────┬───[4,7 kΩ]── 3V3
+                 │         │         │         │
+              ┌──┴───┐  ┌──┴───┐  ┌──┴───┐  ┌──┴───┐
+              │BNO085│  │INA226│  │INA226│  │INA226│
+              │ 0x4A │  │ 0x41 │  │ 0x44 │  │ 0x45 │
+              └──┬───┘  └──┬───┘  └──┬───┘  └──┬───┘
+                 │         │         │         │
+ GPIO 11 (SCL) ──┴─────────┴─────────┴─────────┴───[4,7 kΩ]── 3V3
+
+  3V3 ──► VCC des 4 modules        GND ──► GND des 4 modules
+                        </pre>
+                    </div>
+
+                    <h4 id="wiring-bus2-title">Bus n°2 — Wire1 (GPIO 6 / GPIO 7) : MS5837 + PCA9685</h4>
+                    <div class="wiring-diagram">
+                        <pre class="wiring-ascii" id="wiring-diagram-bus2">
+ GPIO 6 (SDA) ──┬──────────┬───[4,7 kΩ]── 3V3
+                │          │
+            ┌───┴───┐  ┌───┴───┐
+            │ MS5837│  │PCA9685│
+            │  0x76 │  │  0x40 │
+            └───┬───┘  └───┬───┘
+                │          │
+ GPIO 7 (SCL) ──┴──────────┴───[4,7 kΩ]── 3V3
+
+  3V3 ──► VCC des 2 modules        GND ──► GND des 2 modules
+                        </pre>
+                    </div>
 
                     <table class="wiring-table wiring-table-pins">
                         <thead><tr><th>Signal</th><th>Broche ESP32-S3</th><th>Description</th></tr></thead>
                         <tbody>
-                            <tr><td class="pin-sda">SDA</td><td>GPIO 10</td><td>Données I2C (tous périphériques)</td></tr>
-                            <tr><td class="pin-scl">SCL</td><td>GPIO 11</td><td>Horloge I2C (tous périphériques)</td></tr>
+                            <tr><td class="pin-sda">SDA (bus n°1)</td><td id="pin-b1-sda">GPIO 10</td><td>Données I2C — BNO085 + INA226 ×3</td></tr>
+                            <tr><td class="pin-scl">SCL (bus n°1)</td><td id="pin-b1-scl">GPIO 11</td><td>Horloge I2C — BNO085 + INA226 ×3</td></tr>
+                            <tr><td class="pin-sda">SDA (bus n°2)</td><td id="pin-b2-sda">GPIO 6</td><td>Données I2C — MS5837 + PCA9685</td></tr>
+                            <tr><td class="pin-scl">SCL (bus n°2)</td><td id="pin-b2-scl">GPIO 7</td><td>Horloge I2C — MS5837 + PCA9685</td></tr>
                             <tr><td class="pin-3v3">3V3</td><td>3V3</td><td>Alimentation logique capteurs</td></tr>
                             <tr><td class="pin-gnd">GND</td><td>GND</td><td>Masse commune</td></tr>
                         </tbody>
                     </table>
 
-                    <h4>Modules connectés sur le bus I2C</h4>
+                    <h4>Modules connectés sur les bus I2C</h4>
                     <table class="wiring-table wiring-table-i2c">
-                        <thead><tr><th>Module</th><th>Adresse I2C</th><th>Fonction</th><th>Remarque</th></tr></thead>
+                        <thead><tr><th>Module</th><th>Bus I2C</th><th>Adresse I2C</th><th>Fonction</th><th>Remarque</th></tr></thead>
                         <tbody>
-                            <tr><td>BNO085</td><td>0x4A</td><td>IMU 9-DOF (fusion inertielle)</td><td>Quaternions natifs</td></tr>
-                            <tr><td>MS5803 / MS5837</td><td>0x76</td><td>Pression / Profondeur</td><td>Résolution 0.01 mbar</td></tr>
-                            <tr><td>INA226 #1</td><td>0x41</td><td>Wattmètre RPi (V + I)</td><td>Tension et courant carte RPi</td></tr>
-                            <tr><td>INA226 #2</td><td>0x44</td><td>Wattmètre Auxiliaire</td><td>Éclairage, capteurs, etc.</td></tr>
-                            <tr><td>INA226 #3</td><td>0x45</td><td>Wattmètre Propulsion</td><td>Courant moteurs + ESC</td></tr>
-                            <tr><td>PCA9685</td><td>0x40</td><td>Contrôleur PWM 16 canaux</td><td>50 Hz, ESC/Servos/Gradateurs</td></tr>
+                            <tr><td>BNO085</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x4A</td><td>IMU 9-DOF (fusion inertielle)</td><td>Quaternions natifs — bus dédié</td></tr>
+                            <tr><td>INA226 #1</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x41</td><td>Wattmètre RPi (V + I)</td><td>Tension et courant carte RPi</td></tr>
+                            <tr><td>INA226 #2</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x44</td><td>Wattmètre Auxiliaire</td><td>Éclairage, capteurs, etc.</td></tr>
+                            <tr><td>INA226 #3</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x45</td><td>Wattmètre Propulsion</td><td>Courant moteurs + ESC</td></tr>
+                            <tr><td>MS5803 / MS5837</td><td class="mod-bus2">n°2 (GPIO 6/7)</td><td>0x76</td><td>Pression / Profondeur</td><td>Résolution 0.01 mbar — séparé du BNO085 (incompatibilité bus)</td></tr>
+                            <tr><td>PCA9685</td><td class="mod-bus2">n°2 (GPIO 6/7)</td><td>0x40</td><td>Contrôleur PWM 16 canaux</td><td>50 Hz, ESC/Servos/Gradateurs</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -542,6 +632,7 @@
         <span>BOB-CONTROL v1.0.0 — ESP32-S3 / FreeRTOS</span>
     </footer>
 
+    <script src="/vendor/three.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

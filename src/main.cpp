@@ -306,18 +306,10 @@ void setup() {
     g_mutexConfig = xSemaphoreCreateMutex();
 
     /* ---- 4. Initialisation des capteurs I2C ---- */
-    /* Charger les broches I2C depuis NVS (si configurées) */
-    {
-        Preferences iprefs;
-        iprefs.begin("config", true);
-        if (iprefs.isKey("i2c_sda") && iprefs.isKey("i2c_scl")) {
-            uint8_t sda = iprefs.getUChar("i2c_sda", I2C_SDA_PIN);
-            uint8_t scl = iprefs.getUChar("i2c_scl", I2C_SCL_PIN);
-            g_sensors.setCurrentPins(sda, scl);
-            Serial.println("[MAIN] Broches I2C NVS : SDA=" + String(sda) + ", SCL=" + String(scl));
-        }
-        iprefs.end();
-    }
+    /* Les broches des DEUX bus (clés NVS i2c_sda/i2c_scl et i2c2_sda/i2c2_scl,
+     * défauts GPIO 10/11 et 6/7) sont chargées par SensorDriver::begin() —
+     * source unique, qui journalise et configure Wire (bus n°1) et Wire1
+     * (bus n°2) d'un seul endroit. */
     g_sensors.begin();
 
     /* ---- 5. Initialisation du contrôleur PWM PCA9685 ---- */

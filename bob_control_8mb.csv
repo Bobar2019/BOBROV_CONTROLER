@@ -1,0 +1,18 @@
+# BOB-CONTROL — table de partitions 8 Mo personnalisée
+#
+# Dérivée de default_8MB.csv : partitions applicatives OTA réduites de 3,3 Mo à
+# 2,5 Mo chacune (firmware actuel ~1,2 Mo — marge x2) au profit de LittleFS,
+# étendu de 1,5 Mo à ~2,9 Mo pour accueillir le modele 3D (data/3D/*.glb).
+# La tete de la flash est inchangee (nvs/otadata aux memes offsets).
+#
+# ATTENTION : toute modification de CE fichier impose de reflasher par USB :
+#   pio run -t erase && pio run -t upload && pio run -t uploadfs
+# (la table de partitions a 0x8000 ne peut PAS etre ecrite par OTA).
+#
+# Name,   Type, SubType, Offset,  Size,    Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x280000,
+app1,     app,  ota_1,   0x290000,0x280000,
+spiffs,   data, spiffs,  0x510000,0x2E0000,
+coredump, data, coredump,0x7F0000,0x10000,

@@ -13,7 +13,7 @@
 **BOB-CONTROL** est le micrologiciel temps réel dédié à la gestion basse couche du sous-marin **BOB-ROV**. Embarqué sur un **ESP32-S3**, il isole les fonctions critiques de pilotage matériel et d'acquisition de données du système d'exploitation hôte (Raspberry Pi 5).
 
 Il remplit un triple rôle :
-1. **Acquisition & Fusion Capteurs :** Lecture haute fréquence du bus I2C (centrale inertielle BNO085, pression/profondeur MS5803/MS5837, wattmètres INA226).
+1. **Acquisition & Fusion Capteurs :** Lecture haute fréquence des deux bus I2C matériels (centrale inertielle BNO085 et wattmètres INA226 sur le bus n°1 ; pression/profondeur MS5837 sur le bus n°2, partagé avec le PCA9685).
 2. **Contrôleur de Vol PID :** Stabilisation automatique roulis/tangage/cap/profondeur avec mixage différentiel sur les 8 propulseurs.
 3. **Génération PWM Matérielle :** Contrôle autonome de 16 canaux PWM indépendants via PCA9685 (8 propulseurs, servos pan/tilt, pince, gradateurs d'éclairage), avec serveur Web/WebSocket autonome et portail captif pour la configuration et le banc de test.
 
@@ -21,16 +21,20 @@ Il remplit un triple rôle :
 
 ## 🏗️ Architecture Matérielle & Adressage
 
-### 1. Périphériques I2C
+### 1. Périphériques I2C — Deux Bus Matériels
 
-| Composant | Rôle | Adresse I2C | Description technique |
-| :--- | :--- | :--- | :--- |
-| **BNO085** | IMU 9-DOF | `0x4A` | Fusion inertielle embarquée (protocole SH-2 via Adafruit BNO08x) : Game Rotation Vector (quaternions) + gyroscope calibré @ 50 Hz |
-| **MS5803-30BA / MS5837** | Pression & Profondeur | `0x76` | Capteur piézorésistif haute résolution étanche, compensation 24-bit (coefficients C1-C6) |
-| **INA226 (Bus 1)** | Puissance RPi 5 | `0x41` | Tension, courant et puissance consommée par le Pi 5 |
-| **INA226 (Bus 2)** | Puissance Aux/LEDs | `0x44` | Mesure de ligne d'éclairage et accessoires 12V |
-| **INA226 (Bus 3)** | Puissance Moteurs | `0x45` | Mesure de ligne de puissance batterie/propulsion principale |
-| **PCA9685** | Contrôleur PWM 16 Ch | `0x40` | Générateur PWM 12 bits autonome (VCC 3.3V, V+ 5V/Servo) |
+L'ESP32-S3 possède deux contrôleurs I2C indépendants, exploités pour séparer les périphériques :
+
+| Composant | Rôle | Adresse I2C | Bus I2C | Description technique |
+| :--- | :--- | :--- | :--- | :--- |
+| **BNO085** | IMU 9-DOF | `0x4A` | n°1 (GPIO 10/11) | Fusion inertielle embarquée (protocole SH-2 via Adafruit BNO08x) : Rotation Vector 9-DOF (cap magnétique) + Game Rotation Vector (secours) + gyroscope calibré @ 50 Hz. Monté tourné de 90° (X capteur vers la droite du ROV) : quaternion **et** gyroscope remappés à la source dans le repère véhicule via `BNO085_MOUNT_YAW_DEG` (−90°) |
+| **INA226 #1** | Puissance RPi 5 | `0x41` | n°1 (GPIO 10/11) | Tension, courant et puissance consommée par le Pi 5 |
+| **INA226 #2** | Puissance Aux/LEDs | `0x44` | n°1 (GPIO 10/11) | Mesure de ligne d'éclairage et accessoires 12V |
+| **INA226 #3** | Puissance Moteurs | `0x45` | n°1 (GPIO 10/11) | Mesure de ligne de puissance batterie/propulsion principale |
+| **MS5803-30BA / MS5837** | Pression & Profondeur | `0x76` | **n°2 (GPIO 6/7)** | Capteur piézorésistif haute résolution étanche, compensation 24-bit (coefficients C1-C6) |
+| **PCA9685** | Contrôleur PWM 16 Ch | `0x40` | **n°2 (GPIO 6/7)** | Générateur PWM 12 bits autonome (VCC 3.3V, V+ 5V/Servo) |
+
+> **Note — pourquoi deux bus :** le MS5837-30BA branché sur le même bus que le BNO085 perturbait ses lectures SHTP (tempête de NACK, horizon figé). Le firmware répartit donc les périphériques sur les deux contrôleurs I2C : bus n°1 `Wire` (GPIO 10/11 par défaut, configurables en NVS — BNO085 + INA226, propriété exclusive de la tâche capteurs) et bus n°2 `Wire1` (GPIO 6/7 par défaut, configurables en NVS — MS5837 + PCA9685, partagé entre la tâche capteurs et la tâche de contrôle). Chaque bus possède ses propres résistances de pull-up (4,7 kΩ vers 3V3).
 
 ### 2. Liaison Série RPi 5 — Deux Modes Configurables
 
@@ -86,8 +90,8 @@ La communication s'effectue à **921 600 bauds** sur l'interface sélectionnée 
 * **Header :** `0x55`, `0xAA` (2 octets)
 * **Type :** `0x02` (1 octet)
 * **Status Flags :** `uint8_t` (Bit 0: réservé, Bit 1: Armé, Bit 2: Autopilote actif, Bit 3: Watchdog déclenché, Bit 4: Sorties physiques neutralisées / Dry-Run)
-* **Quaternions IMU :** `int16_t[4]` (8 octets, $W, X, Y, Z$ scalés $\times 10\,000$)
-* **Gyroscope :** `int16_t[3]` (6 octets, $\omega_x, \omega_y, \omega_z$ scalés $\times 100$)
+* **Quaternions IMU :** `int16_t[4]` (8 octets, $W, X, Y, Z$ scalés $\times 10\,000$, repère véhicule — montage BNO085 remappé à la source)
+* **Gyroscope :** `int16_t[3]` (6 octets, $\omega_x, \omega_y, \omega_z$ scalés $\times 100$, repère véhicule)
 * **Pression & Température :** `int32_t[2]` (8 octets, $0.1\text{ mbar}$ et $0.01\,^\circ\text{C}$)
 * **Télémétrie Puissance :** `uint16_t[6]` (12 octets, $V$ et $I$ pour Pi, Aux et Propulsion en $mV$ / $mA$)
 * **PWM Effectifs :** `uint16_t[16]` (32 octets, impulsions réelles envoyées aux actionneurs)
@@ -132,10 +136,10 @@ L'interface principale est un **tableau de bord** composé de tuiles cliquables 
 | :--- | :--- |
 | **Wi-Fi** | **Connexion actuelle** temps réel : SSID, adresse IP, passerelle (DHCP), masque, RSSI, MAC. Infos point d'accès local (SSID, IP, clients). Scan des réseaux environnants. Connexion STA non-bloquante (sans tuer le point d'accès). |
 | **PWM Monitor** | 16 barregraphes temps réel (WebSocket). 8 jauges moteurs bidirectionnelles centrées à $1500\,\mu\text{s}$, servos, gradateurs, auxiliaires. **Commutateur Sorties Matérielles** (Mode Témoin / Dry-Run) : badge d'avertissement ambre/vert. |
-| **Télémétrie** | Assiette Euler (Roll/Pitch/Yaw), profondeur, pression, température. 3 wattmètres instantanés. **Sélecteur de Mode de Pilotage** : 3 boutons radio (PASSIF / AUTO ROULIS ET TANGAGE / AUTO FULL) avec badge Maître (RPi 5 vert / Manuel ESP32 orange). Instruments aviation : horizon artificiel et HSI (Heading Situation Indicator) avec lissage LERP. Diagnostic capteurs (LED BNO085, MS5803, INA226 ×3, PCA9685). |
+| **Télémétrie** | **Cadre ROV 3D** : modèle 3D du ROV (`bob_rov_3D.glb`, LittleFS `/3D/`) animé en temps réel par l'IMU (roulis/tangage/cap) — three.js r128 servi **localement** (`/vendor/three.min.js`, aucun CDN : le ROV diffuse son AP sans Internet) et parseur GLB minimal embarqué (couleurs plates, sans texture) ; orbite/zoom à la souris, double-clic = vue initiale, grille polaire et flèche du Nord en référence de cap, cases « Filaire » / « Vert » (wireframe, lignes teintées vert) ; réalignement du modèle à 90° (R3D_MODEL_YAW_DEG) car l’avant exporté d’Onshape ne suit pas la convention glTF (-Z). **Cap magnétique BNO085** : le Rotation Vector 9-DOF (gyro + accéléro + magnétomètre) est la source principale du cap — cap absolu, le Game Rotation Vector relatif restant en secours automatique si le flux s'interrompt ; état de la boussole affiché en continu (source + calibration 0–3, auto-calibration en déplaçant le ROV en « 8 »). **Bouton « Régler Nord »** : tare du cap appliquée à la source — télémétrie, HSI, modèle 3D et PID de cap partagent le même référentiel ; ajustage fin de l'écart résiduel en cap magnétique (une fois suffit), référence obligatoire après chaque boot en secours relatif ; à faire en mode PASSIF. Assiette Euler (Roll/Pitch/Yaw), profondeur, pression, température. 3 wattmètres instantanés. **Sélecteur de Mode de Pilotage** : 3 boutons radio (PASSIF / AUTO ROULIS ET TANGAGE / AUTO FULL) avec badge Maître (RPi 5 vert / Manuel ESP32 orange). Instruments aviation : horizon artificiel et HSI (Heading Situation Indicator) avec lissage LERP. Diagnostic capteurs (LED BNO085, MS5803, INA226 ×3, PCA9685). |
 | **Banc de Test** | 16 sliders de commande manuelle avec verrou de sécurité matériel. Bouton "Tout au Neutre". |
-| **Paramètres** | Sélection liaison série RPi 5 (USB-CDC / UART GPIO 1/2). **Configuration I2C** : broches SDA/SCL avec sauvegarde NVS. **Scanner I2C** : scan complet 0x01–0x7F avec identification des périphériques. PID (Roll, Pitch, Yaw, Profondeur) : Kp, Ki, Kd. Timeout watchdog série réglable. |
-| **Câblage** | Schéma visuel ESP32-S3 (`esp32s3.png`). Liaison RPi 5 dynamique selon le mode actif (USB-CDC ou UART GPIO 1/2) avec diagrammes ASCII et tables de correspondance. Tableau complet du bus I2C : broches SDA/SCL, adresses et fonctions de chaque module (IMU, baromètre, INA226, PCA9685). |
+| **Paramètres** | Sélection liaison série RPi 5 (USB-CDC / UART GPIO 1/2). **Configuration Bus I2C n°1 / n°2** : broches SDA/SCL avec sauvegarde NVS et redémarrage automatique du contrôleur après 3 s — même comportement pour les deux bus (broches appliquées au boot ; le bus n°2 est partagé avec les sorties PWM). **Scanner I2C** : scan des deux bus (0x01–0x7F, colonne Bus) avec identification des périphériques. **Mise à jour OTA** : téléversement sans câble du micrologiciel (firmware.bin) ou des fichiers Web (littlefs.bin) avec progression, neutralisation de la propulsion et redémarrage automatique. PID (Roll, Pitch, Yaw, Profondeur) : Kp, Ki, Kd. Timeout watchdog série réglable. |
+| **Câblage** | Schéma visuel ESP32-S3 (`esp32s3.png`). Liaison RPi 5 dynamique selon le mode actif (USB-CDC ou UART GPIO 1/2) avec diagrammes ASCII et tables de correspondance. Tableaux complets des deux bus I2C : broches SDA/SCL (bus n°1 GPIO 10/11, bus n°2 GPIO 6/7), adresses et fonctions de chaque module (IMU, wattmètres, baromètre, PCA9685). |
 
 ### Connexion Wi-Fi Externe (Mode STA)
 
@@ -151,7 +155,7 @@ platform = espressif32
 board = esp32-s3-devkitc-1
 framework = arduino
 monitor_speed = 115200
-board_build.partitions = default_8MB.csv
+board_build.partitions = bob_control_8mb.csv
 board_build.filesystem = littlefs
 build_flags = 
     -D ARDUINO_USB_MODE=1
@@ -166,7 +170,9 @@ lib_deps =
     robtillaart/INA226 @ ^0.6.0
 ```
 
-> **Note :** Les bibliothèques `ESPAsyncWebServer` et `AsyncTCP` utilisent le fork maintenu par `mathieucarbou` (compatible ESP32 Arduino Core récent). L'ancien dépôt `me-no-dev` est obsolète et provoque des erreurs de linking.
+> **Note :** Les bibliothèques `ESPAsyncWebServer` et `AsyncTCP` utilisent le fork maintenu par `mathieucarbou` (compatible ESP32 Arduino Core récent). L'ancien dépôt `me_no-dev` est obsolète et provoque des erreurs de linking.
+
+> **Table de partitions personnalisée (`bob_control_8mb.csv`) :** dérivée de `default_8MB.csv` — partitions applicatives OTA réduites de 3,3 Mo à **2,5 Mo** chacune (firmware ~1,2 Mo) au profit de LittleFS, étendu de 1,5 Mo à **~2,9 Mo** pour héberger le modèle 3D du ROV (`data/3D/bob_rov_3D.glb`, servi sur `/3D/bob_rov_3D.glb` avec le MIME `model/gltf-binary` via une route explicite — l'extension `.glb` est inconnue de la table MIME du core Arduino) ainsi que three.js (`data/vendor/three.min.js`, r128 UMD licence MIT). **Toute modification de la table de partitions impose un reflash complet par USB** : `pio run -t erase && pio run -t upload && pio run -t uploadfs` — la table (offset 0x8000) ne peut pas être écrite par OTA.
 
 ---
 
@@ -190,9 +196,9 @@ BOB-CONTROL/
     ├── main.cpp               # Setup séquentiel + tâche vTaskControl (Core 1, 100 Hz) + corrections PID
     ├── web_server.cpp         # Serveur HTTP, DNS captif OS-aware, WebSocket, REST API
     ├── serial_comm.cpp        # USB-CDC / UART GPIO : abstraction Stream*, machine à états, watchdog failsafe
-    ├── sensor_driver.cpp      # Drivers I2C réels (BNO085 via Adafruit SH-2, MS5803/MS5837, INA226 ×3)
+    ├── sensor_driver.cpp      # Drivers I2C réels — bus n°1 (BNO085, INA226 ×3) + bus n°2 (MS5803/MS5837)
     ├── flight_controller.cpp  # PID 4 axes (Roll/Pitch/Yaw/Depth) + mixage M5-M8 + gestion priorité maître
-    └── pwm_controller.cpp     # PCA9685 : conversion µs→ticks, failsafe + mode Témoin (Dry-Run)
+    └── pwm_controller.cpp     # PCA9685 (bus I2C n°2) : conversion µs→ticks, failsafe + mode Témoin (Dry-Run)
 ```
 
 ---
@@ -222,8 +228,10 @@ pio device monitor -b 115200
   Le clamp 1000-2000 µs est appliqué après la somme totale de toutes les corrections pour éviter la saturation prématurée. En mode Web sans RPi 5, les propulseurs sont forcés à 1500 µs pour validation sur établi.
 * **Gestion de Priorité Maître :** Le RPi 5 est maître absolu tant qu'une trame est reçue (< 1s). En l'absence de communication RPi 5, l'interface Web ESP32 prend le contrôle. Si le Web tente de changer le mode pendant que le RPi 5 est maître, la commande est ignorée et un message série est émis.
 * **Mode Témoin / Dry-Run :** Au boot, les sorties physiques PCA9685 sont neutralisées par défaut (`physicalOutputsEnabled = false`). Les consignes PWM reçues (RPi 5 ou simulateur) sont mémorisées dans le buffer d'état et affichées dans les 16 barregraphes, mais le PCA9685 envoie le neutre (1500 µs canaux 0–11, 0 % canaux 12–15). Un commutateur dans l'onglet PWM Monitor permet d'activer/désactiver les sorties. Le Bit 4 de la trame montante (`STATUS_BIT_DRYRUN = 0x10`) signale cet état au RPi 5. Commande WebSocket `{output_enable: true/false}` ou REST `POST /api/pwm/output-enable`.
-* **Centrale Inertielle BNO085 :** Intégrée via la bibliothèque **Adafruit BNO08x** (protocole SH-2 par paquets, et non par lectures de registres). Rapports activés à 50 Hz : Game Rotation Vector (quaternions) et gyroscope calibré. Conversion quaternion → Euler embarquée. Le capteur peut nécessiter un court délai après la mise sous tension ; un reboot relance l'initialisation si le BNO085 n'était pas prêt au premier démarrage.
-* **Protection du Bus I2C :** Flag `_i2cBusy` volatile empêche les accès concurrents entre la tâche capteurs (Core 1) et le scan/reinit I2C (Core 0). Séquence de récupération de bus bloqué (9 impulsions SCL + condition STOP) avant chaque scan pour libérer un SDA coincé. Timeout Wire réduit à 10 ms pendant le scan pour un temps total < 1.3 s.
+* **Centrale Inertielle BNO085 :** Intégrée via la bibliothèque **Adafruit BNO08x** (protocole SH-2 par paquets, et non par lectures de registres). Rapports activés à 50 Hz : **Rotation Vector 9-DOF** (gyro + accéléro + magnétomètre — source principale, cap magnétique absolu), **Game Rotation Vector** (relatif, secours automatique si le flux magnétique s'interrompt) et gyroscope calibré. **Montage tourné de 90°** autour de la verticale (X capteur → droite du ROV, Y → arrière) : quaternion **et** gyroscope sont remappés à la source dans le repère véhicule via `BNO085_MOUNT_YAW_DEG` (−90°), avant extraction des angles d'Euler embarquée — télémétrie série, horizon artificiel, HSI, modèle 3D et PID de cap partagent ainsi le même référentiel (lever l'avant → tangage +, penché à droite → roulis +). Auto-guérison du flux magnétique : re-activation du Rotation Vector renvoyée toutes les 5 s tant qu'aucun rapport n'arrive. Le capteur peut nécessiter un court délai après la mise sous tension ; un reboot relance l'initialisation si le BNO085 n'était pas prêt au premier démarrage. Il possède son propre bus dédié (bus n°1) — le MS5837 perturbant ses lectures SHTP lorsqu'ils partageaient le même bus, ce dernier a été déplacé sur le bus n°2.
+* **Propriété des Bus I2C :** **Bus n°1** (`Wire`, GPIO 10/11 par défaut — BNO085 + INA226) : propriété exclusive de la tâche capteurs (Core 1). Les demandes de scan issues du serveur Web (Core 0) sont mises en file (`_scanReq`) et exécutées par la tâche capteurs au prochain cycle — plus aucune collision possible entre le bit-bang SCL du scan et une transaction en cours (les changements de broches ne passent plus par la file : sauvegarde NVS vérifiée + redémarrage, voir `saveBusPins`). **Bus n°2** (`Wire1`, GPIO 6/7 — MS5837 + PCA9685) : partagé entre la tâche capteurs (lecture pression 2 Hz) et la tâche de contrôle (écritures PCA9685 100 Hz) ; chaque transaction est atomique et sérialisée par le verrou interne de `Wire1` (un mutex par instance TwoWire — aucune contention notable, le MS5837 n'occupant le bus que ~20 ms par 500 ms). Le bus n°2 est configuré une seule fois au boot dans `SensorDriver::begin()`, avant la création des deux tâches, afin que sa fréquence/timeout ne changent jamais pendant une transaction. Séquence de récupération de bus bloqué (9 impulsions SCL + condition STOP) avant chaque scan — bus n°1 uniquement (le bus n°2 étant partagé, aucun bit-bang n'y est possible) ; timeout réduit à 10 ms pendant le scan des deux bus.
+* **Watchdog I2C global :** compteur d'échecs de transactions consécutifs (instrumenté dans les wrappers `_i2cRead8/16`, `_i2cWrite` du bus n°1 et `_i2c2Read16`/`_i2c2Write`/`_readMS5803` du bus n°2 ; les lectures INA226 réussies du bus n°1 remettent le compteur à zéro en continu). Au-delà de 30 échecs (ou si tous les capteurs vus au boot sont perdus), reset du bus n°1 (Wire.end + 9 impulsions SCL + Wire.begin) et réinitialisation complète de tous les capteurs — BNO085 compris, même s'il avait été raté au boot ; le MS5837 est réinitialisé sur son propre bus n°2 sans reset de ce dernier (partagé avec la tâche de contrôle). Cooldown de 5 s entre deux récupérations. Complété par la supervision BNO085 sur le flux de quaternions (stall 1000 ms sans quaternion (Rotation Vector ou Game Rotation Vector) — le gyro ne compte pas — → ré-init SHTP légère, puis reset bus complet dès le 2e échec consécutif ; après 5 échecs le capteur est déclaré muet : polling SHTP coupé, badge rouge + message Web, une tentative complète toutes les 30 s). Détection de perte du MS5803 : après 3 échecs de lecture consécutifs (~1,5 s), le capteur est déclaré perdu et n'est plus pollé ; il est re-sondé toutes les 10 s pour prendre en compte un rebranchage à chaud.
 * **Persistance NVS :** Les identifiants Wi-Fi, paramètres PID (Roll, Pitch, Yaw, Depth), choix d'interface série et **broches I2C (SDA/SCL)** sont sauvegardés en NVS via la classe `Preferences`.
-* **Diagnostic I2C :** Scanner complet du bus I2C (adresses 0x01–0x7F) accessible depuis l'onglet Paramètres. Identification automatique des périphériques (PCA9685, INA226 ×3, BNO085, MS5803/MS5837). Configuration dynamique des broches SDA/SCL avec réinitialisation du bus sans reflash (`POST /api/i2c/config`). Récupération automatique de bus bloqué avant chaque scan. Persistance NVS : les broches configurées sont rechargées au boot. API REST : `GET /api/i2c/scan`, `GET /api/i2c/config`.
-* **Architecture FreeRTOS :** Tâches épinglées par cœur (Core 0 : Wi-Fi/WebServer/DNS, Core 1 : Série/Capteurs/PWM/Contrôle).
+* **Mise à jour OTA (sans câble USB) :** Carte « Mise à jour OTA » de l'onglet Paramètres : téléversement du micrologiciel (`firmware.bin`, produit par `pio run`) vers la partition applicative inactive, ou des fichiers Web (`littlefs.bin`, produit par `pio run -t buildfs`) vers la partition LittleFS. Le schéma de partitions `bob_control_8mb.csv` contient deux partitions OTA (`ota_0`/`ota_1` de 2,5 Mo) : l'ancien firmware reste la partition de boot tant que la nouvelle n'est pas validée — une coupure en cours d'écriture ne brike jamais le contrôleur. Sécurités : propulsion neutralisée (Dry-Run + neutre PCA9685) AVANT la première écriture flash (les écritures suspendent brièvement les deux cœurs) ; LittleFS démonté avant réécriture (remonté en cas d'échec, sinon redémarrage) ; octet magie ESP `0xE9` vérifié au premier bloc (refuse l'inversion firmware / image FS — la corrompant silencieusement) ; redémarrage différé 3 s après validation complète ; l'interface ne se recharge que lorsque `GET /api/system/status` montre un uptime reparti de zéro (preuve du redémarrage effectif, comme pour les broches I2C). API REST : `POST /api/ota/firmware`, `POST /api/ota/filesystem` (multipart), `GET /api/system/status`.
+* **Diagnostic I2C :** Scanner complet des DEUX bus I2C (adresses 0x01–0x7F, colonne Bus dans les résultats) accessible depuis l'onglet Paramètres. Identification automatique des périphériques (PCA9685, INA226 ×3, BNO085, MS5803/MS5837). Configuration dynamique des broches SDA/SCL des deux bus (`POST /api/i2c/config`, paramètre `bus=1|2`) : sauvegarde NVS vérifiée par relecture puis redémarrage différé de 3 s pour les DEUX bus (broches appliquées au boot ; le bus n°2 est partagé avec les sorties PWM — un `Wire1.end()` en vol couperait la propulsion ; le bus n°1 suit la même procédure pour une interface uniforme). L'interface ne se recharge qu'une fois l'API revenue avec les nouvelles broches (preuve du redémarrage effectif). Récupération automatique de bus bloqué avant chaque scan du bus n°1. Persistance NVS : les broches des deux bus (clés `i2c_sda`/`i2c_scl` et `i2c2_sda`/`i2c2_scl`) sont rechargées au boot. La page « Câblage & Schémas » suit les broches réellement configurées (schémas, brochage et tableaux mis à jour dynamiquement). API REST : `GET /api/i2c/scan`, `GET /api/i2c/config`.
+* **Architecture FreeRTOS :** Tâches épinglées par cœur (Core 0 : Wi-Fi/WebServer/DNS, Core 1 : Série/Capteurs/PWM/Contrôle). Le bus I2C n°2 (Wire1) est partagé entre la tâche capteurs et la tâche de contrôle — transactions sérialisées par le verrou interne de Wire1 (voir « Propriété des Bus I2C »).

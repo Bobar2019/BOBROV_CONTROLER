@@ -4,7 +4,8 @@
  *
  * Gère le point d'accès Wi-Fi, le portail captif DNS, les endpoints REST
  * (/api/wifi/scan, /api/wifi/connect, /api/settings/save, /api/comm/config,
- * /api/i2c/scan, /api/i2c/config, /api/pwm/output-enable) et le serveur WebSocket
+ * /api/i2c/scan, /api/i2c/config, /api/pwm/output-enable, /api/ota/firmware,
+ * /api/ota/filesystem, /api/system/status) et le serveur WebSocket
  * diffusant la télémétrie temps réel en JSON.
  *
  * @author Didier Dero
@@ -23,6 +24,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <Update.h>
 
 /* =========================================================================
  * INSTANCE GLOBALE
@@ -67,6 +69,8 @@ BobWebServer::BobWebServer()
     : _server(80)
     , _ws("/ws")
     , _staConnected(false)
+    , _otaRejected(false)
+    , _otaWasFS(false)
 {
 }
 
@@ -259,6 +263,49 @@ void BobWebServer::_setupRoutes() {
         [this](AsyncWebServerRequest* request) { _handleI2CConfigGet(request); });
     _server.on("/api/i2c/config", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handleI2CConfigPost(request); });
+
+    /* REST : Mise à jour OTA — corps brut d'un .bin vers la partition
+     * applicative inactive (firmware) ou LittleFS (fichiers Web). On utilise
+     * le handler de corps (onBody) et NON le téléversement multipart : le
+     * parseur multipart de la bibliothèque perd silencieusement les corps
+     * multi-paquets (petit corps OK, ≥ 8 Ko jamais remis au handler). Le
+     * callback reçoit les blocs au fil de l'eau ; le callback de fin conclut
+     * (redémarrage différé 3 s si l'écriture est validée). */
+    _server.on("/api/ota/firmware", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleOtaDone(request); },
+        nullptr,   /* pas d'upload multipart : corps brut via onBody */
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len,
+               size_t index, size_t total) {
+            _handleOtaBody(request, data, len, index, total, U_FLASH);
+        });
+    _server.on("/api/ota/filesystem", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleOtaDone(request); },
+        nullptr,   /* pas d'upload multipart : corps brut via onBody */
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len,
+               size_t index, size_t total) {
+            _handleOtaBody(request, data, len, index, total, U_SPIFFS);
+        });
+
+    /* REST : État système (uptime — l'interface OTA y lit la preuve du reboot) */
+    _server.on("/api/system/status", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleSystemStatus(request); });
+
+    /* Fichier .glb du modele 3D du ROV : l'extension est inconnue de la table
+     * MIME du core Arduino (servie en text/plain) — route explicite avec le bon
+     * Content-Type model/gltf-binary, sans jamais de compression (binaire deja
+     * compact). Servie AVANT serveStatic pour prendre la priorité. */
+    _server.on("/3D/bob_rov_3D.glb", HTTP_GET,
+        [](AsyncWebServerRequest* request) {
+            if (!LittleFS.exists("/3D/bob_rov_3D.glb")) {
+                request->send(404, "text/plain", "Not Found");
+                return;
+            }
+            AsyncWebServerResponse* res = request->beginResponse(
+                LittleFS, "/3D/bob_rov_3D.glb", "model/gltf-binary");
+            res->addHeader("Cache-Control", "max-age=86400");
+            res->addHeader("Content-Encoding", "identity");
+            request->send(res);
+        });
 
 
 
@@ -571,6 +618,7 @@ void BobWebServer::_handleI2CScan(AsyncWebServerRequest* request) {
         JsonObject obj = arr.add<JsonObject>();
         obj["address"] = String(d.hexStr);
         obj["dec"]     = d.address;
+        obj["bus"]     = d.bus;    /* 1 = capteurs (Wire) | 2 = MS5837 + PCA9685 (Wire1) */
         obj["name"]    = String(d.name);
     }
     doc["sda"] = g_sensors.getCurrentSDA();
@@ -585,28 +633,61 @@ void BobWebServer::_handleI2CScan(AsyncWebServerRequest* request) {
 void BobWebServer::_handleI2CConfigGet(AsyncWebServerRequest* request) {
     String response;
     JsonDocument doc;
-    doc["sda"] = g_sensors.getCurrentSDA();
-    doc["scl"] = g_sensors.getCurrentSCL();
+    doc["sda"]  = g_sensors.getCurrentSDA();
+    doc["scl"]  = g_sensors.getCurrentSCL();
+    doc["sda2"] = g_sensors.getCurrent2SDA();
+    doc["scl2"] = g_sensors.getCurrent2SCL();
     serializeJson(doc, response);
     request->send(200, "application/json", response);
 }
 
 /* -------------------------------------------------------------------------
- * Handler POST /api/i2c/config — Enregistre les nouvelles broches et
- * réinitialise le bus I2C.
+ * Redémarrage différé du contrôleur (3 s)
  *
- * Body JSON attendu : {"sda": 10, "scl": 11}
+ * Utilisé après sauvegarde NVS des broches d'un bus I2C : elles ne sont
+ * appliquées qu'au boot. Une micro-tâche dédiée — plus sûre qu'un timer
+ * FreeRTOS, dont la commande de démarrage (transmise avec un délai de
+ * blocage nul) peut être silencieusement perdue — laisse partir la réponse
+ * HTTP puis déclenche ESP.restart(). La garde statique neutralise un
+ * double-clic sur le bouton.
+ * ------------------------------------------------------------------------- */
+static void _scheduleRestart(uint32_t delayMs) {
+    static bool sScheduled = false;
+    if (sScheduled) return;
+    sScheduled = true;
+    if (xTaskCreate([](void* arg) {
+            vTaskDelay(pdMS_TO_TICKS((uint32_t)(uintptr_t)arg));
+            ESP.restart();
+        }, "web_rst", 2048, (void*)(uintptr_t)delayMs, 1, nullptr) != pdPASS) {
+        sScheduled = false;   /* création impossible : permet un nouvel essai */
+        Serial.println("[WEB] Redémarrage différé : échec de création de la tâche");
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Handler POST /api/i2c/config — Enregistre les nouvelles broches I2C.
+ *
+ * Bus n°1 (défaut) et bus n°2 (paramètre bus=2) : même traitement —
+ * sauvegarde NVS vérifiée par relecture puis redémarrage différé de 3 s
+ * (les broches ne sont appliquées qu'au boot : le bus n°2 est partagé avec
+ * les sorties PWM ; le bus n°1 suit la même procédure pour une interface
+ * uniforme).
+ *
+ * Form : sda=10&scl=11[&bus=2]  |  JSON : {"sda":6,"scl":7,"bus":2}
  * ------------------------------------------------------------------------- */
 void BobWebServer::_handleI2CConfigPost(AsyncWebServerRequest* request) {
     uint8_t sda, scl;
+    uint8_t bus = 1;   /* 1 = capteurs (défaut) | 2 = MS5837 + PCA9685 (Wire1) */
 
-    /* Accepte form-urlencoded (sda=X&scl=Y) ou query params */
+    /* Accepte form-urlencoded (sda=X&scl=Y[&bus=N]) ou query params */
     if (request->hasParam("sda", true) && request->hasParam("scl", true)) {
         sda = request->getParam("sda", true)->value().toInt();
         scl = request->getParam("scl", true)->value().toInt();
+        if (request->hasParam("bus", true)) bus = request->getParam("bus", true)->value().toInt();
     } else if (request->hasParam("sda") && request->hasParam("scl")) {
         sda = request->getParam("sda")->value().toInt();
         scl = request->getParam("scl")->value().toInt();
+        if (request->hasParam("bus")) bus = request->getParam("bus")->value().toInt();
     } else if (request->hasParam("plain", true)) {
         /* Fallback JSON body */
         const AsyncWebParameter* body = request->getParam("plain", true);
@@ -618,6 +699,7 @@ void BobWebServer::_handleI2CConfigPost(AsyncWebServerRequest* request) {
         }
         sda = doc["sda"].as<uint8_t>();
         scl = doc["scl"].as<uint8_t>();
+        if (doc["bus"].is<uint8_t>()) bus = doc["bus"].as<uint8_t>();
     } else {
         request->send(400, "application/json", "{\"error\":\"Paramètres sda/scl requis\"}");
         return;
@@ -629,16 +711,184 @@ void BobWebServer::_handleI2CConfigPost(AsyncWebServerRequest* request) {
         return;
     }
 
-    g_sensors.reinitI2C(sda, scl);
-    Serial.println("[WEB] Config I2C : SDA=" + String(sda) + ", SCL=" + String(scl));
+    if (bus != 1 && bus != 2) {
+        request->send(400, "application/json", "{\"error\":\"Bus invalide (1 ou 2)\"}");
+        return;
+    }
+
+    /* Les DEUX bus appliquent leurs nouvelles broches au boot : sauvegarde NVS
+     * (vérifiée par relecture côté driver) puis redémarrage différé de 3 s.
+     * Uniformité des deux cartes de l'interface — et sur le bus n°2, partagé
+     * avec la tâche de contrôle (PCA9685 @ 100 Hz), un reset à chaud couperait
+     * de toute façon les sorties PWM en pleine navigation. */
+    if (!g_sensors.saveBusPins(bus, sda, scl)) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (broches non enregistrees)\"}");
+        return;
+    }
+    Serial.println("[WEB] Config I2C bus n°" + String(bus) + " : SDA=" + String(sda)
+                   + ", SCL=" + String(scl) + " — redémarrage dans 3 s");
+    _scheduleRestart(3000);
 
     String response;
     JsonDocument resp;
-    resp["status"] = "ok";
-    resp["sda"] = sda;
-    resp["scl"] = scl;
+    resp["status"]     = "ok";
+    resp["bus"]        = bus;
+    resp["sda"]        = sda;
+    resp["scl"]        = scl;
+    resp["restart_ms"] = 3000;
     serializeJson(resp, response);
     request->send(200, "application/json", response);
+}
+
+/* =========================================================================
+ * MISE À JOUR OTA — TÉLÉVERSEMENT FIRMWARE & FICHIERS WEB (LittleFS)
+ * =========================================================================
+ *
+ * Le schéma de partitions (default_8MB.csv) contient deux partitions
+ * applicatives (ota_0/ota_1) : le téléversement écrit dans la partition
+ * INACTIVE, l'ancien firmware continue de tourner jusqu'au redémarrage —
+ * une coupure en cours d'écriture ne brike jamais le contrôleur.
+ * ========================================================================= */
+
+/**
+ * @brief Handler GET /api/system/status — Uptime du contrôleur.
+ *
+ * Utilisé par l'interface OTA comme preuve de redémarrage : après un flash,
+ * l'uptime repart de zéro (un simple code 200 peut venir de l'ancien firmware
+ * encore vivant pendant le délai de redémarrage de 3 s).
+ */
+void BobWebServer::_handleSystemStatus(AsyncWebServerRequest* request) {
+    String response;
+    JsonDocument doc;
+    doc["status"]    = "ok";
+    doc["uptime_ms"] = (uint32_t)millis();
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/**
+ * @brief Handler corps brut POST /api/ota/firmware | /api/ota/filesystem.
+ *
+ * Reçoit un .bin par blocs (corps brut, hors parseur multipart) et l'écrit
+ * directement en flash :
+ *  - U_FLASH   → partition applicative inactive (firmware.bin de `pio run`)
+ *  - U_SPIFFS  → partition LittleFS (littlefs.bin de `pio run -t buildfs`),
+ *               démontée au préalable pour éviter toute écriture concurrente.
+ *
+ * Sécurité : la propulsion est neutralisée (Dry-Run + neutre) AVANT la
+ * première écriture — les écritures flash suspendent brièvement les deux
+ * cœurs, aucune sortie ne doit rester active pendant la mise à jour.
+ *
+ * @param partitionType U_FLASH (firmware) ou U_SPIFFS (fichiers Web)
+ */
+void BobWebServer::_handleOtaBody(AsyncWebServerRequest* request, uint8_t* data,
+                                  size_t len, size_t index, size_t total,
+                                  int partitionType) {
+    if (index == 0) {
+        _otaRejected = false;
+        _otaWasFS = (partitionType == U_SPIFFS);
+        Serial.println(String("[WEB] OTA : réception du corps (") + String(total)
+                       + " octets — " + String(_otaWasFS ? "fichiers Web" : "firmware") + ")");
+
+        /* Neutraliser la propulsion AVANT de toucher la flash */
+        g_pwm.setPhysicalOutputsEnabled(false);
+        g_pwm.setAllNeutral();
+
+        /* Octet magie ESP : un firmware commence TOUJOURS par 0xE9, jamais une
+         * image LittleFS — détecte l'inversion des deux fichiers AVANT
+         * d'écrire (une image FS écrite en partition firmware serait de toute
+         * façon rejetée, mais l'inverse corromprait LittleFS silencieusement). */
+        if (len > 0) {
+            const bool magicOk = (partitionType == U_FLASH)
+                               ? (data[0] == 0xE9) : (data[0] != 0xE9);
+            if (!magicOk) {
+                _otaRejected = true;
+                Serial.println("[WEB] OTA : fichier refusé — octet magie 0xE9 incompatible avec la cible");
+                return;
+            }
+        }
+
+        /* LittleFS doit être démonté avant la réécriture de SA partition
+         * (LittleFSFS::end() retourne void — pas de statut de démontage). */
+        if (_otaWasFS) {
+            LittleFS.end();
+            Serial.println("[WEB] OTA : LittleFS démonté avant réécriture");
+        }
+
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, partitionType)) {
+            _otaRejected = true;
+            Update.printError(Serial);
+            return;
+        }
+    }
+
+    if (!_otaRejected && Update.isRunning() && !Update.hasError() && len) {
+        if (Update.write(data, len) != len) {
+            Update.printError(Serial);
+        }
+    }
+
+    /* Dernier bloc reçu (corps complet) : valider l'écriture en flash */
+    if (index + len == total && !_otaRejected) {
+        if (Update.end(true)) {
+            Serial.println("[WEB] OTA : partition écrite (" + String(Update.size())
+                           + " octets) — redémarrage requis");
+        } else {
+            Update.printError(Serial);
+        }
+    }
+}
+
+/**
+ * @brief Handler de fin POST /api/ota/* — statut final + redémarrage différé.
+ *
+ * Appelé une fois le body entièrement reçu. Succès uniquement si l'écriture
+ * est complète et validée (Update terminé, sans erreur, taille non nulle) :
+ * le redémarrage est programmé à 3 s pour laisser partir la réponse HTTP.
+ * En cas d'échec sur la cible fichiers Web, LittleFS est remonté si possible
+ * pour conserver l'interface (sinon redémarrage pour revenir à un état propre).
+ */
+void BobWebServer::_handleOtaDone(AsyncWebServerRequest* request) {
+    const bool ok = !_otaRejected && !Update.isRunning() && !Update.hasError()
+                 && Update.size() > 0;
+
+    if (ok) {
+        Serial.println("[WEB] OTA : succès — redémarrage dans 3 s");
+        _scheduleRestart(3000);
+        String response;
+        JsonDocument doc;
+        doc["status"]     = "ok";
+        doc["restart_ms"] = 3000;
+        serializeJson(doc, response);
+        request->send(200, "application/json", response);
+        return;
+    }
+
+    /* Échec : identifier la cause, libérer la partition pour un nouvel essai */
+    const char* reason;
+    if (_otaRejected) {
+        reason = "fichier incompatible avec la cible (octet magie 0xE9)";
+    } else if (Update.size() == 0) {
+        reason = "transfert interrompu ou fichier vide";
+    } else {
+        reason = Update.errorString();
+    }
+    Update.abort();
+    Serial.println(String("[WEB] OTA : échec — ") + reason);
+
+    /* Cible fichiers Web : LittleFS a été démonté avant la réécriture — le
+     * remonter si la partition est saine ; sinon redémarrer (état propre). */
+    if (_otaWasFS) {
+        if (LittleFS.begin()) {
+            Serial.println("[WEB] OTA : LittleFS remonté après échec");
+        } else {
+            Serial.println("[WEB] OTA : LittleFS irrécupérable — redémarrage");
+            _scheduleRestart(3000);
+        }
+    }
+
+    request->send(500, "application/json", String("{\"error\":\"") + reason + "\"}");
 }
 
 /* =========================================================================
@@ -723,6 +973,14 @@ void BobWebServer::_onWSEvent(AsyncWebSocket* server, AsyncWebSocketClient* clie
                     if (doc["tare_surface"].is<bool>() && doc["tare_surface"].as<bool>()) {
                         g_sensors.requestSurfaceTare();
                         Serial.println("[WS] Tare surface demandée (P_surface à recapturer)");
+                    }
+
+                    /* Commande de tare Nord (cap IMU) : ROV immobile, nez pointé vers le
+                     * Nord réel → le cap courant devient 0°. Offset appliqué à la source
+                     * (télémétrie, HSI, modèle 3D et PID de cap). À faire en mode PASSIF. */
+                    if (doc["tare_north"].is<bool>() && doc["tare_north"].as<bool>()) {
+                        g_sensors.requestNorthTare();
+                        Serial.println("[WS] Tare Nord demandée (cap remis à zéro sur le Nord réel)");
                     }
                 }
             }
@@ -849,6 +1107,12 @@ void BobWebServer::_taskLoop() {
                 imuObj["roll"]  = roundf(imu.euler[0] * 10.0f) / 10.0f;
                 imuObj["pitch"] = roundf(imu.euler[1] * 10.0f) / 10.0f;
                 imuObj["yaw"]   = roundf(imu.euler[2] * 10.0f) / 10.0f;
+                imuObj["north_offset"] = roundf(imu.heading_offset * 10.0f) / 10.0f;  /* tare Nord */
+                imuObj["mag_active"]   = imu.mag_active;   /* 1 = cap magnétique (Rotation Vector 9-DOF) */
+                imuObj["mag_cal"]      = imu.mag_cal;      /* calibration magnétomètre SH-2 (0–3) */
+                imuObj["mag_cfg_ok"]   = imu.mag_cfg_ok;   /* diagnostic : Set Feature RV transmis (SH-2 sans accusé) */
+                imuObj["rv_reports"]   = (uint32_t)imu.rv_reports;   /* diagnostic : rapports RV reçus */
+                imuObj["grv_reports"]  = (uint32_t)imu.grv_reports;  /* diagnostic : rapports GRV reçus */
 
                 /* Pression, profondeur et altitude (MS5803 avec tare surface) */
                 PressureData press;
@@ -877,6 +1141,7 @@ void BobWebServer::_taskLoop() {
                 g_sensors.getSensorStatus(st);
                 JsonObject sens = doc["sensors"].to<JsonObject>();
                 sens["bno085"]  = (uint8_t)st.bno085;
+                sens["bno085_err"] = g_sensors.getLastBNO085Error();   /* diagnostic sans câble USB */
                 sens["ms5803"]  = (uint8_t)st.ms5803;
                 sens["ina0"] = (uint8_t)st.ina226[0];
                 sens["ina1"] = (uint8_t)st.ina226[1];

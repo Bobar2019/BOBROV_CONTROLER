@@ -69,7 +69,7 @@ public:
     bool isPhysicalOutputsEnabled() const;
 
 private:
-    Adafruit_PWMServoDriver _pwm;                       ///< Driver PCA9685
+    Adafruit_PWMServoDriver _pwm;                       ///< Driver PCA9685 (bus I2C n°2 / Wire1, GPIO 6/7)
     uint16_t _current[NUM_PWM_CHANNELS];                ///< Valeurs courantes (µs)
     SemaphoreHandle_t _mutex;                           ///< Mutex d'accès
     volatile bool _physicalOutputsEnabled;              ///< false = Mode Témoin (Dry-Run)

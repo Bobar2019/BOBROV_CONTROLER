@@ -5,7 +5,7 @@ Firmware temps réel embarqué sur **ESP32-S3** pour le contrôle basse couche d
 ## Matériel
 
 - **MCU :** ESP32-S3 (PlatformIO, Arduino Core, FreeRTOS)
-- **IMU :** BNO085 (`0x4A`) via Adafruit BNO08x (protocole SH-2)
+- **IMU :** BNO085 (`0x4A`) via Adafruit BNO08x (protocole SH-2 — Rotation Vector 9-DOF, montage remappé à la source)
 - **PWM :** PCA9685 (16 canaux, 50 Hz)
 - **Propulseurs :** 8 × ESC brushless (M1-M4 horizontaux, M5-M8 verticaux)
 - **Capteurs :** 3 × INA226 (wattmètres), MS5803/MS5837 (pression/profondeur)
@@ -22,6 +22,7 @@ Firmware temps réel embarqué sur **ESP32-S3** pour le contrôle basse couche d
 - **WebSocket temps réel** : télémétrie IMU, pression, PWM, puissance (20 Hz)
 - **API REST** : configuration Wi-Fi, I2C, PID, mode série
 - **Instruments aviation** : horizon artificiel + HSI (Canvas 2D, lissage LERP)
+- **Modèle 3D temps réel** : ROV animé par l'IMU (three.js r128 local, GLB servi depuis LittleFS)
 - **Mode Témoin (Dry-Run)** : sorties physiques neutralisées pour banc de test
 - **Gestion de priorité** : RPi 5 maître absolu < 1s, sinon bascule Web ESP32
 

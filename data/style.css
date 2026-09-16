@@ -800,6 +800,198 @@ footer { text-align: center; padding: 14px; font-size: 0.7rem; color: var(--text
 }
 
 /* =========================================================================
+ * PARAMÈTRES — REDÉMARRAGE CONTRÔLEUR (broches bus I2C n°2)
+ * ========================================================================= */
+
+.restart-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(13, 14, 17, 0.88);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    animation: wiring-fade-in 0.3s ease;
+}
+
+.restart-box {
+    background: var(--bg-card);
+    border: 1px solid var(--accent-cyan);
+    border-radius: 8px;
+    padding: 1.5rem 2rem;
+    text-align: center;
+    max-width: 420px;
+}
+
+.restart-box h3 { margin: 0 0 0.75rem; }
+.restart-box p  { margin: 0; }
+
+.restart-count {
+    color: var(--accent-cyan);
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+
+/* =========================================================================
+ * MISE À JOUR OTA — PROGRESSION DANS L'OVERLAY
+ * ========================================================================= */
+
+.ota-progress {
+    height: 12px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 0.75rem 0;
+}
+
+.ota-progress-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #00b4d8, #00d9ff);
+    transition: width 0.15s ease;
+}
+
+/* Chemins des images compilées — longs chemins sans espace : césure forcée
+ * pour rester DANS la carte (sinon débordement rogné par overflow:hidden). */
+code {
+    font-family: var(--font-mono, monospace);
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.72rem;
+    color: var(--accent-cyan);
+    word-break: break-all;
+}
+
+.ota-paths {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    line-height: 2.1;
+    margin-top: 0.5rem;
+}
+
+.ota-paths strong { color: var(--text-secondary); }
+
+/* Champ fichier image (.bin) — le bouton natif « Choisir un fichier » est
+ * restylé via ::file-selector-button (Chrome, Firefox, Safari 16.4+) au
+ * look .btn-primary ; le nom du fichier est tronqué avec ellipsis. */
+.settings-grid label.ota-file-row { grid-column: 1 / -1; }   /* pleine largeur : le bouton natif ne doit jamais être rogné par la colonne de 250 px */
+.settings-grid input[type="file"] {
+    flex: 1;
+    min-width: 0;
+    padding: 6px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 0.8rem;
+    outline: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: border-color 0.3s;
+}
+.settings-grid input[type="file"]:focus { border-color: var(--accent-cyan); }
+.settings-grid input[type="file"]::file-selector-button {
+    padding: 7px 14px;
+    margin-right: 10px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, #00b4d8, #00d9ff);
+    color: #000;
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.settings-grid input[type="file"]::file-selector-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 217, 255, 0.35);
+}
+.settings-grid input[type="file"]::file-selector-button:active { transform: translateY(0); }
+
+/* =========================================================================
+ * ROV 3D — VISUALISEUR D'ATTITUDE (three.js, remplace l'affichage Euler)
+ * ========================================================================= */
+
+.rov-3d-view {
+    position: relative;
+    width: 260px;
+    height: 260px;
+    margin: 0 auto 8px;
+    background: radial-gradient(circle at 50% 42%, #161b24, #0b0d11);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    overflow: hidden;
+    cursor: grab;
+}
+
+.rov-3d-view:active { cursor: grabbing; }
+
+.rov-3d-view canvas { display: block; }
+
+.rov-3d-status {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 1rem;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--text-dim);
+    pointer-events: none;   /* ne bloque pas le drag une fois le modèle chargé */
+}
+
+/* Cases « Filaire » / « Vert » — alignées sur les readouts ROLL/PITCH/CAP */
+.rov-3d-wire-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    letter-spacing: 0.3px;
+}
+.rov-3d-wire-toggle input { accent-color: #00d9ff; cursor: pointer; }
+.rov-3d-green-toggle { color: #00e676; }
+.rov-3d-green-toggle input { accent-color: #00e676; }
+
+/* Readouts du cadre ROV 3D : 3 valeurs + 2 cases sur une carte étroite —
+ * repli sur plusieurs lignes (flex-wrap) quand les valeurs s'allongent d'un
+ * caractère (angle négatif, cap à 3 chiffres) au lieu de déborder ; largeur
+ * réservée par valeur pour éviter le reflow des labels. */
+.rov-3d-readout { flex-wrap: wrap; gap: 4px 12px; font-size: 0.74rem; }
+.rov-3d-readout b { display: inline-block; min-width: 7ch; }
+
+/* Ligne « Régler Nord » du cadre ROV 3D : tare du cap + offset appliqué */
+.rov-3d-north-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.rov-3d-north-row .btn { flex: 1; padding: 5px 8px; font-size: 0.72rem; }
+.rov-3d-north-offset {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+/* Source de cap affichée sous « Régler Nord » : magnétique calibrée (vert),
+ * magnétique à calibrer ou secours relatif (ambre) */
+.rov-3d-cap-source {
+    margin-top: 5px;
+    font-size: 0.68rem;
+    text-align: center;
+    color: var(--text-secondary);
+    letter-spacing: 0.3px;
+}
+.rov-3d-cap-ok   { color: #00e676; }
+.rov-3d-cap-warn { color: #ffb74d; }
+
+/* =========================================================================
  * WI-FI — CARD CONNEXION ACTUELLE
  * ========================================================================= */
 

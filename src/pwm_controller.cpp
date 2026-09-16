@@ -13,6 +13,7 @@
 
 #include "pwm_controller.h"
 #include "config.h"
+#include <Wire.h>
 
 /* =========================================================================
  * INSTANCE GLOBALE
@@ -29,10 +30,12 @@ PWMController g_pwm;
  * @brief Constructeur : initialise les valeurs courantes au neutre.
  *
  * Le mutex est créé mais le PCA9685 n'est pas encore initialisé
- * (l'initialisation I2C se fait dans begin()).
+ * (l'initialisation I2C se fait dans begin()). Le driver est lié au bus
+ * I2C n°2 (Wire1, GPIO 6/7), partagé avec le MS5837 de la tâche capteurs.
  */
 PWMController::PWMController()
-    : _pwm(PCA9685_I2C_ADDR), _mutex(nullptr)
+    : _pwm(PCA9685_I2C_ADDR, Wire1)   /* bus I2C n°2 — MS5837 + PCA9685 */
+    , _mutex(nullptr)
     , _physicalOutputsEnabled(false)    /* Mode Témoin par défaut au boot */
 {
     /* Initialiser tous les canaux au neutre par défaut */
@@ -58,8 +61,18 @@ void PWMController::begin() {
     /* Création du mutex de protection d'accès */
     _mutex = xSemaphoreCreateMutex();
 
+    /* NOTE : le PCA9685 vit sur le bus I2C n°2 (Wire1, GPIO 6/7), partagé
+     * avec le MS5837. Le bus est configuré une seule fois par
+     * SensorDriver::begin() — exécuté AVANT PWMController::begin() dans
+     * main.cpp — de sorte que sa fréquence/timeout ne sont jamais modifiés
+     * pendant une transaction ; les accès des deux tâches sont ensuite
+     * sérialisés par le verrou interne de Wire1 (une par instance). */
+
     /* Reset et configuration du PCA9685 */
-    _pwm.begin();
+    if (!_pwm.begin()) {
+        Serial.println("[PWM] PCA9685 INTROUVABLE sur le bus I2C n°2 (0x40) — sorties inertes");
+        return;
+    }
     _pwm.setOscillatorFrequency(25000000UL);    /* Oscillateur interne 25 MHz */
     _pwm.setPWMFreq(PCA9685_FREQ_HZ);          /* 50 Hz pour servos/ESC */
 
@@ -69,7 +82,7 @@ void PWMController::begin() {
     /* Application du neutre sur tous les canaux (failsafe initial) */
     setAllNeutral();
 
-    Serial.println("[PWM] PCA9685 initialisé à 50 Hz, 16 canaux au neutre");
+    Serial.println("[PWM] PCA9685 initialisé à 50 Hz, 16 canaux au neutre (bus I2C n°2)");
 }
 
 /* =========================================================================
