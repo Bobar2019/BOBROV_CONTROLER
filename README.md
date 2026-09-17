@@ -48,7 +48,8 @@ Connectez-vous au point d'accès Wi-Fi **BOB-CONTROL_AP** (mot de passe : `bobro
 
 ## Documentation
 
-Voir [BOBCONTROL.md](BOBCONTROL.md) pour la spécification complète (protocole série, architecture, brochage, API).
+- [PROTOCOLE_RPI5.md](PROTOCOLE_RPI5.md) — protocole série RPi 5 ↔ ESP32-S3 : trames octet par octet, sémantique des statuts, exemple Python prêt à l'emploi, vecteurs de test.
+- [BOBCONTROL.md](BOBCONTROL.md) pour la spécification complète (protocole série, architecture, brochage, API).
 
 ## Licence
 

@@ -2,7 +2,7 @@
  * @file protocol.h
  * @brief Définition du protocole série binaire RPi5 ↔ ESP32-S3.
  *
- * Structures packed des trames descendante (39 octets) et montante (71 octets),
+ * Structures packed des trames descendante (39 octets) et montante (72 octets),
  * constantes de protocole, et fonctions de calcul/vérification CRC16-CCITT.
  *
  * Polynôme CRC : 0x1021 (CCITT), valeur initiale : 0xFFFF.
@@ -44,7 +44,7 @@
 #define DL_FRAME_SIZE   39
 
 /** @brief Taille totale de la trame montante en octets */
-#define UL_FRAME_SIZE   71
+#define UL_FRAME_SIZE   72
 
 /** @brief Nombre de canaux PWM dans une trame */
 #define PROTO_NUM_PWM   16
@@ -99,7 +99,7 @@ typedef struct {
 } DownlinkFrame_t;
 
 /**
- * @brief Trame montante : ESP32-S3 → RPi 5 (71 octets).
+ * @brief Trame montante : ESP32-S3 → RPi 5 (72 octets).
  *
  * Télémétrie complète incluant attitude IMU, pression, température,
  * mesures de puissance (3 wattmètres) et valeurs PWM effectives.
@@ -118,7 +118,7 @@ typedef struct {
     int32_t  temperature;                   ///< Température en 0.01 °C
     uint16_t power[6];                      ///< [V1,I1, V2,I2, V3,I3] en mV/mA
     uint16_t pwm_actual[PROTO_NUM_PWM];     ///< PWM effectifs envoyés (µs)
-    uint16_t crc16;                         ///< CRC16-CCITT sur octets [2..68]
+    uint16_t crc16;                         ///< CRC16-CCITT sur octets [2..69]
 } UplinkFrame_t;
 
 #pragma pack(pop)
@@ -177,7 +177,7 @@ inline bool crc16_verify(const uint8_t* frame, size_t frame_size) {
 /**
  * @brief Remplit le champ CRC16 d'une trame avant émission.
  *
- * Calcule le CRC sur les octets [2..size-5] et écrit le résultat
+ * Calcule le CRC sur les octets [2..size-3] et écrit le résultat
  * dans les 2 derniers octets de la trame (big-endian).
  *
  * @param[in,out] frame       Pointeur vers la trame à compléter.

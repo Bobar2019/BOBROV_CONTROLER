@@ -79,9 +79,9 @@ La communication s'effectue à **921 600 bauds** sur l'interface sélectionnée 
 * **Mode :** `uint8_t` (`0` = Passif, `1` = AUTO Roulis et Tangage, `2` = Auto-Full)
 * **Arm State :** `uint8_t` (`0` = Disarmed, `1` = Armed, `2` = Emergency Stop)
 * **PWM Channels (0–15) :** `uint16_t[16]` (32 octets, consigne en $\mu\text{s}$)
-* **CRC16 :** `uint16_t` (2 octets, polynôme 0x1021)
+* **CRC16 :** `uint16_t` (2 octets, polynôme 0x1021, init 0xFFFF — **stocké gros-boutiste** : octet fort puis faible, calculé sur les octets `[2..36]`)
 
-### 2. Trame Montante : ESP32-S3 → RPi 5 (71 octets @ 50-100 Hz)
+### 2. Trame Montante : ESP32-S3 → RPi 5 (72 octets @ 100 Hz)
 
 ```
 [0x55][0xAA][TYPE][STATUS][QUAT_W,X,Y,Z][GYRO_X,Y,Z][PRESS,TEMP][INA_1,2,3][PWM_ACT_0...15][CRC16]
@@ -89,17 +89,19 @@ La communication s'effectue à **921 600 bauds** sur l'interface sélectionnée 
 
 * **Header :** `0x55`, `0xAA` (2 octets)
 * **Type :** `0x02` (1 octet)
-* **Status Flags :** `uint8_t` (Bit 0: réservé, Bit 1: Armé, Bit 2: Autopilote actif, Bit 3: Watchdog déclenché, Bit 4: Sorties physiques neutralisées / Dry-Run)
+* **Status Flags :** `uint8_t` (Bit 0: réservé, Bit 1: Liaison établie — au moins une trame valide reçue depuis le boot, Bit 2: Autopilote actif — réservé, jamais émis, Bit 3: Watchdog déclenché, Bit 4: Sorties physiques neutralisées / Dry-Run)
 * **Quaternions IMU :** `int16_t[4]` (8 octets, $W, X, Y, Z$ scalés $\times 10\,000$, repère véhicule — montage BNO085 remappé à la source)
 * **Gyroscope :** `int16_t[3]` (6 octets, $\omega_x, \omega_y, \omega_z$ scalés $\times 100$, repère véhicule)
 * **Pression & Température :** `int32_t[2]` (8 octets, $0.1\text{ mbar}$ et $0.01\,^\circ\text{C}$)
 * **Télémétrie Puissance :** `uint16_t[6]` (12 octets, $V$ et $I$ pour Pi, Aux et Propulsion en $mV$ / $mA$)
 * **PWM Effectifs :** `uint16_t[16]` (32 octets, impulsions réelles envoyées aux actionneurs)
-* **CRC16 :** `uint16_t` (2 octets)
+* **CRC16 :** `uint16_t` (2 octets, **gros-boutiste**, calculé sur les octets `[2..69]`)
 
 ### 3. Watchdog Failsafe
 
 Un watchdog logiciel surveille la réception de trames descendantes. Si aucune trame valide n'est reçue pendant le **timeout configurable** (défaut : 500 ms), tous les canaux PWM sont automatiquement forcés au neutre ($1500\,\mu\text{s}$) pour la sécurité des propulseurs.
+
+> **📄 Documentation détaillée pour le développement côté RPi 5 :** voir [PROTOCOLE_RPI5.md](PROTOCOLE_RPI5.md) — description octet par octet des deux trames, sémantique exacte des bits de statut, comportements watchdog / armement / maître / dry-run, exemple Python prêt à l'emploi et vecteurs de test.
 
 ---
 
@@ -182,6 +184,7 @@ lib_deps =
 BOB-CONTROL/
 ├── README.md                  # Résumé du projet (GitHub)
 ├── BOBCONTROL.md              # Spécification et documentation (ce fichier)
+├── PROTOCOLE_RPI5.md          # Protocole série RPi 5 : trames octet par octet + exemple Python
 ├── platformio.ini             # Configuration PlatformIO
 ├── data/                      # Fichiers LittleFS (interface Web)
 │   ├── index.html             # Tableau de bord (tuiles + sections)
