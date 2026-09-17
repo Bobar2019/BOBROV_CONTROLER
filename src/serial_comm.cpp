@@ -12,6 +12,7 @@
 
 #include "serial_comm.h"
 #include "pwm_controller.h"
+#include "gpio_outputs.h"
 #include "config.h"
 #include "protocol.h"
 #include <Preferences.h>
@@ -277,7 +278,7 @@ void SerialComm::_processByte(uint8_t b) {
  * @brief Valide la trame reçue par vérification CRC16 et extraction des données.
  *
  * Vérifie le CRC16-CCITT sur l'ensemble de la trame et, si valide,
- * extrait les champs mode, arm_state et les 16 canaux PWM.
+ * extrait les champs mode, arm_state, gpio_cmd et les 16 canaux PWM.
  *
  * @return true si la trame est valide et les données extraites.
  */
@@ -295,6 +296,7 @@ bool SerialComm::_validateFrame() {
 
         _lastData.mode      = frame->mode;
         _lastData.arm_state = frame->arm_state;
+        _lastData.gpio_cmd  = frame->gpio_cmd;
 
         /* Copie des 16 canaux PWM (déjà en little-endian sur ESP32) */
         for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
@@ -345,6 +347,8 @@ void SerialComm::_taskRxLoop() {
                 Serial.println("[SERIAL] Watchdog déclenché ! Failsafe activé.");
                 /* Force tous les propulseurs au neutre immédiatement */
                 g_pwm.setAllNeutral();
+                /* Sorties tout-ou-rien forcées à OFF par sécurité */
+                g_gpio.allOff();
             }
         }
 

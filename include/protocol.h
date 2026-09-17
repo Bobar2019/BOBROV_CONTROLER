@@ -2,13 +2,13 @@
  * @file protocol.h
  * @brief Définition du protocole série binaire RPi5 ↔ ESP32-S3.
  *
- * Structures packed des trames descendante (39 octets) et montante (72 octets),
+ * Structures packed des trames descendante (40 octets) et montante (73 octets),
  * constantes de protocole, et fonctions de calcul/vérification CRC16-CCITT.
  *
  * Polynôme CRC : 0x1021 (CCITT), valeur initiale : 0xFFFF.
  *
  * @author Didier Dero
- * @version 1.0.0
+ * @version 1.1.0
  * @date Août 2026
  */
 
@@ -40,11 +40,11 @@
  * TAILLES DES TRAMES
  * ========================================================================= */
 
-/** @brief Taille totale de la trame descendante en octets */
-#define DL_FRAME_SIZE   39
+/** @brief Taille totale de la trame descendante en octets (inclut gpio_cmd) */
+#define DL_FRAME_SIZE   40
 
-/** @brief Taille totale de la trame montante en octets */
-#define UL_FRAME_SIZE   72
+/** @brief Taille totale de la trame montante en octets (inclut gpio_state) */
+#define UL_FRAME_SIZE   73
 
 /** @brief Nombre de canaux PWM dans une trame */
 #define PROTO_NUM_PWM   16
@@ -81,12 +81,13 @@
 #pragma pack(push, 1)
 
 /**
- * @brief Trame descendante : RPi 5 → ESP32-S3 (39 octets).
+ * @brief Trame descendante : RPi 5 → ESP32-S3 (40 octets).
  *
  * Contient les consignes de commande envoyées par le cockpit Raspberry Pi :
- * mode opérationnel, état d'armement et valeurs PWM pour 16 canaux.
+ * mode opérationnel, état d'armement, valeurs PWM pour 16 canaux et masque
+ * de commande des 4 sorties tout-ou-rien (GPIO ON/OFF).
  *
- * Format : [0xAA][0x55][TYPE][MODE][ARM][PWM_0..PWM_15][CRC16_HI][CRC16_LO]
+ * Format : [0xAA][0x55][TYPE][MODE][ARM][PWM_0..PWM_15][GPIO_CMD][CRC16_HI][CRC16_LO]
  */
 typedef struct {
     uint8_t  header1;                       ///< 0xAA
@@ -94,18 +95,20 @@ typedef struct {
     uint8_t  type;                          ///< 0x01 (commande)
     uint8_t  mode;                          ///< Mode : 0=Manuel, 1=AutoRoll, 2=Depth, 3=Full
     uint8_t  arm_state;                     ///< 0=Désarmé, 1=Armé, 2=E-Stop
-    uint16_t pwm[PROTO_NUM_PWM];            ///< Consignes PWM en µs (1000-2000)
-    uint16_t crc16;                         ///< CRC16-CCITT calculé sur octets [2..36]
+    uint16_t pwm[PROTO_NUM_PWM];            ///< Consignes PWM en µs (1000-2000) — offsets 5..36
+    uint8_t  gpio_cmd;                      ///< Masque 4 bits sorties ON/OFF (bit 0 = sortie 1 … bit 3 = sortie 4) — offset 37
+    uint16_t crc16;                         ///< CRC16-CCITT sur octets [2..37] — offsets 38 (hi) / 39 (lo)
 } DownlinkFrame_t;
 
 /**
- * @brief Trame montante : ESP32-S3 → RPi 5 (72 octets).
+ * @brief Trame montante : ESP32-S3 → RPi 5 (73 octets).
  *
  * Télémétrie complète incluant attitude IMU, pression, température,
- * mesures de puissance (3 wattmètres) et valeurs PWM effectives.
+ * mesures de puissance (3 wattmètres), valeurs PWM effectives et état
+ * réel des 4 sorties tout-ou-rien (GPIO ON/OFF).
  *
  * Format : [0x55][0xAA][TYPE][STATUS][QUAT_W,X,Y,Z][GYRO_X,Y,Z]
- *          [PRESS][TEMP][INA_V1,I1,V2,I2,V3,I3][PWM_0..15][CRC16]
+ *          [PRESS][TEMP][INA_V1,I1,V2,I2,V3,I3][PWM_0..15][GPIO_STATE][CRC16]
  */
 typedef struct {
     uint8_t  header1;                       ///< 0x55
@@ -117,11 +120,34 @@ typedef struct {
     int32_t  pressure;                      ///< Pression en 0.1 mbar
     int32_t  temperature;                   ///< Température en 0.01 °C
     uint16_t power[6];                      ///< [V1,I1, V2,I2, V3,I3] en mV/mA
-    uint16_t pwm_actual[PROTO_NUM_PWM];     ///< PWM effectifs envoyés (µs)
-    uint16_t crc16;                         ///< CRC16-CCITT sur octets [2..69]
+    uint16_t pwm_actual[PROTO_NUM_PWM];     ///< PWM effectifs envoyés (µs) — offsets 38..69
+    uint8_t  gpio_state;                    ///< État réel des 4 sorties ON/OFF (bit 0 = sortie 1 … bit 3 = sortie 4) — offset 70
+    uint16_t crc16;                         ///< CRC16-CCITT sur octets [2..70] — offsets 71 (hi) / 72 (lo)
 } UplinkFrame_t;
 
 #pragma pack(pop)
+
+/* =========================================================================
+ * GARDE-FOUS DE COMPATIBILITÉ BINAIRE (VÉRIFIÉS À LA COMPILATION)
+ * =========================================================================
+ *
+ * Les offsets de ce protocole sont contractuels avec le RPi 5 : toute
+ * dérive silencieuse (champ oublié, padding, réordonnancement) casserait la
+ * communication binaire. Ces vérifications échouent à la COMPILATION et dans
+ * l'outil hôte .pio/proto_size_test.cpp. */
+
+static_assert(sizeof(DownlinkFrame_t) == DL_FRAME_SIZE,
+              "DownlinkFrame_t doit faire exactement DL_FRAME_SIZE octets");
+static_assert(sizeof(UplinkFrame_t) == UL_FRAME_SIZE,
+              "UplinkFrame_t doit faire exactement UL_FRAME_SIZE octets");
+static_assert(offsetof(DownlinkFrame_t, gpio_cmd) == 37,
+              "gpio_cmd doit etre a l'offset 37 (trame descendante)");
+static_assert(offsetof(DownlinkFrame_t, crc16) == 38,
+              "CRC16 descendant doit demarrer a l'offset 38");
+static_assert(offsetof(UplinkFrame_t, gpio_state) == 70,
+              "gpio_state doit etre a l'offset 70 (trame montante)");
+static_assert(offsetof(UplinkFrame_t, crc16) == 71,
+              "CRC16 montant doit demarrer a l'offset 71");
 
 /* =========================================================================
  * FONCTIONS CRC16-CCITT

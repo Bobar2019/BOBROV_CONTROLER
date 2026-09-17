@@ -13,6 +13,15 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Michroma&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        /* Thème sombre par défaut ; la préférence mémorisée est appliquée AVANT
+           le premier rendu pour éviter tout flash de thème au chargement. */
+        (function () {
+            var t = 'dark';
+            try { t = localStorage.getItem('bobcontrol_theme') || 'dark'; } catch (_) {}
+            document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+        })();
+    </script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -20,11 +29,34 @@
     <!-- Barre de statut fixe -->
     <header id="topbar">
         <div class="logo">BOB-CONTROL</div>
-        <div class="status-badges">
-            <span id="badge-ws" class="badge badge-off">WS: Déconnecté</span>
-            <span id="badge-rpi" class="badge badge-off">RPi: --</span>
-            <span id="badge-mode" class="badge badge-real">RÉEL</span>
-            <span id="badge-wdg" class="badge badge-ok">WDG: OK</span>
+        <div class="topbar-right">
+            <div class="status-badges">
+                <span id="badge-ws" class="badge badge-off">WS: Déconnecté</span>
+                <span id="badge-rpi" class="badge badge-off">RPi: --</span>
+                <span id="badge-mode" class="badge badge-real">RÉEL</span>
+                <span id="badge-wdg" class="badge badge-ok">WDG: OK</span>
+            </div>
+            <button id="theme-toggle" class="theme-toggle" type="button"
+                    aria-label="Passer au thème clair" title="Passer au thème clair">
+                <svg class="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true">
+                    <circle cx="12" cy="12" r="5"/>
+                    <line x1="12" y1="1" x2="12" y2="3"/>
+                    <line x1="12" y1="21" x2="12" y2="23"/>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                    <line x1="1" y1="12" x2="3" y2="12"/>
+                    <line x1="21" y1="12" x2="23" y2="12"/>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                </svg>
+                <svg class="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+            </button>
         </div>
     </header>
 
@@ -51,7 +83,7 @@
                 </svg>
                 <span>Terminer</span>
             </button>
-            <span id="dashEditHint" class="dash-edit-hint" style="display:none">Glissez les tuiles pour réorganiser</span>
+            <span id="dashEditHint" class="dash-edit-hint" style="display:none">Appui long sur une tuile (ou bouton) — glissez pour réorganiser, tap à l’extérieur pour terminer</span>
         </div>
 
         <!-- Grille de tuiles -->
@@ -356,6 +388,12 @@
                     <button id="btn-neutral" class="btn btn-danger" disabled>Tout au Neutre (1500 µs)</button>
                 </div>
                 <div class="slider-grid" id="slider-grid"></div>
+                <!-- Sorties tout-ou-rien du banc (noms NVS + états réels relus) -->
+                <div class="bench-gpio-wrap">
+                    <div class="bench-gpio-title">Sorties Tout-ou-Rien (GPIO ON/OFF ×4)</div>
+                    <div class="bench-gpio-grid" id="bench-gpio-grid"></div>
+                    <p class="card-hint" id="bench-gpio-hint">Boutons de test (établi) : forcent l'état des sorties — le firmware relit et renvoie l'état réel. Écrasés par le watchdog, l'E-Stop ou une trame RPi 5 maître.</p>
+                </div>
             </div>
         </div>
     </section>
@@ -378,6 +416,131 @@
                         </label>
                     </div>
                     <button id="btn-save-comm" class="btn btn-primary">Appliquer la liaison série</button>
+                </div>
+
+                <!-- Typage des canaux PWM 10 à 15 (outils) -->
+                <div class="card">
+                    <h3>Typage des canaux PWM 10 à 15</h3>
+                    <p class="card-hint">Bidirectionnel : neutre 1500 µs, plage 1000–2000 µs (pinces/outils).
+                        Unidirectionnel : pleine échelle 0–100 % (gradateurs LED). Sauvegarde NVS, appliqué à chaud.</p>
+                    <div class="settings-grid">
+                        <label>CH10 — Claw
+                            <select id="sel-pwm-type-10">
+                                <option value="1">Bidirectionnel (1500 µs)</option>
+                                <option value="0">Unidirectionnel (0–100 %)</option>
+                            </select>
+                        </label>
+                        <label>CH11 — Claw Rot.
+                            <select id="sel-pwm-type-11">
+                                <option value="1">Bidirectionnel (1500 µs)</option>
+                                <option value="0">Unidirectionnel (0–100 %)</option>
+                            </select>
+                        </label>
+                        <label>CH12 — LED Dim 1
+                            <select id="sel-pwm-type-12">
+                                <option value="1">Bidirectionnel (1500 µs)</option>
+                                <option value="0">Unidirectionnel (0–100 %)</option>
+                            </select>
+                        </label>
+                        <label>CH13 — LED Dim 2
+                            <select id="sel-pwm-type-13">
+                                <option value="1">Bidirectionnel (1500 µs)</option>
+                                <option value="0">Unidirectionnel (0–100 %)</option>
+                            </select>
+                        </label>
+                        <label>CH14 — Aux 1
+                            <select id="sel-pwm-type-14">
+                                <option value="1">Bidirectionnel (1500 µs)</option>
+                                <option value="0">Unidirectionnel (0–100 %)</option>
+                            </select>
+                        </label>
+                        <label>CH15 — Aux 2
+                            <select id="sel-pwm-type-15">
+                                <option value="1">Bidirectionnel (1500 µs)</option>
+                                <option value="0">Unidirectionnel (0–100 %)</option>
+                            </select>
+                        </label>
+                    </div>
+                    <button id="btn-save-pwm-types" class="btn btn-primary">Appliquer le typage PWM</button>
+                </div>
+
+                <!-- Sorties tout-ou-rien (4 × GPIO ON/OFF) -->
+                <div class="card">
+                    <h3>Sorties Tout-ou-Rien (GPIO ON/OFF ×4)</h3>
+                    <p class="card-hint">Sorties numériques pilotées par le masque gpio_cmd de la trame descendante
+                        (bit 0 = sortie 1). Watchdog série et E-Stop les forcent à OFF.</p>
+                    <div class="settings-grid">
+                        <label><span id="gpio-pin-name-0">Sortie 1</span> (GPIO)
+                            <input type="number" id="gpio-pin-1" min="0" max="48" value="15">
+                        </label>
+                        <label><span id="gpio-pin-name-1">Sortie 2</span> (GPIO)
+                            <input type="number" id="gpio-pin-2" min="0" max="48" value="16">
+                        </label>
+                        <label><span id="gpio-pin-name-2">Sortie 3</span> (GPIO)
+                            <input type="number" id="gpio-pin-3" min="0" max="48" value="17">
+                        </label>
+                        <label><span id="gpio-pin-name-3">Sortie 4</span> (GPIO)
+                            <input type="number" id="gpio-pin-4" min="0" max="48" value="18">
+                        </label>
+                    </div>
+                    <p class="card-hint">Sauvegarde NVS puis redémarrage du contrôleur après 3 s — sorties initialisées
+                        à OFF au démarrage. GPIO 19/20 (USB natif) et broches I2C/UART1 refusés.</p>
+                    <button id="btn-save-gpio-pins" class="btn btn-primary">Sauvegarder &amp; redémarrer</button>
+                    <div class="gpio-states">
+                        <span class="gpio-test-item"><span id="gpio-name-0">Sortie 1</span> <span class="gpio-st gpio-st-off" id="gpio-st-0">OFF</span><button type="button" class="gpio-test-btn" id="gpio-test-0">Activer</button></span>
+                        <span class="gpio-test-item"><span id="gpio-name-1">Sortie 2</span> <span class="gpio-st gpio-st-off" id="gpio-st-1">OFF</span><button type="button" class="gpio-test-btn" id="gpio-test-1">Activer</button></span>
+                        <span class="gpio-test-item"><span id="gpio-name-2">Sortie 3</span> <span class="gpio-st gpio-st-off" id="gpio-st-2">OFF</span><button type="button" class="gpio-test-btn" id="gpio-test-2">Activer</button></span>
+                        <span class="gpio-test-item"><span id="gpio-name-3">Sortie 4</span> <span class="gpio-st gpio-st-off" id="gpio-st-3">OFF</span><button type="button" class="gpio-test-btn" id="gpio-test-3">Activer</button></span>
+                    </div>
+                    <p class="card-hint" id="gpio-test-hint">Boutons de test (établi) : forcent l'état des sorties — le firmware relit et renvoie l'état réel. Écrasés par le watchdog, l'E-Stop ou une trame RPi 5 maître.</p>
+                </div>
+
+                <!-- Noms personnalisés des sorties (16 PWM + 4 GPIO, NVS) -->
+                <div class="card">
+                    <h3>Noms des sorties</h3>
+                    <p class="card-hint">Nom affiché de chaque sortie dans le Banc de Test, le PWM Monitor et les états GPIO.
+                        Vide = nom par défaut. Sauvegarde NVS appliquée à chaud (sans redémarrage).</p>
+                    <div class="names-grid">
+                        <label class="name-field">CH0<input type="text" id="name-ch-0" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 1"></label>
+                        <label class="name-field">CH1<input type="text" id="name-ch-1" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 2"></label>
+                        <label class="name-field">CH2<input type="text" id="name-ch-2" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 3"></label>
+                        <label class="name-field">CH3<input type="text" id="name-ch-3" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 4"></label>
+                        <label class="name-field">CH4<input type="text" id="name-ch-4" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 5"></label>
+                        <label class="name-field">CH5<input type="text" id="name-ch-5" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 6"></label>
+                        <label class="name-field">CH6<input type="text" id="name-ch-6" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 7"></label>
+                        <label class="name-field">CH7<input type="text" id="name-ch-7" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Thruster 8"></label>
+                        <label class="name-field">CH8<input type="text" id="name-ch-8" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Pan Servo"></label>
+                        <label class="name-field">CH9<input type="text" id="name-ch-9" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Tilt Servo"></label>
+                        <label class="name-field">CH10<input type="text" id="name-ch-10" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Claw"></label>
+                        <label class="name-field">CH11<input type="text" id="name-ch-11" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Claw Rot."></label>
+                        <label class="name-field">CH12<input type="text" id="name-ch-12" maxlength="20" autocomplete="off" spellcheck="false" placeholder="LED Dim 1"></label>
+                        <label class="name-field">CH13<input type="text" id="name-ch-13" maxlength="20" autocomplete="off" spellcheck="false" placeholder="LED Dim 2"></label>
+                        <label class="name-field">CH14<input type="text" id="name-ch-14" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Aux 1"></label>
+                        <label class="name-field">CH15<input type="text" id="name-ch-15" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Aux 2"></label>
+                        <label class="name-field">GPIO1<input type="text" id="name-gpio-0" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Sortie 1"></label>
+                        <label class="name-field">GPIO2<input type="text" id="name-gpio-1" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Sortie 2"></label>
+                        <label class="name-field">GPIO3<input type="text" id="name-gpio-2" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Sortie 3"></label>
+                        <label class="name-field">GPIO4<input type="text" id="name-gpio-3" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Sortie 4"></label>
+                    </div>
+                    <button id="btn-save-names" class="btn btn-primary">Appliquer les noms</button>
+                    <p class="card-hint" id="names-status"></p>
+                </div>
+
+                <!-- Calibration altimétrique QNH (v1.0.1 — Open-Meteo, Chamoson VS) -->
+                <div class="card">
+                    <h3>Calibration Altimètre (QNH)</h3>
+                    <p class="card-hint">Correction du QNH réel (Open-Meteo — Chamoson, VS) pour l'altitude barométrique
+                        hors de l'eau uniquement : la profondeur immergée reste fondée sur la tare de surface locale et
+                        la boucle de contrôle n'est jamais impactée. Fallback transparent sur 1013.25 mbar si Internet
+                        est indisponible ou si l'option est désactivée.</p>
+                    <label class="qnh-toggle-row">
+                        <input type="checkbox" id="qnh-auto-enable">
+                        <span>Activer la calibration QNH automatique (Internet)</span>
+                    </label>
+                    <button id="btn-qnh-refresh" class="btn btn-primary" type="button">
+                        <span id="qnh-refresh-label">Actualiser le QNH maintenant</span><span id="qnh-refresh-spinner" class="qnh-spinner" hidden></span>
+                    </button>
+                    <p class="card-hint" id="qnh-status">QNH actuel utilisé : — mbar</p>
                 </div>
 
                 <!-- Configuration Broches I2C (bus n°1) -->
@@ -628,8 +791,14 @@
         </div>
     </section>
 
-    <footer>
-        <span>BOB-CONTROL v1.0.0 — ESP32-S3 / FreeRTOS</span>
+    <!-- Pied de page global : version Git réelle du firmware (renseignée par app.js
+         depuis /api/system/status) + mentions auteur / licence -->
+    <footer class="app-footer">
+        <span>BOB-CONTROL <span id="app-version">v1.0.1</span></span>
+        <span aria-hidden="true"> | </span>
+        <span>Auteur : Dero Didier</span>
+        <span aria-hidden="true"> | </span>
+        <span>Licence MIT</span>
     </footer>
 
     <script src="/vendor/three.min.js"></script>

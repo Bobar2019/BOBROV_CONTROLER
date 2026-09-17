@@ -143,6 +143,27 @@ public:
     void requestNorthTare();
 
     /**
+     * @brief Définit le QNH (mbar) utilisé par la formule d'altitude barométrique.
+     *
+     * Uniquement hors de l'eau (altimètre) : la profondeur immergée reste
+     * fondée sur la tare de surface locale (ΔP) — le QNH ne l'affecte jamais,
+     * pas plus que la boucle de contrôle. Thread-safe (écriture sous mutex
+     * à timeout court : en cas d'échec l'ancienne valeur reste — non destructif).
+     */
+    void setQnh(float qnhMbar);
+
+    /**
+     * @brief Définit l'offset matériel du MS5803 (mbar, signé).
+     *
+     * Compensé UNIQUEMENT dans la formule d'altitude barométrique hors de
+     * l'eau (P_corrigée = P_brute − offset) : la tare de surface comme la
+     * profondeur immergée (ΔP) restent fondées sur la pression absolue brute,
+     * strictement intouchées. Thread-safe (écriture sous mutex à timeout
+     * court : en cas d'échec l'ancienne valeur reste — non destructif).
+     */
+    void setHwOffset(float offsetMbar);
+
+    /**
      * @brief Dernière erreur d'initialisation du BNO085 ("" si OK).
      *
      * Exposée à l'interface Web pour diagnostiquer un badge rouge sans câble
@@ -268,6 +289,8 @@ private:
     float   _surfaceMbar;               ///< Pression de surface étalonnée (tare, mbar)
     volatile bool _tareRequested;       ///< true = tare à (re)capturer à la prochaine lecture
     float   _lastBaroAlt;               ///< Dernière altitude barométrique (figée en immersion)
+    float   _qnhMbar;                   ///< QNH de la formule d'altitude (défaut standard 1013.25 — v1.0.1)
+    float   _hwOffsetMbar;              ///< Offset matériel MS5803 (mbar, signé ; défaut 0 — v1.0.1)
 
     /* -- Tare Nord : remise à zéro du cap sur le Nord réel (bouton interface) -- */
     float   _headingOffset;             ///< Offset de cap appliqué au yaw (°, ±180)

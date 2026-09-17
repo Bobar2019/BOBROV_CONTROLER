@@ -58,6 +58,12 @@ SensorDriver::SensorDriver()
     _surfaceMbar   = SEA_LEVEL_PRESSURE_MBAR;
     _tareRequested = true;
     _lastBaroAlt   = 0.0f;
+    /* QNH (v1.0.1) : standard au démarrage — remplacé par la valeur NVS/
+     * Open-Meteo via setQnh() depuis le serveur Web si l'option est activée. */
+    _qnhMbar       = SEA_LEVEL_PRESSURE_MBAR;
+    /* Offset matériel (v1.0.1) : nul au démarrage — remplacé par la valeur
+     * NVS via setHwOffset() si une calibration Open-Meteo a déjà eu lieu. */
+    _hwOffsetMbar  = 0.0f;
     /* Tare Nord : offset nul au départ — capturé au 1er « Régler Nord » (ajustage
      * fin en cap magnétique, référence obligatoire en secours relatif) */
     _headingOffset      = 0.0f;
@@ -442,6 +448,31 @@ void SensorDriver::requestSurfaceTare() {
      * prochaine lecture MS5803 (voir _readMS5803). Thread-safe par atomicité
      * d'un booléen. */
     _tareRequested = true;
+}
+
+void SensorDriver::setQnh(float qnhMbar) {
+    /* Garde-fou : une valeur aberrante (réponse corrompue) ne doit jamais
+     * polluer la formule d'altitude — hors plage physique → ignorée. */
+    if (qnhMbar < QNH_MIN_MBAR || qnhMbar > QNH_MAX_MBAR) return;
+    if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        _qnhMbar = qnhMbar;
+        xSemaphoreGive(_mutex);
+    }
+    /* Mutex occupé (rare) : l'ancien QNH reste — la valeur NVS sera
+     * réappliquée au prochain démarrage (non destructif). */
+}
+
+void SensorDriver::setHwOffset(float offsetMbar) {
+    /* Garde-fou : un offset calculé aberrant (élévation/QNH corrompus,
+     * capteur dérivant) ne doit jamais polluer l'altitude — hors borne →
+     * ignoré, l'ancien offset reste appliqué. */
+    if (fabsf(offsetMbar) > MS5803_HW_OFFSET_MAX_MBAR) return;
+    if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        _hwOffsetMbar = offsetMbar;
+        xSemaphoreGive(_mutex);
+    }
+    /* Mutex occupé (rare) : l'ancien offset reste — la valeur NVS sera
+     * réappliquée au prochain démarrage (non destructif). */
 }
 
 void SensorDriver::requestNorthTare() {
@@ -1192,11 +1223,19 @@ bool SensorDriver::_readMS5803(PressureData& out) {
         out.altitude_m = -out.depth_m;              /* repère PID : négatif sous la surface */
     } else {
         /* HORS DE L'EAU (altimètre) : profondeur nulle, altitude barométrique réelle
-         * via la formule internationale h = 44330·(1 − (P/P0)^0.190284). */
+         * via la formule internationale h = 44330·(1 − (P/P0)^0.190284).
+         * P0 = QNH courant (standard 1013.25 par défaut, valeur Open-Meteo si
+         * l'option est activée — v1.0.1) : ne corrige QUE l'altitude, jamais la
+         * tare surface ni la profondeur immergée. */
         out.immersed = false;
         out.depth_m  = 0.0f;
+        /* P_corrigée = P_brute − offset matériel : la compensation ne touche
+         * QUE l'altitude (v1.0.1). Tare de surface et ΔP/profondeur restent
+         * fondés sur la pression absolue brute (press_mbar) — cloisonnement
+         * critique altitude/profondeur préservé de bout en bout. */
+        const float pCorrMbar = press_mbar - _hwOffsetMbar;
         _lastBaroAlt = 44330.0f *
-            (1.0f - powf(press_mbar / SEA_LEVEL_PRESSURE_MBAR, 0.190284f));
+            (1.0f - powf(pCorrMbar / _qnhMbar, 0.190284f));
         out.baro_alt_m = _lastBaroAlt;
         out.altitude_m = 0.0f;                      /* repère PID : à la surface */
     }

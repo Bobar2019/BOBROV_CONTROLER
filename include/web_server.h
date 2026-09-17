@@ -7,7 +7,7 @@
  * temps réel via WebSocket.
  *
  * @author Didier Dero
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 #ifndef WEB_SERVER_H
@@ -58,6 +58,12 @@ private:
     bool            _otaRejected;   ///< Upload OTA courant rejeté (fichier incompatible avec la cible)
     bool            _otaWasFS;      ///< Upload OTA courant ciblant la partition LittleFS
 
+    /* -- Calibration altimétrique QNH (v1.0.1) -- */
+    bool            _qnhAutoEnable;         ///< Option NVS : requête Open-Meteo au démarrage
+    bool            _qnhBootApplied;        ///< Requête de démarrage déjà lancée ce boot
+    volatile bool   _qnhFetchRunning;       ///< Requête QNH (boot ou manuelle) en cours
+    volatile bool   _qnhLastFetchOk;        ///< Dernière requête Open-Meteo aboutie
+
     /* -- Configuration des endpoints -- */
     void _setupRoutes();            ///< Endpoints HTTP et fichiers statiques
     void _setupWebSocket();         ///< Gestionnaire d'événements WebSocket
@@ -70,6 +76,20 @@ private:
     void _handleCommConfigGet(AsyncWebServerRequest* request);
     void _handleCommConfigPost(AsyncWebServerRequest* request);
     void _handlePwmOutputEnable(AsyncWebServerRequest* request);
+    void _handlePwmConfigGet(AsyncWebServerRequest* request);
+    void _handlePwmConfigPost(AsyncWebServerRequest* request);
+    void _handleGpioConfigGet(AsyncWebServerRequest* request);
+    void _handleGpioConfigPost(AsyncWebServerRequest* request);
+    void _handleGpioTestPost(AsyncWebServerRequest* request);
+    void _handleNamesGet(AsyncWebServerRequest* request);
+    void _handleNamesPost(AsyncWebServerRequest* request);
+
+    /* -- Calibration altimétrique QNH (v1.0.1) : Open-Meteo, tâche détachée -- */
+    void _handleQnhConfigGet(AsyncWebServerRequest* request);
+    void _handleQnhConfigPost(AsyncWebServerRequest* request);
+    void _handleQnhRefreshPost(AsyncWebServerRequest* request);
+    float _qnhFetchAndApply();              ///< Requête Open-Meteo + application (tâche QnhFetch uniquement)
+    static void _qnhTaskEntry(void* param); ///< Entrée de la tâche détachée QNH
     void _handleI2CScan(AsyncWebServerRequest* request);
     void _handleI2CConfigGet(AsyncWebServerRequest* request);
     void _handleI2CConfigPost(AsyncWebServerRequest* request);

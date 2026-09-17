@@ -5,6 +5,7 @@
  * - Fond #131417, cartes #252830, bordures #444857
  * - Accent cyan #00d9ff, magenta #ff3e9d, violet #b084ff
  * - Polices Michroma (titres) + Source Code Pro (corps)
+ * - Thème clair : surcharge des variables sous html[data-theme="light"]
  */
 
 /* ===== RESET ===== */
@@ -30,12 +31,99 @@
     --warning: #ffb300;
 
     --border-color: #444857;
+    --border-subtle: #3d4150;
+
+    /* Surfaces translucides inversées en thème clair (séparateurs, fonds
+       légers, pistes de progression, curseur central des barres bidir) */
+    --divider:     rgba(255, 255, 255, 0.05);
+    --panel-faint: rgba(255, 255, 255, 0.03);
+    --track-bg:    rgba(255, 255, 255, 0.08);
+    --bidi-center: rgba(255, 255, 255, 0.35);
+    --info:        #29b6f6;
+
     --radius: 12px;
     --radius-sm: 8px;
 
     --font-body:  'Source Code Pro', monospace;
     --font-title: 'Michroma', 'Source Code Pro', sans-serif;
+
+    color-scheme: dark;   /* contrôles natifs (select, cases, spinners) en sombre */
 }
+
+/* ===== THÈME CLAIR =====
+ * Bascule via l'attribut data-theme posé sur <html> (persisté en localStorage
+ * et appliqué avant le premier rendu par le script inline de index.html).
+ * :root reste la référence du thème sombre ; seules les variables et quelques
+ * rares couleurs codées en dur sont redéfinies ci-dessous. */
+html[data-theme="light"] {
+    color-scheme: light;
+
+    --bg-primary:   #eef0f4;
+    --bg-secondary: #ffffff;
+    --bg-card:      #ffffff;
+    --bg-input:     #f4f5f8;
+
+    --text-primary:   #1a1c22;
+    --text-secondary: #4a4f5e;
+    --text-dim:       #6e7382;
+
+    --accent-cyan:    #007a99;
+    --accent-magenta: #d0207c;
+    --accent-purple:  #6f42c1;
+
+    --success: #0e8c50;
+    --danger:  #d32f2f;
+    --warning: #b26a00;
+
+    --border-color:  #c9ced9;
+    --border-subtle: #d5d9e2;
+
+    --divider:     rgba(20, 26, 40, 0.08);
+    --panel-faint: rgba(20, 26, 40, 0.03);
+    --track-bg:    rgba(20, 26, 40, 0.12);
+    --bidi-center: rgba(20, 26, 40, 0.35);
+    --info:        #0369a1;
+}
+
+/* --- Ajustements ciblés du thème clair (couleurs codées en dur) --- */
+html[data-theme="light"] code { background: rgba(20, 26, 40, 0.06); }
+html[data-theme="light"] .ota-progress-bar { background: linear-gradient(90deg, #0090b8, #00b4d8); }
+html[data-theme="light"] .pwm-bar-bg.gauge {
+    background: linear-gradient(90deg,
+        rgba(0, 230, 118, 0.22) 0%,
+        rgba(255, 179, 0, 0.22) 50%,
+        rgba(255, 59, 48, 0.22) 100%);
+}
+html[data-theme="light"] .i2c-scan-table th {
+    background: rgba(0, 122, 153, 0.07);
+    border-bottom-color: rgba(0, 122, 153, 0.25);
+}
+html[data-theme="light"] .i2c-scan-table td { color: var(--text-secondary); }
+html[data-theme="light"] .wifi-sta-off { color: var(--danger); }
+html[data-theme="light"] .rov-3d-cap-warn,
+html[data-theme="light"] .dryrun-state-text.off,
+html[data-theme="light"] .dryrun-badge-warn { color: #b26a00; }
+html[data-theme="light"] .master-rpi-badge,
+html[data-theme="light"] .master-rpi { color: #2e7d32; }
+html[data-theme="light"] .master-esp-badge,
+html[data-theme="light"] .master-esp { color: #c77800; }
+html[data-theme="light"] .pin-gnd { color: #5f6573; }
+/* Panneaux volontairement sombres (vue schématique propulsion, diagrammes
+ * ASCII, affichage 3D) : les couleurs pilotées par variables y sont forcées
+ * aux teintes du thème sombre pour rester lisibles sur fond noir. */
+html[data-theme="light"] .rov-schematic-wrap .rov-hull { stroke: #00d9ff; }
+html[data-theme="light"] .rov-schematic-wrap .rov-nose { fill: #00d9ff; }
+html[data-theme="light"] .rov-schematic-wrap .rov-cam,
+html[data-theme="light"] .rov-schematic-wrap .rov-center { stroke: #8a8f9e; }
+html[data-theme="light"] .rov-schematic-wrap .rov-dir-label { fill: #aaaebc; }
+html[data-theme="light"] .rov-schematic-wrap .thr-body,
+html[data-theme="light"] .rov-schematic-wrap .thr-nozzle,
+html[data-theme="light"] .rov-schematic-wrap .vthr-body { stroke: #9aa0ad; }
+html[data-theme="light"] .rov-schematic-wrap .thr-hub { fill: #8a8f9e; }
+html[data-theme="light"] .rov-schematic-wrap .thr-label { fill: #e8eaf2; }
+html[data-theme="light"] .rov-schematic-wrap .thr-value { fill: #aaaebc; }
+html[data-theme="light"] .rov-3d-status { color: #9aa0ad; }
+html[data-theme="light"] .wiring-ascii { color: #4fd6f2; }
 
 html { scroll-behavior: smooth; }
 
@@ -118,6 +206,44 @@ h3 {
 .badge-ok   { background: rgba(0, 230, 118, 0.12); color: var(--success); border: 1px solid rgba(0, 230, 118, 0.3); }
 .badge-off  { background: rgba(255, 59, 48, 0.12); color: var(--danger);  border: 1px solid rgba(255, 59, 48, 0.3); }
 .badge-real { background: rgba(0, 217, 255, 0.12); color: var(--accent-cyan); border: 1px solid rgba(0, 217, 255, 0.3); }
+
+/* ===== BASCULE DE THÈME ☀️ / 🌙 ===== */
+/* Bouton discret au coin supérieur droit de l'en-tête, séparé des badges de
+ * statut par le conteneur .topbar-right (aucun chevauchement). L'icône est
+ * pilotée en CSS : soleil en thème sombre (action → clair), lune en thème
+ * clair (action → sombre). */
+.topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.25s ease;
+}
+.theme-toggle:hover {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+    box-shadow: 0 0 12px rgba(0, 217, 255, 0.18);
+}
+.theme-toggle svg { pointer-events: none; }
+.theme-toggle .theme-icon-sun  { display: block; }
+.theme-toggle .theme-icon-moon { display: none; }
+html[data-theme="light"] .theme-toggle .theme-icon-sun  { display: none; }
+html[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
 
 /* ===== DASHBOARD (index) ===== */
 .index-container {
@@ -220,6 +346,13 @@ h3 {
     min-height: 140px;
     position: relative;
     overflow: hidden;
+    /* Pas de callout/sélection/drag natif — requis pour l'appui long iOS
+     * (le menu système se déclencherait avant les 500 ms du mode édition). */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-user-drag: none;
+    user-drag: none;
 }
 
 .nav-tile::before {
@@ -255,18 +388,26 @@ h3 {
     letter-spacing: 1.5px;
 }
 
-/* ===== MODE ÉDITION (wobble + grab cursor) ===== */
+/* ===== MODE ÉDITION (jiggle iOS + grab cursor) ===== */
 .nav-grid.editing .nav-tile {
     cursor: grab;
-    animation: tileWobble 0.45s ease-in-out infinite alternate;
+    animation: tileJiggle 0.35s ease-in-out infinite;
     touch-action: none;
-    user-select: none;
-    -webkit-user-select: none;
-    -webkit-touch-callout: none;
-    -webkit-user-drag: none;
-    user-drag: none;
 }
 .nav-grid.editing .nav-tile:active { cursor: grabbing; }
+
+/* Désynchronisation du tremblement : chaque tuile garde SA phase propre
+ * (identifiée par data-tile-id — stable au réordonnancement, contrairement
+ * à nth-child dont l'indice changerait à chaque swap et ferait « sauter »
+ * l'animation). Durées et délais négatifs légèrement différents → le
+ * tremblement n'est jamais parfaitement synchrone : effet organique de
+ * l'écran d'accueil iPhone. */
+.nav-grid.editing .nav-tile[data-tile-id="wifi"]      { animation-duration: 0.32s; animation-delay: -0.05s; }
+.nav-grid.editing .nav-tile[data-tile-id="pwm"]       { animation-duration: 0.38s; animation-delay: -0.13s; }
+.nav-grid.editing .nav-tile[data-tile-id="telemetry"] { animation-duration: 0.34s; animation-delay: -0.21s; }
+.nav-grid.editing .nav-tile[data-tile-id="testbench"] { animation-duration: 0.40s; animation-delay: -0.09s; }
+.nav-grid.editing .nav-tile[data-tile-id="settings"]  { animation-duration: 0.33s; animation-delay: -0.17s; }
+.nav-grid.editing .nav-tile[data-tile-id="wiring"]    { animation-duration: 0.37s; animation-delay: -0.25s; }
 
 .nav-grid.editing .nav-tile::after {
     content: "✥";
@@ -280,12 +421,21 @@ h3 {
 
 .nav-grid.no-enter-anim .nav-tile { animation: none !important; transition: none !important; }
 
-@keyframes tileWobble {
-    0%   { transform: rotate(-0.8deg); }
-    100% { transform: rotate(0.8deg); }
+/* Tremblement iOS : légère rotation ±1,5° en boucle continue */
+@keyframes tileJiggle {
+    0%, 100% { transform: rotate(-1.5deg); }
+    50%      { transform: rotate(1.5deg); }
 }
 
-/* Drag states */
+/* Appui long en cours (hors édition) : grossissement léger — feedback de
+ * soulèvement imminent, équivalent web du « lift » d'icône iPhone */
+.nav-tile.pressing {
+    transform: scale(1.06);
+    transition: transform 0.15s ease;
+}
+
+/* Drag states : le trou dans la grille reste stable ; le clone flottant
+ * (hors grille → aucun sélecteur .editing ne le matche) ne tremble pas. */
 .nav-tile.dragging-ghost {
     opacity: 0.3;
     filter: grayscale(40%);
@@ -317,7 +467,7 @@ h3 {
 .back-top-btn:hover {
     border-color: var(--accent-cyan);
     box-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
-    color: #fff;
+    color: var(--text-primary);
 }
 
 /* ===== SECTIONS (pages internes) ===== */
@@ -373,6 +523,10 @@ h3 {
     margin: -0.5rem 0 1rem 0;
     font-style: italic;
 }
+/* Hint placé sous autre chose qu'un titre (bouton, grille, rangée…) : marge
+   haute normale — la valeur négative ci-dessus est réservée au mode « juste
+   sous le h3 » (compense sa marge basse) et chevaucherait le bouton précédent */
+.card > *:not(h3) + .card-hint { margin-top: 0.5rem; }
 
 /* ===== BOUTONS ===== */
 .btn {
@@ -487,7 +641,113 @@ h3 {
 }
 .pwm-bar-fill { height: 100%; border-radius: 4px; transition: width 0.12s ease, left 0.12s ease; }
 .pwm-bar-bg.bidir .pwm-bar-fill { position: absolute; height: 100%; }
-.pwm-bar-bg.bidir .pwm-center { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: rgba(255,255,255,0.35); }
+.pwm-bar-bg.bidir .pwm-center { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: var(--bidi-center); }
+
+/* Jauge pleine échelle 0-100 % (canaux 10-15 unidirectionnels) : le fond
+ * affiche le dégradé complet vert → orange → rouge, atténué ; le remplissage
+ * (même dégradé) révèle par clip-path la tranche correspondant à la valeur. */
+.pwm-bar-bg.gauge {
+    background: linear-gradient(90deg,
+        rgba(0, 230, 118, 0.15) 0%,
+        rgba(255, 179, 0, 0.15) 50%,
+        rgba(255, 59, 48, 0.15) 100%);
+}
+.pwm-bar-bg.gauge .pwm-bar-fill {
+    width: 100%;
+    border-radius: 0;
+    background: linear-gradient(90deg, #00e676 0%, #ffb300 50%, #ff3b30 100%);
+    transition: clip-path 0.12s ease;
+}
+
+/* Pastilles d'état des 4 sorties tout-ou-rien (GPIO ON/OFF) */
+.gpio-states {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    margin-top: 12px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+.gpio-st {
+    display: inline-block;
+    min-width: 44px;
+    text-align: center;
+    padding: 3px 8px;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.5px;
+}
+.gpio-st-off {
+    background: rgba(102, 107, 122, 0.18);
+    color: var(--text-dim);
+    border: 1px solid rgba(102, 107, 122, 0.4);
+}
+.gpio-st-on {
+    background: rgba(0, 230, 118, 0.15);
+    color: var(--success);
+    border: 1px solid rgba(0, 230, 118, 0.5);
+}
+
+/* Boutons de test des 4 sorties ON/OFF (carte Paramètres) */
+.gpio-test-item { display: inline-flex; align-items: center; gap: 8px; }
+.gpio-test-btn {
+    padding: 3px 10px;
+    font-family: var(--font-body);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent-cyan);
+    background: rgba(0, 217, 255, 0.08);
+    border: 1px solid rgba(0, 217, 255, 0.4);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.gpio-test-btn:hover:not(:disabled) { background: rgba(0, 217, 255, 0.18); }
+.gpio-test-btn:disabled { opacity: 0.45; cursor: wait; }
+.gpio-test-btn.on {
+    color: var(--danger);
+    background: rgba(255, 59, 48, 0.1);
+    border-color: rgba(255, 59, 48, 0.5);
+}
+
+/* Grille des noms personnalisés des sorties (carte Paramètres) */
+.names-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px 12px;
+    margin: 6px 0 14px 0;
+}
+.name-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.name-field input[type="text"] {
+    width: 100%;
+    padding: 7px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 0.82rem;
+    outline: none;
+    text-transform: none;
+    letter-spacing: normal;
+    transition: border-color 0.3s;
+}
+.name-field input[type="text"]:focus { border-color: var(--accent-cyan); }
+
+/* Un nom personnalisé long peut revenir à la ligne dans les libellés */
+.sl-label, .ch-label { overflow-wrap: anywhere; }
 
 /* ===== VUE SCHÉMATIQUE PROPULSION (PWM MONITOR) ===== */
 .rov-schematic-card { text-align: left; }
@@ -605,6 +865,32 @@ h3 {
 .slider-item .sl-value { color: var(--accent-magenta); font-weight: 600; }
 .slider-item input[type="range"] { width: 100%; accent-color: var(--accent-cyan); cursor: pointer; }
 
+/* Sorties tout-ou-rien du banc de test (tuiles ON/OFF nommées) */
+.bench-gpio-wrap { margin-top: 22px; }
+.bench-gpio-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+}
+.bench-gpio-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.bench-gpio-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    transition: border-color 0.2s;
+}
+.bench-gpio-item:hover { border-color: rgba(0, 217, 255, 0.25); }
+
 /* ===== DIAGNOSTIC CAPTEURS (badges LED) ===== */
 .sensor-diag-card { margin-bottom: 18px; }
 .sensor-grid {
@@ -674,11 +960,55 @@ h3 {
 .settings-actions { text-align: center; padding-top: 10px; }
 
 /* ===== FOOTER ===== */
-footer { text-align: center; padding: 14px; font-size: 0.7rem; color: var(--text-dim); border-top: 1px solid var(--border-color); margin-top: auto; }
+/* ===== PIED DE PAGE GLOBAL (version Git dynamique + mentions) ===== */
+/* Couleurs pilotées par variables : bascule automatique clair/sombre. */
+footer {
+    text-align: center;
+    padding: 14px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border-color);
+    margin-top: auto;
+}
+footer #app-version { color: var(--text-secondary); font-weight: 600; }
+
+/* ===== CALIBRATION ALTIMÈTRE QNH (v1.0.1) ===== */
+.qnh-toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 14px;
+    cursor: pointer;
+}
+.qnh-toggle-row input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-cyan);
+    cursor: pointer;
+    flex: none;
+}
+/* Spinner du bouton « Actualiser le QNH » — visible pendant le fetch */
+.qnh-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(0, 217, 255, 0.25);
+    border-top-color: var(--accent-cyan);
+    border-radius: 50%;
+    animation: qnhSpin 0.8s linear infinite;
+    margin-left: 8px;
+    vertical-align: -2px;
+}
+/* L'attribut hidden doit gagner sur display:inline-block ci-dessus */
+.qnh-spinner[hidden] { display: none; }
+@keyframes qnhSpin { to { transform: rotate(360deg); } }
 
 /* ===== RESPONSIVE ===== */
 @media (max-width: 768px) {
     #topbar { padding: 10px 12px; flex-direction: column; gap: 6px; }
+    .topbar-right { justify-content: center; }
     .logo { font-size: 1rem; }
     .nav-grid { grid-template-columns: repeat(2, 1fr); gap: 14px; }
     .nav-tile { min-height: 110px; padding: 25px 12px; }
@@ -777,19 +1107,19 @@ footer { text-align: center; padding: 14px; font-size: 0.7rem; color: var(--text
 
 .wiring-table tbody td {
     padding: 0.4rem 0.75rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--divider);
     color: var(--text-primary);
     vertical-align: middle;
 }
 
 .wiring-table tbody tr:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--panel-faint);
 }
 
 /* Broches colorées */
-.pin-sda { color: #00d9ff; font-weight: 700; }
-.pin-scl { color: #b084ff; font-weight: 700; }
-.pin-3v3 { color: #ff3e9d; font-weight: 700; }
+.pin-sda { color: var(--accent-cyan); font-weight: 700; }
+.pin-scl { color: var(--accent-purple); font-weight: 700; }
+.pin-3v3 { color: var(--accent-magenta); font-weight: 700; }
 .pin-gnd { color: #888; font-weight: 700; }
 
 /* Responsive mobile */
@@ -838,7 +1168,7 @@ footer { text-align: center; padding: 14px; font-size: 0.7rem; color: var(--text
 
 .ota-progress {
     height: 12px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--track-bg);
     border-radius: 6px;
     overflow: hidden;
     margin: 0.75rem 0;
@@ -958,7 +1288,7 @@ code {
     user-select: none;
     letter-spacing: 0.3px;
 }
-.rov-3d-wire-toggle input { accent-color: #00d9ff; cursor: pointer; }
+.rov-3d-wire-toggle input { accent-color: var(--accent-cyan); cursor: pointer; }
 .rov-3d-green-toggle { color: #00e676; }
 .rov-3d-green-toggle input { accent-color: #00e676; }
 
@@ -988,7 +1318,7 @@ code {
     color: var(--text-secondary);
     letter-spacing: 0.3px;
 }
-.rov-3d-cap-ok   { color: #00e676; }
+.rov-3d-cap-ok   { color: var(--success); }
 .rov-3d-cap-warn { color: #ffb74d; }
 
 /* =========================================================================
@@ -1012,7 +1342,7 @@ code {
 }
 
 .wifi-info-block {
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--panel-faint);
     border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 0.75rem 1rem;
@@ -1034,7 +1364,7 @@ code {
     justify-content: space-between;
     align-items: baseline;
     padding: 0.25rem 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--divider);
 }
 
 .wifi-info-row:last-child {
@@ -1062,7 +1392,7 @@ code {
 }
 
 .wifi-sta-ok {
-    color: #00e676;
+    color: var(--success);
     font-weight: 700;
 }
 
@@ -1154,7 +1484,7 @@ code {
 }
 
 .dryrun-state-text.on {
-    color: #00e676;
+    color: var(--success);
 }
 
 /* Badge d'avertissement */
@@ -1178,7 +1508,7 @@ code {
 
 .dryrun-badge-ok {
     background: rgba(0, 230, 118, 0.10);
-    color: #00e676;
+    color: var(--success);
     border: 1px solid rgba(0, 230, 118, 0.35);
 }
 
@@ -1225,7 +1555,7 @@ code {
 .i2c-scan-table th {
     font-family: 'Michroma', sans-serif;
     font-size: 0.7rem;
-    color: #00d9ff;
+    color: var(--accent-cyan);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     padding: 0.5rem 0.75rem;
@@ -1236,7 +1566,7 @@ code {
 
 .i2c-scan-table td {
     padding: 0.4rem 0.75rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--divider);
     color: #c8ccd4;
 }
 
@@ -1245,7 +1575,7 @@ code {
 }
 
 .i2c-addr-hex {
-    color: #b084ff;
+    color: var(--accent-purple);
     font-weight: 600;
     letter-spacing: 0.04em;
 }
@@ -1257,7 +1587,7 @@ code {
     font-size: 0.75rem;
     font-weight: 600;
     background: rgba(0, 230, 118, 0.12);
-    color: #00e676;
+    color: var(--success);
     border: 1px solid rgba(0, 230, 118, 0.35);
 }
 
@@ -1268,7 +1598,7 @@ code {
     background: rgba(255, 62, 157, 0.08);
     border: 1px solid rgba(255, 62, 157, 0.3);
     border-radius: 6px;
-    color: #ff3e9d;
+    color: var(--accent-magenta);
     font-size: 0.85rem;
     font-family: 'Source Code Pro', monospace;
 }

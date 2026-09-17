@@ -13,8 +13,8 @@
  * et la tâche SerialTx (émission télémétrie) également.
  *
  * @author Didier Dero
- * @version 1.0.0
- * @date Août 2026
+ * @version 1.0.1
+ * @date Septembre 2026
  */
 
 #include <Arduino.h>
@@ -26,6 +26,7 @@
 #include "autopilot.h"
 #include "sensor_driver.h"
 #include "pwm_controller.h"
+#include "gpio_outputs.h"
 #include "serial_comm.h"
 #include "web_server.h"
 #include "flight_controller.h"
@@ -144,7 +145,7 @@ static void loadAutopilotConfig() {
  * Boucle à 100 Hz qui :
  * 1. Vérifie le watchdog série (failsafe neutre si timeout)
  * 2. Lit les trames descendantes reçues du RPi 5
- * 3. Applique les consignes PWM aux actionneurs
+ * 3. Applique les consignes PWM et le masque GPIO aux actionneurs
  * 4. Construit la trame montante de télémétrie
  * 5. Met à jour le buffer d'émission série
  *
@@ -167,12 +168,15 @@ static void vTaskControl(void* param) {
 
             /* Vérification de l'état d'armement */
             if (dl.arm_state == ARM_ESTOP) {
-                /* Arrêt d'urgence : tous les canaux au neutre */
+                /* Arrêt d'urgence : tous les canaux au neutre + sorties ON/OFF à OFF */
                 g_pwm.setAllNeutral();
+                g_gpio.allOff();
                 g_flightCtrl.resetPID();
             } else if (dl.arm_state == ARM_ARMED) {
                 /* Armé : appliquer les consignes PWM brutes du RPi 5 */
                 g_pwm.setAllPWM(dl.pwm);
+                /* Sorties tout-ou-rien : masque gpio_cmd de la trame */
+                g_gpio.applyCommand(dl.gpio_cmd);
                 /* Notifier le contrôleur de vol du mode RPi 5 */
                 g_flightCtrl.updateFromRPi5(dl.mode);
             } else {
@@ -184,6 +188,8 @@ static void vTaskControl(void* param) {
                 for (uint8_t i = 8; i < NUM_PWM_CHANNELS; i++) {
                     g_pwm.setPWMuS(i, dl.pwm[i]);
                 }
+                /* Sorties tout-ou-rien : pilotables même désarmé (auxiliaires) */
+                g_gpio.applyCommand(dl.gpio_cmd);
                 g_flightCtrl.resetPID();
             }
         }
@@ -262,6 +268,9 @@ static void vTaskControl(void* param) {
         /* PWM effectifs (valeurs réellement envoyées) */
         g_pwm.getCurrentValues(ul.pwm_actual);
 
+        /* État réel des 4 sorties tout-ou-rien (gpio_state) */
+        ul.gpio_state = g_gpio.getState();
+
         /* Calcul et insertion du CRC16 */
         uint8_t* frameBytes = reinterpret_cast<uint8_t*>(&ul);
         crc16_fill(frameBytes, UL_FRAME_SIZE);
@@ -287,6 +296,7 @@ static void vTaskControl(void* param) {
  * 3. Configuration autopilote (NVS)
  * 4. Bus I2C et capteurs
  * 5. Contrôleur PWM PCA9685
+ * 5b. Sorties tout-ou-rien GPIO ON/OFF (4 sorties, init OFF)
  * 6. Communication série (machine à états)
  * 7. Serveur Web embarqué
  * 8. Tâche de contrôle FreeRTOS
@@ -296,7 +306,7 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n==============================================");
-    Serial.println("  BOB-CONTROL v1.0.0 - ROV Firmware");
+    Serial.println("  BOB-CONTROL v1.0.1 - ROV Firmware");
     Serial.println("  ESP32-S3 PlatformIO / FreeRTOS");
     Serial.println("==============================================\n");
 
@@ -326,6 +336,9 @@ void setup() {
 
     /* ---- 5. Initialisation du contrôleur PWM PCA9685 ---- */
     g_pwm.begin();
+
+    /* ---- 5b. Initialisation des 4 sorties tout-ou-rien (GPIO ON/OFF) ---- */
+    g_gpio.begin();
 
     /* ---- 6. Initialisation de la communication série (USB-CDC ou UART GPIO) ---- */
     /* Chargement du choix d'interface depuis la NVS */

@@ -261,6 +261,49 @@ constexpr uint16_t PWM_MIN_US           = 1000;
 constexpr uint16_t PWM_MAX_US           = 2000;
 
 /* =========================================================================
+ * SECTION 4b : TYPAGE DES CANAUX PWM 10–15 (OUTILS / GRADATEURS)
+ *
+ * Les canaux 10 à 15 sont typables individuellement depuis l'interface Web
+ * (onglet Paramètres) et persistés en NVS (namespace « config », clé
+ * « pwm_types » : masque 6 bits, bit n ↔ canal 10+n, 1 = bidirectionnel).
+ *
+ * - Bidirectionnel : neutre à 1500 µs, plage 1000–2000 µs (pinces/outils) ;
+ *   la position de sécurité (watchdog/E-Stop) est 1500 µs, comme les ESC.
+ * - Unidirectionnel : pleine échelle 0–100 % (1000 µs = 0 %, 2000 µs = 100 %)
+ *   pour gradateurs LED ; la position de sécurité (watchdog/E-Stop) est 0 %.
+ * ========================================================================= */
+
+/** @brief Premier canal PWM typable (canaux outils) */
+constexpr uint8_t  PWM_TYPE_FIRST_CHANNEL   = 10;
+
+/** @brief Nombre de canaux typables (10 à 15) */
+constexpr uint8_t  PWM_TYPE_NUM_CHANNELS    = 6;
+
+/**
+ * @brief Masque de typage par défaut : CH10/CH11 (pinces) et CH14/CH15 (Aux)
+ *        bidirectionnels, CH12/CH13 (gradateurs LED) unidirectionnels.
+ *        Bits : bit n ↔ canal 10+n, 1 = bidirectionnel.
+ */
+constexpr uint8_t  PWM_TYPE_DEFAULT_MASK    = 0x33;   /* 0b110011 */
+
+/* =========================================================================
+ * SECTION 4c : SORTIES TOUT-OU-RIEN (4 × GPIO ON/OFF)
+ *
+ * Quatre sorties numériques commandées par le RPi 5 via le masque gpio_cmd
+ * de la trame descendante (bit n ↔ sortie n+1). Broches configurables depuis
+ * l'interface Web (onglet Paramètres) et persistées en NVS (namespace
+ * « config », clés « gpio_p1 »…« gpio_p4 ») ; appliquées uniquement au
+ * démarrage, initialisées à l'état BAS (OFF). Forcées à OFF par le watchdog
+ * série et l'E-Stop.
+ * ========================================================================= */
+
+/** @brief Nombre de sorties tout-ou-rien (GPIO ON/OFF) */
+constexpr uint8_t  GPIO_NUM_OUTPUTS         = 4;
+
+/** @brief Broches GPIO par défaut des 4 sorties ON/OFF (clés NVS gpio_p1..p4) */
+constexpr uint8_t  GPIO_OUTPUT_PINS_DEFAULT[GPIO_NUM_OUTPUTS] = { 15, 16, 17, 18 };
+
+/* =========================================================================
  * SECTION 5 : CONFIGURATION RÉSEAU WI-FI ET POINT D'ACCÈS
  * ========================================================================= */
 
@@ -303,6 +346,9 @@ constexpr uint8_t  UART1_TX_PIN         = 2;
 /** @brief Port UART utilisé pour la liaison RPi5 (1 = UART1) */
 constexpr int      SERIAL_RPI_PORT      = 1;
 
+/* NOTE : les broches UART1 (UART1_RX_PIN / UART1_TX_PIN) et les broches des
+ * deux bus I2C sont réservées — l'API /api/gpio/config refuse les collisions. */
+
 /* =========================================================================
  * SECTION 7 : FRÉQUENCES ET PÉRIODES DES TÂCHES FREERTOS
  * ========================================================================= */
@@ -344,11 +390,41 @@ constexpr uint32_t MS5803_REPROBE_MS        = 10000UL;
 constexpr float SEA_LEVEL_PRESSURE_MBAR     = 1013.25f;
 
 /**
+ * @brief Calibration altimétrique QNH (v1.0.1) — Open-Meteo (Chamoson, VS).
+ *
+ * Le QNH ne corrige QUE la formule d'altitude barométrique hors de l'eau.
+ * La profondeur immergée reste strictement fondée sur la tare de surface
+ * locale (ΔP) et la boucle de contrôle n'est jamais impactée : la requête
+ * HTTP (tâche détachée, timeout court) ne tourne jamais dans la tâche de
+ * contrôle ni dans les handlers async. Fallback transparent sur la valeur
+ * standard si l'option est désactivée, si Internet est absent ou si la
+ * requête échoue / sort des bornes physiques.
+ */
+constexpr float QNH_DEFAULT_MBAR            = 1013.25f;   /* fallback standard */
+constexpr float QNH_MIN_MBAR                = 850.0f;     /* plage de validité acceptée (mbar) */
+constexpr float QNH_MAX_MBAR                = 1100.0f;
+
+/**
+ * @brief Borne de validité de l'offset matériel du MS5803-30BA (mbar).
+ *
+ * L'usine présente ~25 mbar d'écart (insignifiant sous 300 m d'eau, mais
+ * ~200 m d'erreur d'altitude dans l'air) ; tout offset calculé hors de
+ * ±cette borne est déclaré aberrant et ignoré (garde-fou anti-donnée
+ * pourrie — l'ancien offset reste appliqué : non destructif).
+ */
+constexpr float MS5803_HW_OFFSET_MAX_MBAR  = 100.0f;
+constexpr uint32_t QNH_HTTP_TIMEOUT_MS      = 2000;       /* timeout court : connexion + réponse */
+constexpr uint32_t QNH_BOOT_FETCH_DELAY_MS = 10000;      /* attente post-boot : laisser le STA joindre Internet */
+constexpr const char* OPEN_METEO_QNH_URL    =
+    "https://api.open-meteo.com/v1/forecast?latitude=46.20&longitude=7.23&current=pressure_msl";
+
+/**
  * @brief Seuil d'immersion du MS5803 (mbar).
  * Si ΔP = P_mesurée − P_surface > ce seuil, le capteur est considéré immergé
- * (~15 cm d'eau douce). En dessous, il est « hors de l'eau » (mode altimètre).
+ * (~5 cm d'eau douce — abaissé pour la validation sur banc / vase de test).
+ * En dessous, il est « hors de l'eau » (mode altimètre).
  */
-constexpr float MS5803_IMMERSION_THRESHOLD_MBAR = 15.0f;
+constexpr float MS5803_IMMERSION_THRESHOLD_MBAR = 5.0f;
 
 /** @brief Masse volumique de l'eau douce (kg/m³) pour le calcul de profondeur */
 constexpr float FRESH_WATER_DENSITY         = 1000.0f;
@@ -381,6 +457,7 @@ constexpr uint32_t STACK_SIZE_SENSORS   = 6144;
 constexpr uint32_t STACK_SIZE_SERIAL    = 4096;
 constexpr uint32_t STACK_SIZE_CONTROL   = 4096;
 constexpr uint32_t STACK_SIZE_WEB       = 8192;
+constexpr uint32_t STACK_SIZE_QNH_FETCH = 12288;   ///< Tâche QNH : TLS + HTTPClient + ArduinoJson
 
 /** @brief Priorités des tâches FreeRTOS */
 constexpr uint8_t  PRIORITY_CONTROL     = 5;   ///< Tâche critique la plus haute

@@ -4,7 +4,11 @@
 .vscode/launch.json
 .vscode/ipch/
 .qoder/
+.rov_preview/
 *.bin
 *.elf
 *.hex
 .DS_Store
+
+# En-tête de version Git généré à chaque build (scripts/git_version.py)
+include/git_version.h

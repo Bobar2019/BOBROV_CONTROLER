@@ -25,6 +25,7 @@ struct DownlinkData {
     uint16_t pwm[NUM_PWM_CHANNELS]; ///< Consignes PWM en µs
     uint8_t  mode;                  ///< Mode opérationnel
     uint8_t  arm_state;             ///< État d'armement
+    uint8_t  gpio_cmd;              ///< Masque 4 bits des sorties ON/OFF (bit 0 = sortie 1)
 };
 
 /**

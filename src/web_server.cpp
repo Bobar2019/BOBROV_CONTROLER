@@ -4,17 +4,20 @@
  *
  * Gère le point d'accès Wi-Fi, le portail captif DNS, les endpoints REST
  * (/api/wifi/scan, /api/wifi/connect, /api/settings/save, /api/comm/config,
- * /api/i2c/scan, /api/i2c/config, /api/pwm/output-enable, /api/ota/firmware,
- * /api/ota/filesystem, /api/system/status) et le serveur WebSocket
- * diffusant la télémétrie temps réel en JSON.
+ * /api/pwm/output-enable, /api/pwm/config, /api/gpio/config, /api/gpio/test,
+ * /api/names, /api/i2c/scan, /api/i2c/config, /api/ota/firmware,
+ * /api/ota/filesystem, /api/system/status, /api/qnh/config, /api/qnh/refresh,
+ * /api/calibrate_qnh)
+ * et le serveur WebSocket diffusant la télémétrie temps réel en JSON.
  *
  * @author Didier Dero
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 #include "web_server.h"
 #include "sensor_driver.h"
 #include "pwm_controller.h"
+#include "gpio_outputs.h"
 #include "serial_comm.h"
 #include "config.h"
 #include "protocol.h"
@@ -25,6 +28,8 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <Update.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 
 /* =========================================================================
  * INSTANCE GLOBALE
@@ -71,6 +76,10 @@ BobWebServer::BobWebServer()
     , _staConnected(false)
     , _otaRejected(false)
     , _otaWasFS(false)
+    , _qnhAutoEnable(false)
+    , _qnhBootApplied(false)
+    , _qnhFetchRunning(false)
+    , _qnhLastFetchOk(false)
 {
 }
 
@@ -127,6 +136,29 @@ void BobWebServer::begin() {
     /* Démarrage du serveur HTTP */
     _server.begin();
     Serial.println("[WEB] Serveur HTTP démarré sur le port 80");
+
+    /* QNH (v1.0.1) : option et dernière valeur en NVS — la valeur est
+     * appliquée immédiatement au capteur (altitude cohérente même sans
+     * Internet) ; la requête Open-Meteo de démarrage sera lancée par la
+     * tâche Web (différée de QNH_BOOT_FETCH_DELAY_MS) si l'option est activée. */
+    {
+        Preferences prefs;
+        prefs.begin("config", true);
+        _qnhAutoEnable = prefs.getBool("qnh_auto_enable", false);
+        float savedQnh = prefs.getFloat("current_qnh", QNH_DEFAULT_MBAR);
+        float savedHwOffset = prefs.getFloat("hw_offset", 0.0f);
+        prefs.end();
+        if (savedQnh >= QNH_MIN_MBAR && savedQnh <= QNH_MAX_MBAR) {
+            g_sensors.setQnh(savedQnh);
+        }
+        if (fabsf(savedHwOffset) <= MS5803_HW_OFFSET_MAX_MBAR) {
+            g_sensors.setHwOffset(savedHwOffset);
+        }
+        Serial.println("[WEB] QNH : calibration auto "
+                       + String(_qnhAutoEnable ? "activee" : "desactivee")
+                       + " — valeur appliquee : " + String(savedQnh, 2) + " mbar"
+                       + " — offset materiel : " + String(savedHwOffset, 2) + " mbar");
+    }
 
     /* Lancement de la tâche FreeRTOS sur Core 0 (Wi-Fi) */
     xTaskCreatePinnedToCore(
@@ -253,6 +285,40 @@ void BobWebServer::_setupRoutes() {
     /* REST : Activation/désactivation des sorties physiques (Dry-Run) */
     _server.on("/api/pwm/output-enable", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handlePwmOutputEnable(request); });
+
+    /* REST : Typage des canaux PWM 10-15 (GET + POST) — appliqué à chaud */
+    _server.on("/api/pwm/config", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handlePwmConfigGet(request); });
+    _server.on("/api/pwm/config", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handlePwmConfigPost(request); });
+
+    /* REST : Assignation des 4 sorties GPIO ON/OFF (GET + POST) — appliquée au boot */
+    _server.on("/api/gpio/config", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleGpioConfigGet(request); });
+    _server.on("/api/gpio/config", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleGpioConfigPost(request); });
+
+    /* REST : Test manuel des 4 sorties GPIO ON/OFF (masque 4 bits, établi) */
+    _server.on("/api/gpio/test", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleGpioTestPost(request); });
+
+    /* REST : Noms personnalisés des sorties (16 PWM + 4 GPIO, NVS — GET + POST) */
+    _server.on("/api/names", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleNamesGet(request); });
+    _server.on("/api/names", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleNamesPost(request); });
+
+    /* REST : Calibration altimétrique QNH (v1.0.1) — Open-Meteo, tâche détachée.
+     * GET/POST config = option NVS ; POST refresh = requête manuelle forcée. */
+    _server.on("/api/qnh/config", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleQnhConfigGet(request); });
+    _server.on("/api/qnh/config", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleQnhConfigPost(request); });
+    _server.on("/api/qnh/refresh", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleQnhRefreshPost(request); });
+    /* Alias historique demandé par la spec : calibration QNH + offset matériel. */
+    _server.on("/api/calibrate_qnh", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleQnhRefreshPost(request); });
 
     /* REST : Scan I2C (GET) */
     _server.on("/api/i2c/scan", HTTP_GET,
@@ -741,6 +807,607 @@ void BobWebServer::_handleI2CConfigPost(AsyncWebServerRequest* request) {
     request->send(200, "application/json", response);
 }
 
+/* -------------------------------------------------------------------------
+ * Handler GET /api/pwm/config — Typage actuel des canaux 10–15.
+ *
+ * Retourne le masque 6 bits (bit n ↔ canal 10+n, 1 = bidirectionnel) et les
+ * bornes des canaux typables — utilisé par l'onglet Paramètres et le PWM
+ * Monitor de l'interface.
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handlePwmConfigGet(AsyncWebServerRequest* request) {
+    String response;
+    JsonDocument doc;
+    doc["type_mask"]     = g_pwm.getChannelTypeMask();
+    doc["first_channel"] = PWM_TYPE_FIRST_CHANNEL;
+    doc["num_channels"]  = PWM_TYPE_NUM_CHANNELS;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* -------------------------------------------------------------------------
+ * Handler POST /api/pwm/config — Enregistre le typage des canaux 10–15.
+ *
+ * Le masque 6 bits (bit n ↔ canal 10+n, 1 = bidirectionnel) est persisté en
+ * NVS (clé « pwm_types ») puis appliqué à chaud : seule la position de
+ * sécurité des canaux concernés change (1500 µs bidir / 0 % unidir), aucun
+ * redémarrage n'est nécessaire.
+ *
+ * Form : mask=51  |  JSON : {"mask":51}
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handlePwmConfigPost(AsyncWebServerRequest* request) {
+    int maskIn = -1;
+
+    /* Accepte form-urlencoded (mask=X) ou query params, avec fallback JSON body */
+    if (request->hasParam("mask", true)) {
+        maskIn = request->getParam("mask", true)->value().toInt();
+    } else if (request->hasParam("mask")) {
+        maskIn = request->getParam("mask")->value().toInt();
+    } else if (request->hasParam("plain", true)) {
+        const AsyncWebParameter* body = request->getParam("plain", true);
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, body->value());
+        if (err || !doc["mask"].is<int>()) {
+            request->send(400, "application/json", "{\"error\":\"JSON invalide\"}");
+            return;
+        }
+        maskIn = doc["mask"].as<int>();
+    } else {
+        request->send(400, "application/json", "{\"error\":\"Paramètre mask requis\"}");
+        return;
+    }
+
+    /* Masque 6 bits : bit n ↔ canal 10+n (1 = bidirectionnel) */
+    if (maskIn < 0 || maskIn > (int)((1u << PWM_TYPE_NUM_CHANNELS) - 1)) {
+        request->send(400, "application/json", "{\"error\":\"Masque invalide (0-63)\"}");
+        return;
+    }
+
+    if (!g_pwm.saveChannelTypes((uint8_t)maskIn)) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (masque non enregistre)\"}");
+        return;
+    }
+    Serial.println("[WEB] Typage PWM canaux 10-15 : masque=0x" + String(maskIn, HEX)
+                   + " — appliqué à chaud");
+
+    String response;
+    JsonDocument resp;
+    resp["status"]    = "ok";
+    resp["type_mask"] = g_pwm.getChannelTypeMask();
+    serializeJson(resp, response);
+    request->send(200, "application/json", response);
+}
+
+/* -------------------------------------------------------------------------
+ * Handler GET /api/gpio/config — Broches et état des 4 sorties ON/OFF.
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handleGpioConfigGet(AsyncWebServerRequest* request) {
+    uint8_t pins[GPIO_NUM_OUTPUTS];
+    g_gpio.getPins(pins);
+
+    String response;
+    JsonDocument doc;
+    JsonArray arr = doc["pins"].to<JsonArray>();
+    for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) arr.add(pins[i]);
+    doc["state"] = g_gpio.getState();
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* -------------------------------------------------------------------------
+ * Handler POST /api/gpio/config — Enregistre l'assignation des 4 sorties.
+ *
+ * Validation : 4 broches 0-48, uniques, hors GPIO 19/20 (USB natif), hors
+ * broches des deux bus I2C actifs et de l'UART1 (liaison RPi 5). Sauvegarde
+ * NVS vérifiée par relecture puis redémarrage différé de 3 s : les broches
+ * ne sont appliquées qu'au boot (init OFF, puis pilotage par gpio_cmd).
+ *
+ * Form : p1=15&p2=16&p3=17&p4=18  |  JSON : {"p1":15,"p2":16,"p3":17,"p4":18}
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handleGpioConfigPost(AsyncWebServerRequest* request) {
+    static const char* const KEYS[GPIO_NUM_OUTPUTS] = { "p1", "p2", "p3", "p4" };
+    int pinIn[GPIO_NUM_OUTPUTS] = { -1, -1, -1, -1 };
+
+    /* Accepte form-urlencoded (p1..p4) ou query params, avec fallback JSON body */
+    if (request->hasParam(KEYS[0], true) || request->hasParam(KEYS[0])) {
+        for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) {
+            const AsyncWebParameter* p = request->hasParam(KEYS[i], true)
+                ? request->getParam(KEYS[i], true) : request->getParam(KEYS[i]);
+            if (!p) {
+                request->send(400, "application/json", "{\"error\":\"Paramètres p1-p4 requis\"}");
+                return;
+            }
+            pinIn[i] = p->value().toInt();
+        }
+    } else if (request->hasParam("plain", true)) {
+        const AsyncWebParameter* body = request->getParam("plain", true);
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, body->value());
+        if (err) {
+            request->send(400, "application/json", "{\"error\":\"JSON invalide\"}");
+            return;
+        }
+        for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) {
+            if (!doc[KEYS[i]].is<int>()) {
+                request->send(400, "application/json", "{\"error\":\"JSON invalide (p1-p4 requis)\"}");
+                return;
+            }
+            pinIn[i] = doc[KEYS[i]].as<int>();
+        }
+    } else {
+        request->send(400, "application/json", "{\"error\":\"Paramètres p1-p4 requis\"}");
+        return;
+    }
+
+    /* Broches réservées : bus I2C actifs + UART1 (liaison RPi 5) */
+    const uint8_t reserved[] = {
+        g_sensors.getCurrentSDA(),  g_sensors.getCurrentSCL(),
+        g_sensors.getCurrent2SDA(), g_sensors.getCurrent2SCL(),
+        UART1_RX_PIN, UART1_TX_PIN
+    };
+
+    uint8_t pins[GPIO_NUM_OUTPUTS];
+    for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) {
+        int p = pinIn[i];
+        if (p < 0 || p > 48 || p == 19 || p == 20) {
+            request->send(400, "application/json",
+                          "{\"error\":\"GPIO invalide (0-48, hors 19/20 USB)\"}");
+            return;
+        }
+        for (uint8_t k = 0; k < sizeof(reserved); k++) {
+            if ((uint8_t)p == reserved[k]) {
+                request->send(400, "application/json",
+                              "{\"error\":\"GPIO reserve (I2C actif ou UART1)\"}");
+                return;
+            }
+        }
+        for (uint8_t j = 0; j < i; j++) {
+            if ((uint8_t)p == pins[j]) {
+                request->send(400, "application/json", "{\"error\":\"GPIO en double\"}");
+                return;
+            }
+        }
+        pins[i] = (uint8_t)p;
+    }
+
+    if (!g_gpio.savePins(pins)) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (broches non enregistrees)\"}");
+        return;
+    }
+    Serial.println("[WEB] Config GPIO ON/OFF : p1=" + String(pins[0]) + ", p2=" + String(pins[1])
+                   + ", p3=" + String(pins[2]) + ", p4=" + String(pins[3])
+                   + " — redémarrage dans 3 s");
+    _scheduleRestart(3000);
+
+    String response;
+    JsonDocument resp;
+    resp["status"] = "ok";
+    JsonArray arr = resp["pins"].to<JsonArray>();
+    for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) arr.add(pins[i]);
+    resp["restart_ms"] = 3000;
+    serializeJson(resp, response);
+    request->send(200, "application/json", response);
+}
+
+/* -------------------------------------------------------------------------
+ * Handler POST /api/gpio/test — Test manuel des 4 sorties ON/OFF.
+ *
+ * Applique directement un masque 4 bits (bit 0 = sortie 1) sur les sorties,
+ * sans passer par la trame descendante — utilisé par les boutons de test de
+ * l'onglet Paramètres (établi, sans RPi 5). L'état réel est relu et renvoyé
+ * dans « gpio_state ». Si le RPi 5 est maître, la prochaine trame écrasera le
+ * masque : le champ « rpi5_master » permet à l'interface d'avertir.
+ *
+ * Form : mask=5  |  JSON : {"mask":5}
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handleGpioTestPost(AsyncWebServerRequest* request) {
+    int maskIn = -1;
+
+    /* Accepte form-urlencoded (mask=X) ou query params, avec fallback JSON body */
+    if (request->hasParam("mask", true)) {
+        maskIn = request->getParam("mask", true)->value().toInt();
+    } else if (request->hasParam("mask")) {
+        maskIn = request->getParam("mask")->value().toInt();
+    } else if (request->hasParam("plain", true)) {
+        const AsyncWebParameter* body = request->getParam("plain", true);
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, body->value());
+        if (err || !doc["mask"].is<int>()) {
+            request->send(400, "application/json", "{\"error\":\"JSON invalide\"}");
+            return;
+        }
+        maskIn = doc["mask"].as<int>();
+    } else {
+        request->send(400, "application/json", "{\"error\":\"Parametre mask requis\"}");
+        return;
+    }
+
+    /* Masque 4 bits (bit 0 = sortie 1) */
+    if (maskIn < 0 || maskIn > 0x0F) {
+        request->send(400, "application/json", "{\"error\":\"Masque invalide (0-15)\"}");
+        return;
+    }
+
+    g_gpio.applyCommand((uint8_t)maskIn);
+    Serial.println("[WEB] Test sorties ON/OFF : masque=0x" + String(maskIn, HEX)
+                   + " — état réel relu=0x" + String(g_gpio.getState(), HEX));
+
+    String response;
+    JsonDocument resp;
+    resp["status"]      = "ok";
+    resp["gpio_state"]  = g_gpio.getState();
+    resp["rpi5_master"] = g_flightCtrl.isRPi5Master();
+    serializeJson(resp, response);
+    request->send(200, "application/json", response);
+}
+
+/* =========================================================================
+ * NOMS PERSONNALISÉS DES SORTIES (16 PWM + 4 GPIO) — PERSISTANCE NVS
+ * =========================================================================
+ *
+ * Purement présentationnels : les noms sont stockés en NVS (namespace
+ * « config », clé « names », un seul JSON) et servis à l'interface Web pour
+ * le Banc de Test, le PWM Monitor et les états GPIO. Une chaîne vide signifie
+ * « nom par défaut » (substitué côté interface). La chaîne stockée est
+ * nettoyée côté firmware (caractères de contrôle/HTML retirés, longueur
+ * bornée) — la couche d'affichage reste responsable de son échappement.
+ * ========================================================================= */
+
+static constexpr size_t NAMES_MAX_LEN  = 20;    /* longueur max d'un nom (octets UTF-8) */
+static constexpr size_t NAMES_JSON_MAX = 1024;  /* taille max du corps JSON accepté */
+
+/**
+ * @brief Nettoie un nom d'affichage avant persistance.
+ *
+ * Retire les caractères de contrôle et les caractères HTML sensibles
+ * (< > " ' & ` \), normalise les espaces, borne la longueur à NAMES_MAX_LEN
+ * sans couper un caractère UTF-8 multi-octets (accents).
+ */
+static String _sanitizeName(const char* raw) {
+    String s;
+    if (raw == nullptr) return s;
+    bool lastSpace = false;
+    for (const char* p = raw; *p != '\0'; p++) {
+        uint8_t c = (uint8_t)*p;
+        if (c == ' ') {
+            if (s.length() == 0 || lastSpace) continue;
+            lastSpace = true;
+            s += ' ';
+        } else if (c < 0x20 || c == 0x7F) {
+            continue;
+        } else if (c == '<' || c == '>' || c == '"' || c == '\'' ||
+                   c == '&' || c == '`' || c == '\\') {
+            continue;
+        } else {
+            lastSpace = false;
+            s += (char)c;
+        }
+    }
+    if (s.length() > NAMES_MAX_LEN) {
+        s = s.substring(0, NAMES_MAX_LEN);
+        /* Ne pas laisser un caractère UTF-8 coupé en deux */
+        while (s.length() > 0 && ((uint8_t)s[s.length() - 1] & 0xC0) == 0x80) {
+            s.remove(s.length() - 1);
+        }
+        if (s.length() > 0 && ((uint8_t)s[s.length() - 1] & 0xC0) == 0xC0) {
+            s.remove(s.length() - 1);
+        }
+    }
+    s.trim();
+    return s;
+}
+
+/* -------------------------------------------------------------------------
+ * Handler GET /api/names — Noms personnalisés des sorties.
+ *
+ * Retourne deux tableaux : « ch » (16 noms PWM, index = canal) et « gpio »
+ * (4 noms, index = sortie 1-4). Une entrée vide = nom par défaut (côté UI).
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handleNamesGet(AsyncWebServerRequest* request) {
+    String stored;
+    {
+        Preferences prefs;
+        prefs.begin("config", true);
+        stored = prefs.getString("names", "");
+        prefs.end();
+    }
+
+    JsonDocument saved;
+    if (stored.length() == 0 || deserializeJson(saved, stored)) {
+        saved.clear();   /* absent ou corrompu → tout par défaut */
+    }
+
+    JsonDocument doc;
+    JsonArray savedCh   = saved["ch"].as<JsonArray>();
+    JsonArray savedGpio = saved["gpio"].as<JsonArray>();
+    JsonArray ch   = doc["ch"].to<JsonArray>();
+    JsonArray gpio = doc["gpio"].to<JsonArray>();
+    for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
+        const char* v = (i < savedCh.size()) ? savedCh[i].as<const char*>() : nullptr;
+        ch.add(v ? v : "");
+    }
+    for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) {
+        const char* v = (i < savedGpio.size()) ? savedGpio[i].as<const char*>() : nullptr;
+        gpio.add(v ? v : "");
+    }
+    doc["max_len"] = NAMES_MAX_LEN;
+
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* -------------------------------------------------------------------------
+ * Handler POST /api/names — Enregistre les noms personnalisés (NVS).
+ *
+ * Corps : form-urlencoded « names={"ch":[...],"gpio":[...]} » ou JSON brut.
+ * Chaque nom est nettoyé (caractères de contrôle/HTML retirés, espaces
+ * normalisés, longueur bornée) puis les deux tableaux complets (16 + 4
+ * entrées, vide = défaut) sont persistés en NVS sous la clé « names » —
+ * relecture de vérification, aucun redémarrage nécessaire.
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handleNamesPost(AsyncWebServerRequest* request) {
+    String body;
+    if (request->hasParam("names", true)) {
+        body = request->getParam("names", true)->value();
+    } else if (request->hasParam("names")) {
+        body = request->getParam("names")->value();
+    } else if (request->hasParam("plain", true)) {
+        body = request->getParam("plain", true)->value();
+    } else {
+        request->send(400, "application/json", "{\"error\":\"Parametre names requis\"}");
+        return;
+    }
+
+    if (body.length() == 0 || body.length() > NAMES_JSON_MAX) {
+        request->send(400, "application/json", "{\"error\":\"Corps names invalide\"}");
+        return;
+    }
+
+    JsonDocument in;
+    if (deserializeJson(in, body) || !in.is<JsonObject>()) {
+        request->send(400, "application/json", "{\"error\":\"JSON invalide\"}");
+        return;
+    }
+
+    JsonArray inCh   = in["ch"].as<JsonArray>();
+    JsonArray inGpio = in["gpio"].as<JsonArray>();
+    JsonDocument out;
+    JsonArray outCh   = out["ch"].to<JsonArray>();
+    JsonArray outGpio = out["gpio"].to<JsonArray>();
+    uint8_t custom = 0;
+
+    for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
+        String n = _sanitizeName((i < inCh.size()) ? inCh[i].as<const char*>() : nullptr);
+        if (n.length() > 0) custom++;
+        outCh.add(n);
+    }
+    for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) {
+        String n = _sanitizeName((i < inGpio.size()) ? inGpio[i].as<const char*>() : nullptr);
+        if (n.length() > 0) custom++;
+        outGpio.add(n);
+    }
+
+    String json;
+    serializeJson(out, json);
+
+    Preferences prefs;
+    prefs.begin("config", false);
+    size_t written = prefs.putString("names", json);
+    String check = prefs.getString("names", "");
+    prefs.end();
+    if (written == 0 || check != json) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (noms non enregistres)\"}");
+        return;
+    }
+    Serial.println("[WEB] Noms des sorties : " + String(custom)
+                   + " nom(s) personnalise(s) — enregistres en NVS");
+
+    out["status"]  = "ok";
+    out["max_len"] = NAMES_MAX_LEN;
+    String response;
+    serializeJson(out, response);
+    request->send(200, "application/json", response);
+}
+
+/* =========================================================================
+ * CALIBRATION ALTIMÉTRIQUE QNH (v1.0.1) — OPEN-METEO (CHAMOSON, VS)
+ * ========================================================================= *
+ *
+ * Le QNH ne modifie QUE la formule d'altitude barométrique hors de l'eau :
+ * la profondeur immergée reste strictement fondée sur la tare de surface
+ * locale (ΔP) et la boucle de contrôle n'est jamais impactée. La requête
+ * HTTP (HTTPS, timeout court) s'exécute uniquement dans la tâche détachée
+ * « QnhFetch » — jamais dans la boucle Web ni dans un handler async.
+ * Fallback transparent sur la valeur standard si l'option est désactivée,
+ * si Internet est absent ou si la réponse est invalide/hors bornes.
+ * ------------------------------------------------------------------------- */
+
+/* Extrait le QNH (mbar) ET l'élévation (m) d'une réponse Open-Meteo :
+ * {"elevation":484.0,"current":{"time":"...","pressure_msl":1021.3,...}}
+ * — l'élévation est un champ racine (altitude topographique réelle du lieu
+ * demandé). Retourne false si le JSON est inutilisable ; qnh/elev restent
+ * alors à 0.0f (→ hors plages de validité → ignorés par les garde-fous). */
+static bool _qnhFromOpenMeteo(const String& body, float& outQnhMbar, float& outElevM) {
+    outQnhMbar = 0.0f;
+    outElevM   = 0.0f;
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) return false;
+    outQnhMbar = doc["current"]["pressure_msl"] | 0.0f;   /* absent → 0 → hors plage */
+    outElevM   = doc["elevation"] | 0.0f;                 /* champ racine — 0 = absent */
+    return true;
+}
+
+/**
+ * @brief Requête Open-Meteo + application du QNH (tâche QnhFetch uniquement).
+ *
+ * Connexion HTTPS (certificat non vérifié : pas d'horloge RTC fiable sur
+ * l'ESP32) avec timeout court QNH_HTTP_TIMEOUT_MS. Une valeur plausible
+ * (bornes QNH_MIN/MAX_MBAR) est appliquée au capteur et persistée en NVS
+ * (clé current_qnh) ; tout autre cas retourne 0.0f sans rien modifier.
+ */
+float BobWebServer::_qnhFetchAndApply() {
+    WiFiClientSecure client;
+    client.setInsecure();   /* pas de validation du certificat (pas d'horloge RTC fiable) */
+    HTTPClient http;
+    http.setConnectTimeout(QNH_HTTP_TIMEOUT_MS);
+    http.setTimeout(QNH_HTTP_TIMEOUT_MS);
+    if (!http.begin(client, OPEN_METEO_QNH_URL)) return 0.0f;
+
+    int code = http.GET();
+    float qnh = 0.0f;
+    float elevation = 0.0f;
+    if (code == 200) {
+        _qnhFromOpenMeteo(http.getString(), qnh, elevation);
+    } else {
+        Serial.println("[WEB] QNH : requete Open-Meteo en echec (HTTP " + String(code) + ")");
+    }
+    http.end();
+
+    if (qnh < QNH_MIN_MBAR || qnh > QNH_MAX_MBAR) {
+        Serial.println("[WEB] QNH : reponse inutilisable — QNH courant conserve (fallback)");
+        return 0.0f;
+    }
+
+    g_sensors.setQnh(qnh);
+    Preferences prefs;
+    prefs.begin("config", false);
+    prefs.putFloat("current_qnh", qnh);
+    prefs.end();
+    Serial.println("[WEB] QNH Open-Meteo : " + String(qnh, 2) + " mbar — applique et enregistre");
+
+    /* ---- Offset matériel MS5803-30BA (v1.0.1) : P_theo vs pression brute ----
+     *
+     * Pression atmosphérique théorique locale par la formule barométrique
+     * standard (ISA) : P_theo = QNH·(1 − 0.0065·elev/288.15)^5.255.
+     * La différence avec la pression absolue brute instantanée du capteur
+     * mesure son erreur d'usine (~25 mbar sur ce 30 Bars : insignifiante
+     * sous 300 m d'eau, ~200 m d'erreur d'altitude dans l'air).
+     *
+     * Garde-fous : calcul uniquement capteur HORS de l'eau (immergé, la
+     * colonne d'eau fausserait tout), pression plausible (capteur présent)
+     * et élévation fournie. L'offset borné (±MS5803_HW_OFFSET_MAX_MBAR)
+     * est appliqué à chaud ET persisté en NVS (clé hw_offset) — il ne
+     * compensera QUE la formule d'altitude, jamais la tare ni la profondeur. */
+    PressureData press;
+    g_sensors.getPressureData(press);
+    const float pBruteMbar = static_cast<float>(press.pressure_mbar) / 10.0f;
+    if (!press.immersed && pBruteMbar > 300.0f && elevation != 0.0f) {
+        const float pTheoMbar = qnh * powf(1.0f - (0.0065f * elevation) / 288.15f, 5.255f);
+        const float hwOffset  = pBruteMbar - pTheoMbar;
+        if (fabsf(hwOffset) <= MS5803_HW_OFFSET_MAX_MBAR) {
+            g_sensors.setHwOffset(hwOffset);
+            prefs.begin("config", false);
+            prefs.putFloat("hw_offset", hwOffset);
+            prefs.end();
+            Serial.println("[WEB] QNH : offset materiel MS5803 = " + String(hwOffset, 2)
+                           + " mbar (P_brute " + String(pBruteMbar, 2)
+                           + " - P_theo " + String(pTheoMbar, 2)
+                           + ", elev " + String(elevation, 1)
+                           + " m) — compense et enregistre");
+        } else {
+            Serial.println("[WEB] QNH : offset materiel aberrant (" + String(hwOffset, 2)
+                           + " mbar) — ignore, offset courant conserve");
+        }
+    } else {
+        Serial.println("[WEB] QNH : offset materiel non calcule (capteur "
+                       + String(press.immersed ? "immerge" : "absent")
+                       + " ou elevation inconnue) — offset courant conserve");
+    }
+    return qnh;
+}
+
+/* Tâche détachée one-shot : requête + application + auto-suppression. */
+void BobWebServer::_qnhTaskEntry(void* param) {
+    BobWebServer* self = static_cast<BobWebServer*>(param);
+    self->_qnhLastFetchOk = (self->_qnhFetchAndApply() > 0.0f);
+    self->_qnhFetchRunning = false;
+    vTaskDelete(nullptr);
+}
+
+/* Handler GET /api/qnh/config — état de l'option + QNH appliqué + diagnostic. */
+void BobWebServer::_handleQnhConfigGet(AsyncWebServerRequest* request) {
+    Preferences prefs;
+    prefs.begin("config", true);
+    float qnh = prefs.getFloat("current_qnh", QNH_DEFAULT_MBAR);
+    float hwOffset = prefs.getFloat("hw_offset", 0.0f);
+    prefs.end();
+    if (qnh < QNH_MIN_MBAR || qnh > QNH_MAX_MBAR) qnh = QNH_DEFAULT_MBAR;
+    if (fabsf(hwOffset) > MS5803_HW_OFFSET_MAX_MBAR) hwOffset = 0.0f;
+
+    JsonDocument doc;
+    doc["auto_enable"]   = _qnhAutoEnable;
+    doc["qnh"]           = roundf(qnh * 100.0f) / 100.0f;
+    doc["hw_offset"]     = roundf(hwOffset * 100.0f) / 100.0f;
+    doc["default_qnh"]   = QNH_DEFAULT_MBAR;
+    doc["fetching"]      = _qnhFetchRunning;
+    doc["last_fetch_ok"] = _qnhLastFetchOk;
+    doc["sta_connected"] = isSTAConnected();
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* Handler POST /api/qnh/config — active/désactive l'option (NVS, à chaud).
+ * Corps : form-urlencoded « enable=true|false » (paramètre de corps, d'URL
+ * ou JSON). La désactivation réapplique immédiatement le QNH standard. */
+void BobWebServer::_handleQnhConfigPost(AsyncWebServerRequest* request) {
+    bool enable = false;
+    if (request->hasParam("enable", true)) {
+        enable = request->getParam("enable", true)->value().equalsIgnoreCase("true");
+    } else if (request->hasParam("enable")) {
+        enable = request->getParam("enable")->value().equalsIgnoreCase("true");
+    } else {
+        request->send(400, "application/json", "{\"error\":\"Parametre enable requis\"}");
+        return;
+    }
+
+    Preferences prefs;
+    prefs.begin("config", false);
+    size_t written = prefs.putBool("qnh_auto_enable", enable);
+    bool check = prefs.getBool("qnh_auto_enable", !enable);
+    if (!enable) prefs.putFloat("current_qnh", QNH_DEFAULT_MBAR);  /* retour au standard */
+    prefs.end();
+    if (written == 0 || check != enable) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (option non enregistree)\"}");
+        return;
+    }
+    _qnhAutoEnable = enable;
+    if (!enable) g_sensors.setQnh(QNH_DEFAULT_MBAR);
+    Serial.println(enable
+        ? "[WEB] QNH : calibration automatique ACTIVEE (Open-Meteo au demarrage)"
+        : "[WEB] QNH : calibration automatique DESACTIVEE (retour au QNH standard)");
+    request->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+/* Handler POST /api/qnh/refresh — force une requête Open-Meteo immédiate.
+ * Non bloquant : la requête part en tâche détachée ; l'interface suit le
+ * résultat en interrogeant GET /api/qnh/config (champs « fetching » puis
+ * « last_fetch_ok » / « qnh »). */
+void BobWebServer::_handleQnhRefreshPost(AsyncWebServerRequest* request) {
+    if (!isSTAConnected()) {
+        request->send(503, "application/json",
+                      "{\"error\":\"Pas de connexion Internet (rejoignez un reseau externe en mode STA)\"}");
+        return;
+    }
+    if (_qnhFetchRunning) {
+        request->send(200, "application/json", "{\"status\":\"busy\"}");
+        return;
+    }
+    _qnhFetchRunning = true;
+    if (xTaskCreate(_qnhTaskEntry, "QnhFetch", STACK_SIZE_QNH_FETCH,
+                    this, PRIORITY_WEB, nullptr) != pdPASS) {
+        _qnhFetchRunning = false;
+        request->send(500, "application/json", "{\"error\":\"Creation de la tache QNH impossible\"}");
+        return;
+    }
+    Serial.println("[WEB] QNH : requete manuelle Open-Meteo lancee (tache detachee)");
+    request->send(200, "application/json", "{\"status\":\"started\"}");
+}
+
 /* =========================================================================
  * MISE À JOUR OTA — TÉLÉVERSEMENT FIRMWARE & FICHIERS WEB (LittleFS)
  * =========================================================================
@@ -752,17 +1419,24 @@ void BobWebServer::_handleI2CConfigPost(AsyncWebServerRequest* request) {
  * ========================================================================= */
 
 /**
- * @brief Handler GET /api/system/status — Uptime du contrôleur.
+ * @brief Handler GET /api/system/status — Uptime + version du contrôleur.
  *
  * Utilisé par l'interface OTA comme preuve de redémarrage : après un flash,
  * l'uptime repart de zéro (un simple code 200 peut venir de l'ancien firmware
  * encore vivant pendant le délai de redémarrage de 3 s).
+ *
+ * Le champ "version" expose la macro GIT_VERSION (git describe --tags
+ * --always --dirty), définie dans l'en-tête généré include/git_version.h
+ * (scripts/git_version.py, extra_scripts pre:), au pied de page de
+ * l'interface. Fallback "dev" si compilé hors dépôt Git.
  */
+#include "git_version.h"
 void BobWebServer::_handleSystemStatus(AsyncWebServerRequest* request) {
     String response;
     JsonDocument doc;
     doc["status"]    = "ok";
     doc["uptime_ms"] = (uint32_t)millis();
+    doc["version"]   = GIT_VERSION;
     serializeJson(doc, response);
     request->send(200, "application/json", response);
 }
@@ -791,9 +1465,10 @@ void BobWebServer::_handleOtaBody(AsyncWebServerRequest* request, uint8_t* data,
         Serial.println(String("[WEB] OTA : réception du corps (") + String(total)
                        + " octets — " + String(_otaWasFS ? "fichiers Web" : "firmware") + ")");
 
-        /* Neutraliser la propulsion AVANT de toucher la flash */
+        /* Neutraliser la propulsion et les sorties ON/OFF AVANT de toucher la flash */
         g_pwm.setPhysicalOutputsEnabled(false);
         g_pwm.setAllNeutral();
+        g_gpio.allOff();
 
         /* Octet magie ESP : un firmware commence TOUJOURS par 0xE9, jamais une
          * image LittleFS — détecte l'inversion des deux fichiers AVANT
@@ -1012,7 +1687,7 @@ uint8_t BobWebServer::getWSClientCount() const {
  * @brief Retourne l'adresse IP courante (AP ou STA selon le mode actif).
  */
 String BobWebServer::getIPAddress() const {
-    if (_staConnected && WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED) {
         return WiFi.localIP().toString();
     }
     return WiFi.softAPIP().toString();
@@ -1020,9 +1695,17 @@ String BobWebServer::getIPAddress() const {
 
 /**
  * @brief Indique si l'ESP est connecté en mode STA à un réseau externe.
+ *
+ * Vérité matérielle (correctif v1.0.1) : le flag membre _staConnected n'était
+ * mis à jour QUE par le formulaire de connexion manuelle (/api/wifi/connect).
+ * Après l'auto-reconnexion du boot (identifiants NVS, WiFi.begin() au début de
+ * begin()), il restait donc faux alors que le STA était bien connecté — d'où
+ * un 503 erroné sur /api/qnh/refresh et un fetch QNH de démarrage jamais lancé.
+ * WiFi.status() est la même source de vérité que le broadcast temps réel
+ * (wifi_info.sta_connected) : un seul comportement partout.
  */
 bool BobWebServer::isSTAConnected() const {
-    return _staConnected && (WiFi.status() == WL_CONNECTED);
+    return (WiFi.status() == WL_CONNECTED);
 }
 
 /* =========================================================================
@@ -1045,6 +1728,7 @@ void BobWebServer::_taskEntry(void* param) {
 void BobWebServer::_taskLoop() {
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastBroadcast = xTaskGetTickCount();
+    const TickType_t taskStart = lastWake;   /* repère du démarrage (requête QNH boot, v1.0.1) */
 
     for (;;) {
         /* Traitement du DNS captif (non bloquant) */
@@ -1055,6 +1739,27 @@ void BobWebServer::_taskLoop() {
 
         /* Broadcast périodique de la télémétrie via WebSocket */
         TickType_t now = xTaskGetTickCount();
+
+        /* QNH (v1.0.1) : requête Open-Meteo unique par boot, différée de
+         * QNH_BOOT_FETCH_DELAY_MS pour laisser la station Wi-Fi joindre
+         * Internet — en tâche détachée, jamais dans cette boucle (Core 0
+         * libre pour le DNS et le broadcast pendant le fetch HTTPS).
+         * Lancée UNIQUEMENT si l'option est activée ET que le STA est
+         * connecté à Internet (re-testé à chaque cycle : si le réseau
+         * externe arrive tard — ou jamais —, la requête part dès qu'il
+         * est là, ou ne part pas du tout en mode AP seul). */
+        if (_qnhAutoEnable && !_qnhBootApplied &&
+            (now - taskStart) >= pdMS_TO_TICKS(QNH_BOOT_FETCH_DELAY_MS) &&
+            isSTAConnected()) {
+            _qnhBootApplied = true;
+            _qnhFetchRunning = true;
+            if (xTaskCreate(_qnhTaskEntry, "QnhFetch", STACK_SIZE_QNH_FETCH,
+                            this, PRIORITY_WEB, nullptr) != pdPASS) {
+                _qnhFetchRunning = false;
+                Serial.println("[WEB] QNH : creation de la tache Open-Meteo impossible");
+            }
+        }
+
         if ((now - lastBroadcast) >= pdMS_TO_TICKS(TASK_WS_BROADCAST_MS)) {
             lastBroadcast = now;
 
@@ -1064,6 +1769,8 @@ void BobWebServer::_taskLoop() {
 
                 doc["wdg"] = g_serial.isWatchdogTriggered();
                 doc["physical_outputs_enabled"] = g_pwm.isPhysicalOutputsEnabled();
+                doc["pwm_type_mask"] = g_pwm.getChannelTypeMask();  /* typage canaux 10-15 (bit=1 bidir) */
+                doc["gpio_state"]    = g_gpio.getState();           /* état réel des 4 sorties ON/OFF */
 
                 /* Informations de connexion Wi-Fi (STA + AP) */
                 {

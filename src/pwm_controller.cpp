@@ -14,6 +14,7 @@
 #include "pwm_controller.h"
 #include "config.h"
 #include <Wire.h>
+#include <Preferences.h>
 
 /* =========================================================================
  * INSTANCE GLOBALE
@@ -37,6 +38,7 @@ PWMController::PWMController()
     : _pwm(PCA9685_I2C_ADDR, Wire1)   /* bus I2C n°2 — MS5837 + PCA9685 */
     , _mutex(nullptr)
     , _physicalOutputsEnabled(false)    /* Mode Témoin par défaut au boot */
+    , _typeMask(PWM_TYPE_DEFAULT_MASK)  /* typage provisoire avant lecture NVS (begin) */
 {
     /* Initialiser tous les canaux au neutre par défaut */
     for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
@@ -49,17 +51,21 @@ PWMController::PWMController()
  * ========================================================================= */
 
 /**
- * @brief Initialise le PCA9685 : reset, fréquence 50 Hz, tous canaux au neutre.
+ * @brief Initialise le PCA9685 : reset, fréquence 50 Hz, position de sécurité.
  *
  * Séquence d'initialisation :
  * 1. Création du mutex FreeRTOS
- * 2. Reset logiciel du PCA9685 via la bibliothèque Adafruit
- * 3. Configuration de la fréquence de sortie à 50 Hz
- * 4. Application du neutre (1500 µs) sur les 16 canaux
+ * 2. Chargement du typage des canaux 10-15 depuis la NVS
+ * 3. Reset logiciel du PCA9685 via la bibliothèque Adafruit
+ * 4. Configuration de la fréquence de sortie à 50 Hz
+ * 5. Application de la position de sécurité (neutre 1500 µs / 0 %) sur les 16 canaux
  */
 void PWMController::begin() {
     /* Création du mutex de protection d'accès */
     _mutex = xSemaphoreCreateMutex();
+
+    /* Chargement du typage des canaux 10-15 (clé NVS « pwm_types ») */
+    _loadChannelTypes();
 
     /* NOTE : le PCA9685 vit sur le bus I2C n°2 (Wire1, GPIO 6/7), partagé
      * avec le MS5837. Le bus est configuré une seule fois par
@@ -79,10 +85,10 @@ void PWMController::begin() {
     /* Délai de stabilisation après changement de fréquence */
     delay(10);
 
-    /* Application du neutre sur tous les canaux (failsafe initial) */
+    /* Application de la position de sécurité sur tous les canaux (failsafe initial) */
     setAllNeutral();
 
-    Serial.println("[PWM] PCA9685 initialisé à 50 Hz, 16 canaux au neutre (bus I2C n°2)");
+    Serial.println("[PWM] PCA9685 initialisé à 50 Hz, canaux à la position de sécurité (bus I2C n°2)");
 }
 
 /* =========================================================================
@@ -152,20 +158,26 @@ void PWMController::setAllPWM(const uint16_t* values) {
 }
 
 /**
- * @brief Force tous les canaux au neutre (1500 µs).
+ * @brief Force les canaux à leur position de sécurité (failsafe).
  *
- * Utilisé par le watchdog failsafe pour arrêter tous les propulseurs
- * en cas de perte de communication série.
+ * - Canaux bidirectionnels (ESC/servos/outils, 0–9 et 10–15 typés bidir) :
+ *   neutre 1500 µs.
+ * - Canaux unidirectionnels (gradateurs LED, 10–15 typés unidir) : 0 %
+ *   (1000 µs).
+ *
+ * Les valeurs sont écrites PHYSIQUEMENT sur le PCA9685 — y compris en mode
+ * Témoin, la position de sécurité étant le seul état sûr — et mémorisées
+ * dans _current[] pour la télémétrie (WebSocket / trame montante).
  */
 void PWMController::setAllNeutral() {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        uint16_t neutralTicks = _usToTicks(PWM_NEUTRAL_US);
         for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
-            _pwm.setPWM(i, 0, neutralTicks);
-            _current[i] = PWM_NEUTRAL_US;
+            const uint16_t us = _safeUsForChannel(i);
+            _pwm.setPWM(i, 0, _usToTicks(us));
+            _current[i] = us;
         }
         xSemaphoreGive(_mutex);
-        Serial.println("[PWM] Failsafe : tous les canaux au neutre (1500 µs)");
+        Serial.println("[PWM] Failsafe : canaux à la position de sécurité (neutre 1500 µs / 0 %)");
     }
 }
 
@@ -204,9 +216,10 @@ void PWMController::getCurrentValues(uint16_t* out) const {
  *
  * - Passage à `true`  : les prochaines consignes seront écrites sur le PCA9685.
  *   Les valeurs actuelles du buffer sont immédiatement appliquées.
- * - Passage à `false` : le PCA9685 est immédiatement forcé au neutre
- *   (1500 µs canaux 0–11, 0 % canaux 12–15) sans modifier le buffer
- *   _current[] qui continue de refléter les consignes logiques.
+ * - Passage à `false` : le PCA9685 est immédiatement forcé à la position de
+ *   sécurité (neutre 1500 µs pour les canaux bidirectionnels, 0 % pour les
+ *   canaux unidirectionnels) sans modifier le buffer _current[] qui continue
+ *   de refléter les consignes logiques.
  *
  * @param enabled État souhaité des sorties physiques.
  */
@@ -239,22 +252,94 @@ bool PWMController::isPhysicalOutputsEnabled() const {
 }
 
 /**
- * @brief Force le neutre de sécurité sur le PCA9685 sans modifier _current[].
+ * @brief Force la position de sécurité sur le PCA9685 sans modifier _current[].
  *
- * - Canaux 0–11 (ESC/Servos) : 1500 µs (neutre)
- * - Canaux 12–15 (Gradateurs) : 0 ticks (0 % — LED éteints)
+ * - Canaux bidirectionnels : 1500 µs (neutre).
+ * - Canaux unidirectionnels (gradateurs) : 1000 µs (0 % — LED éteints).
  *
  * @note Doit être appelée avec le mutex déjà acquis.
  */
 void PWMController::_forcePhysicalNeutral() {
-    uint16_t neutralTicks = _usToTicks(PWM_NEUTRAL_US);
-    for (uint8_t i = 0; i < 12; i++) {
-        _pwm.setPWM(i, 0, neutralTicks);
+    for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
+        _pwm.setPWM(i, 0, _usToTicks(_safeUsForChannel(i)));
     }
-    /* Canaux 12-15 : gradateurs → 0 ticks (0%) */
-    for (uint8_t i = 12; i < NUM_PWM_CHANNELS; i++) {
-        _pwm.setPWM(i, 0, 0);
+}
+
+/* =========================================================================
+ * TYPAGE DES CANAUX 10–15 (BIDIRECTIONNEL / UNIDIRECTIONNEL)
+ * ========================================================================= */
+
+/**
+ * @brief Charge le masque de typage depuis la NVS (clé « pwm_types »).
+ *
+ * Valeur absente → PWM_TYPE_DEFAULT_MASK (CH10/CH11 pinces et CH14/CH15
+ * auxiliaires bidirectionnels, CH12/CH13 gradateurs unidirectionnels).
+ */
+void PWMController::_loadChannelTypes() {
+    Preferences prefs;
+    prefs.begin("config", true);   /* Lecture seule */
+    uint8_t mask = prefs.getUChar("pwm_types", PWM_TYPE_DEFAULT_MASK);
+    prefs.end();
+
+    _typeMask = (uint8_t)(mask & 0x3F);
+
+    String types;
+    for (uint8_t i = 0; i < PWM_TYPE_NUM_CHANNELS; i++) {
+        types += " CH" + String(PWM_TYPE_FIRST_CHANNEL + i) + "=";
+        types += ((_typeMask >> i) & 1) ? "BIDIR" : "UNI";
     }
+    Serial.println("[PWM] Typage canaux 10-15 :" + types);
+}
+
+/**
+ * @brief Retourne le masque de typage courant (bit n ↔ canal 10+n, 1 = bidir).
+ */
+uint8_t PWMController::getChannelTypeMask() const {
+    return _typeMask;
+}
+
+/**
+ * @brief Indique si un canal est bidirectionnel (position de sécurité 1500 µs).
+ *
+ * Les canaux 0–9 (ESC/servos) sont toujours bidirectionnels ; les canaux
+ * 10–15 suivent le masque persisté en NVS.
+ */
+bool PWMController::isBidirectional(uint8_t channel) const {
+    if (channel < PWM_TYPE_FIRST_CHANNEL) return true;
+    if (channel >= PWM_TYPE_FIRST_CHANNEL + PWM_TYPE_NUM_CHANNELS) return false;
+    return ((_typeMask >> (channel - PWM_TYPE_FIRST_CHANNEL)) & 1) != 0;
+}
+
+/**
+ * @brief Persiste un nouveau masque de typage en NVS (vérifié par relecture)
+ *        puis l'applique à chaud — aucun redémarrage nécessaire.
+ */
+bool PWMController::saveChannelTypes(uint8_t mask) {
+    mask &= 0x3F;
+
+    Preferences prefs;
+    if (!prefs.begin("config", false)) {
+        return false;
+    }
+    prefs.putUChar("pwm_types", mask);
+    const bool ok = (prefs.getUChar("pwm_types", 0xFF) == mask);   /* relecture */
+    prefs.end();
+
+    if (ok) {
+        _typeMask = mask;
+        Serial.printf("[PWM] Typage canaux 10-15 enregistré (NVS) : masque 0x%02X\n", mask);
+    }
+    return ok;
+}
+
+/**
+ * @brief Valeur de sécurité d'un canal selon son typage.
+ *
+ * - Bidirectionnel : PWM_NEUTRAL_US (1500 µs — neutre ESC/servo/outil).
+ * - Unidirectionnel : PWM_MIN_US (1000 µs — 0 % gradateur LED).
+ */
+uint16_t PWMController::_safeUsForChannel(uint8_t channel) const {
+    return isBidirectional(channel) ? PWM_NEUTRAL_US : PWM_MIN_US;
 }
 
 /* =========================================================================

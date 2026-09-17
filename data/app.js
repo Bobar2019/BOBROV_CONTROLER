@@ -12,26 +12,46 @@
  * CONSTANTES
  * ========================================================================= */
 
-const CH_NAMES = [
+/* Noms par défaut des 16 canaux PWM — servent de placeholder tant qu'aucun
+ * nom personnalisé n'est enregistré en NVS (Paramètres → « Noms des sorties »).
+ * CH_NAMES = noms courants, mutés à chaud après chargement depuis /api/names. */
+const CH_NAMES_DEFAULT = [
     "Thruster 1", "Thruster 2", "Thruster 3", "Thruster 4",
     "Thruster 5", "Thruster 6", "Thruster 7", "Thruster 8",
     "Pan Servo",  "Tilt Servo", "Claw",       "Claw Rot.",
     "LED Dim 1",  "LED Dim 2",  "Aux 1",      "Aux 2"
 ];
+const CH_NAMES = CH_NAMES_DEFAULT.slice();
 
-const CH_TYPES = [
-    "motor","motor","motor","motor","motor","motor","motor","motor",
-    "servo","servo","servo","servo",
-    "dimmer","dimmer","aux","aux"
-];
+/* Noms par défaut des 4 sorties tout-ou-rien (GPIO1-GPIO4). */
+const GPIO_NAMES_DEFAULT = ["Sortie 1", "Sortie 2", "Sortie 3", "Sortie 4"];
+const GPIO_NAMES = GPIO_NAMES_DEFAULT.slice();
 
 const NEUTRAL_US = 1500;
 const MIN_US = 1000;
 const MAX_US = 2000;
 
+/* Typage des canaux PWM 10-15 (bit n ↔ canal 10+n, 1 = bidirectionnel).
+ * Valeur par défaut alignée sur PWM_TYPE_DEFAULT_MASK du firmware ;
+ * resynchronisée par la télémétrie WebSocket puis /api/pwm/config. */
+const PWM_TYPE_FIRST = 10;
+const PWM_TYPE_LAST = 15;
+let _pwmTypeMask = 0x33;
+
+/* Dernier état confirmé des 4 sorties ON/OFF (masque 4 bits — télémétrie ou
+ * réponse REST). Base de calcul du basculement des boutons de test GPIO. */
+let _gpioState = 0;
+
 let pwmValues = new Array(16).fill(NEUTRAL_US);
 let ws = null;
 let testUnlocked = false;
+
+/** Type d'un canal 10-15 : true = bidirectionnel, false = unidirectionnel,
+ *  null = hors plage typable (canaux 0-9, comportement historique). */
+function pwmChType(ch) {
+    if (ch < PWM_TYPE_FIRST || ch > PWM_TYPE_LAST) return null;
+    return ((_pwmTypeMask >> (ch - PWM_TYPE_FIRST)) & 1) === 1;
+}
 
 /* --- Rendu découplé + caches DOM/Canvas (optimisation perf télémétrie 20 Hz) --- */
 let _pendingTelemetry = null;            /* dernière trame WS reçue, en attente de rendu */
@@ -50,6 +70,338 @@ function getCtx(id) {
     let c = _ctxCache[id];
     if (!c) { const cv = getEl(id); if (!cv) return null; c = { cv: cv, ctx: cv.getContext('2d') }; _ctxCache[id] = c; }
     return c;
+}
+
+/* =========================================================================
+ * THÈME CLAIR / SOMBRE
+ * ========================================================================= */
+
+const THEME_KEY = 'bobcontrol_theme';
+
+/* Applique le thème : attribut data-theme sur <html> (pilote les variables CSS
+ * et l'icône ☀️/🌙 du bouton), couleur de la barre système mobile, libellés
+ * accessibles du bouton. */
+function applyTheme(theme) {
+    const light = (theme === 'light');
+    document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', light ? '#eef0f4' : '#131417');
+    const btn = getEl('theme-toggle');
+    if (btn) {
+        const label = light ? 'Passer au thème sombre' : 'Passer au thème clair';
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+    }
+}
+
+/* Branche le bouton de bascule et resynchronise l'affichage avec la préférence
+ * mémorisée (l'attribut data-theme est déjà posé par le script inline anti-FOUC
+ * de index.html, avant le premier rendu). */
+function initTheme() {
+    const btn = getEl('theme-toggle');
+    if (btn) {
+        btn.addEventListener('click', () => {
+            const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            applyTheme(next);
+            try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
+        });
+    }
+    applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+}
+
+/* =========================================================================
+ * NOMS DES SORTIES (NVS) — charger / appliquer / sauvegarder
+ * ========================================================================= */
+
+/**
+ * Nettoie un nom saisi (miroir du nettoyage firmware) : retire les caractères
+ * HTML sensibles et de contrôle, normalise les espaces, borne à 20 caractères.
+ */
+function sanitizeOutputName(v) {
+    return String(v || '')
+        .replace(/[<>"'`&\\]/g, '')
+        .replace(/[\u0000-\u001F\u007F]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 20);
+}
+
+/**
+ * Applique les noms issus de NVS (tableaux « ch » 16 + « gpio » 4 ; une
+ * entrée vide = nom par défaut) puis rafraîchit tous les libellés de l'UI.
+ */
+function applyOutputNames(chArr, gpioArr) {
+    for (let i = 0; i < CH_NAMES.length; i++) {
+        const custom = (chArr && chArr[i]) ? sanitizeOutputName(chArr[i]) : '';
+        CH_NAMES[i] = custom || CH_NAMES_DEFAULT[i];
+    }
+    for (let i = 0; i < GPIO_NAMES.length; i++) {
+        const custom = (gpioArr && gpioArr[i]) ? sanitizeOutputName(gpioArr[i]) : '';
+        GPIO_NAMES[i] = custom || GPIO_NAMES_DEFAULT[i];
+    }
+    refreshOutputNameUI();
+}
+
+/**
+ * Reporte les noms courants sur tous les libellés : PWM Monitor, Banc de
+ * Test, tooltips du schéma propulsion, états GPIO (Paramètres + banc).
+ * Accès direct par id (pas le cache getEl) : les curseurs du banc sont
+ * reconstruits à chaud lors d'un changement de typage PWM.
+ */
+function refreshOutputNameUI() {
+    for (let i = 0; i < 16; i++) {
+        const ml = document.getElementById('ch-lbl-' + i);
+        if (ml) ml.textContent = CH_NAMES[i];
+        const bl = document.getElementById('sl-lbl-' + i);
+        if (bl) bl.textContent = CH_NAMES[i];
+        const tt = _thrTitleEls[i];
+        if (tt) tt.textContent = 'CH' + i + ' : ' + CH_NAMES[i];
+    }
+    for (let i = 0; i < 4; i++) {
+        const gn = document.getElementById('gpio-name-' + i);
+        if (gn) gn.textContent = GPIO_NAMES[i];
+        const gpn = document.getElementById('gpio-pin-name-' + i);
+        if (gpn) gpn.textContent = GPIO_NAMES[i];
+        const bgn = document.getElementById('bench-gpio-name-' + i);
+        if (bgn) bgn.textContent = GPIO_NAMES[i];
+    }
+    fillNamesForm();
+}
+
+/* Pré-remplit la carte Paramètres : champ vide = nom par défaut (placeholder). */
+function fillNamesForm() {
+    for (let i = 0; i < 16; i++) {
+        const el = document.getElementById('name-ch-' + i);
+        if (el) el.value = (CH_NAMES[i] === CH_NAMES_DEFAULT[i]) ? '' : CH_NAMES[i];
+    }
+    for (let i = 0; i < 4; i++) {
+        const el = document.getElementById('name-gpio-' + i);
+        if (el) el.value = (GPIO_NAMES[i] === GPIO_NAMES_DEFAULT[i]) ? '' : GPIO_NAMES[i];
+    }
+}
+
+/* Charge les noms personnalisés depuis NVS (silencieux si API absente). */
+async function loadOutputNames() {
+    try {
+        const res = await fetch('/api/names');
+        if (!res.ok) return;
+        const data = await res.json();
+        applyOutputNames(data.ch, data.gpio);
+    } catch (_) { /* noms par défaut si API indisponible */ }
+}
+
+/**
+ * Branche le bouton « Appliquer les noms » de la carte Paramètres : envoie
+ * les 20 champs (16 PWM + 4 GPIO) à POST /api/names et applique la réponse
+ * normalisée par le firmware (nettoyage + bornage).
+ */
+function initOutputNames() {
+    const btn = document.getElementById('btn-save-names');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        const chArr = [], gpioArr = [];
+        for (let i = 0; i < 16; i++) {
+            const el = document.getElementById('name-ch-' + i);
+            chArr.push(sanitizeOutputName(el ? el.value : ''));
+        }
+        for (let i = 0; i < 4; i++) {
+            const el = document.getElementById('name-gpio-' + i);
+            gpioArr.push(sanitizeOutputName(el ? el.value : ''));
+        }
+        btn.disabled = true;
+        const status = document.getElementById('names-status');
+        const setStatus = (msg, color) => {
+            if (status) { status.textContent = msg; status.style.color = color || ''; }
+        };
+        /* Délai court : sans cela le navigateur peut rester bloqué 30 s et plus
+         * si le contrôleur est injoignable (AP perdu, redémarrage en cours). */
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 6000);
+        try {
+            const res = await fetch('/api/names', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'names=' + encodeURIComponent(JSON.stringify({ ch: chArr, gpio: gpioArr })),
+                signal: ctrl.signal
+            });
+            const ct = res.headers.get('content-type') || '';
+            if (!res.ok || ct.indexOf('json') === -1) throw new Error('non-json');
+            const data = await res.json();
+            if (data.status === 'ok') {
+                applyOutputNames(data.ch, data.gpio);
+                setStatus('Noms enregistrés en NVS et appliqués.', 'var(--success)');
+            } else {
+                setStatus('Erreur : ' + (data.error || 'inconnue'), 'var(--danger)');
+            }
+        } catch (e) {
+            setStatus(e.name === 'AbortError'
+                ? 'Contrôleur injoignable (pas de réponse en 6 s). Vérifiez la connexion Wi-Fi.'
+                : 'Le contrôleur ne répond pas sur /api/names — le firmware déployé est ancien ?\n'
+                  + 'Flashez le firmware (pio run -t upload) puis réessayez.', 'var(--danger)');
+        } finally {
+            clearTimeout(timer);
+            btn.disabled = false;
+        }
+    });
+}
+
+/* =========================================================================
+ * VERSION LOGICIELLE (pied de page global)
+ * ========================================================================= */
+
+/**
+ * Affiche la version Git du firmware dans le pied de page (#app-version) —
+ * champ « version » de GET /api/system/status, alimenté par la macro
+ * GIT_VERSION injectée à la compilation (scripts/git_version.py :
+ * git describe --tags --always --dirty). Silencieux en cas d'échec : le
+ * libellé statique du footer reste alors affiché.
+ */
+async function loadAppVersion() {
+    try {
+        const res = await fetch('/api/system/status', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && typeof data.version === 'string' && data.version) {
+            const el = document.getElementById('app-version');
+            if (el) el.textContent = data.version.startsWith('v') ? data.version : 'v' + data.version;
+        }
+    } catch (_) { /* version statique conservée si l'API est indisponible */ }
+}
+
+/* =========================================================================
+ * CALIBRATION ALTIMÉTRIQUE QNH (Paramètres — v1.0.1)
+ * ========================================================================= */
+
+/** Met à jour l'affichage de la carte QNH depuis une réponse /api/qnh/config. */
+function updateQnhUI(data) {
+    const toggle = document.getElementById('qnh-auto-enable');
+    if (toggle && document.activeElement !== toggle) toggle.checked = !!data.auto_enable;
+    const status = document.getElementById('qnh-status');
+    if (status) {
+        const q = (typeof data.qnh === 'number') ? data.qnh.toFixed(1) : '—';
+        let txt = 'QNH actuel utilisé : ' + q + ' mbar';
+        /* Offset matériel compensé (v1.0.1) — affiché seulement s'il existe */
+        if (typeof data.hw_offset === 'number' && data.hw_offset !== 0) {
+            txt += ' — offset matériel : ' + (data.hw_offset > 0 ? '+' : '')
+                 + data.hw_offset.toFixed(1) + ' mbar';
+        }
+        if (data.sta_connected === false) txt += ' — pas de connexion Internet (AP seul)';
+        status.textContent = txt;
+        status.style.color = '';
+    }
+}
+
+/** Charge l'état QNH (option + valeur appliquée) — silencieux si API absente. */
+async function loadQnhConfig() {
+    try {
+        const res = await fetch('/api/qnh/config', { cache: 'no-store' });
+        if (!res.ok) return;
+        updateQnhUI(await res.json());
+    } catch (_) { /* firmware ancien : carte muette */ }
+}
+
+/**
+ * Branche la carte QNH : interrupteur (NVS via POST /api/qnh/config) et
+ * bouton « Actualiser » (POST /api/qnh/refresh puis polling de la config
+ * tant que « fetching » est vrai — le fetch tourne côté ESP32 en tâche
+ * détachée, jamais dans le navigateur).
+ */
+function initQnhCard() {
+    const toggle = document.getElementById('qnh-auto-enable');
+    if (toggle) {
+        toggle.addEventListener('change', async () => {
+            const status = document.getElementById('qnh-status');
+            const setStatus = (msg, color) => {
+                if (status) { status.textContent = msg; status.style.color = color || ''; }
+            };
+            toggle.disabled = true;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 6000);
+            try {
+                const res = await fetch('/api/qnh/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'enable=' + (toggle.checked ? 'true' : 'false'),
+                    signal: ctrl.signal
+                });
+                const ct = res.headers.get('content-type') || '';
+                if (!res.ok || ct.indexOf('json') === -1) throw new Error('non-json');
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    setStatus(toggle.checked
+                        ? 'Calibration automatique activée — requête Open-Meteo au prochain démarrage.'
+                        : 'Calibration désactivée — retour au QNH standard (1013.25 mbar).', 'var(--success)');
+                    loadQnhConfig();   /* resynchronise (QNH standard si désactivé) */
+                } else {
+                    setStatus('Erreur : ' + (data.error || 'inconnue'), 'var(--danger)');
+                }
+            } catch (e) {
+                setStatus(e.name === 'AbortError'
+                    ? 'Contrôleur injoignable (pas de réponse en 6 s).'
+                    : 'Le contrôleur ne répond pas sur /api/qnh/config — firmware ancien ?', 'var(--danger)');
+            } finally {
+                clearTimeout(timer);
+                toggle.disabled = false;
+            }
+        });
+    }
+
+    const btn = document.getElementById('btn-qnh-refresh');
+    if (btn) {
+        btn.addEventListener('click', async () => {
+            const spinner = document.getElementById('qnh-refresh-spinner');
+            const status = document.getElementById('qnh-status');
+            const setStatus = (msg, color) => {
+                if (status) { status.textContent = msg; status.style.color = color || ''; }
+            };
+            btn.disabled = true;
+            if (spinner) spinner.hidden = false;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 6000);
+            try {
+                const res = await fetch('/api/qnh/refresh', { method: 'POST', signal: ctrl.signal });
+                const ct = res.headers.get('content-type') || '';
+                if (!res.ok || ct.indexOf('json') === -1) throw new Error('non-json');
+                const data = await res.json();
+                if (data.status === 'started') {
+                    /* Polling (500 ms, max 15 s) jusqu'à la fin du fetch ESP32 */
+                    const deadline = Date.now() + 15000;
+                    while (Date.now() < deadline) {
+                        await new Promise(r => setTimeout(r, 500));
+                        try {
+                            const cfgRes = await fetch('/api/qnh/config', { cache: 'no-store' });
+                            if (!cfgRes.ok) break;
+                            const cfg = await cfgRes.json();
+                            if (!cfg.fetching) {
+                                if (cfg.last_fetch_ok) {
+                                    updateQnhUI(cfg);
+                                    setStatus('QNH Open-Meteo appliqué : ' + cfg.qnh.toFixed(1) + ' mbar.', 'var(--success)');
+                                } else {
+                                    setStatus('Échec de la requête Open-Meteo — QNH courant conservé (fallback).', 'var(--danger)');
+                                }
+                                return;
+                            }
+                        } catch (_) { /* nouveau tick de polling au tour suivant */ }
+                    }
+                    setStatus('Requête toujours en cours — rechargez la carte dans un instant.');
+                } else if (data.status === 'busy') {
+                    setStatus('Une requête QNH est déjà en cours…');
+                } else {
+                    setStatus('Erreur : ' + (data.error || 'inconnue'), 'var(--danger)');
+                }
+            } catch (e) {
+                setStatus(e.name === 'AbortError'
+                    ? 'Contrôleur injoignable (pas de réponse en 6 s).'
+                    : (e.message === 'non-json'
+                        ? 'Pas de connexion Internet — rejoignez un réseau externe (onglet Wi-Fi), ou firmware ancien.'
+                        : 'Erreur réseau : ' + e.message), 'var(--danger)');
+            } finally {
+                clearTimeout(timer);
+                if (spinner) spinner.hidden = true;
+                btn.disabled = false;
+            }
+        });
+    }
 }
 
 /* =========================================================================
@@ -102,41 +454,155 @@ function initTileNav() {
 }
 
 /* =========================================================================
- * DASHBOARD EDITOR — DRAG & DROP
+ * DASHBOARD EDITOR — RÉORGANISATION DES TUILES (EXPÉRIENCE iOS)
+ * ========================================================================= *
+ * Entrée en édition : bouton « Réorganiser », ou appui long (500 ms) sur
+ * n'importe quelle tuile — le doigt restant posé, la tuile se soulève et
+ * suit immédiatement le doigt, sans relâcher (comme sur l'écran d'accueil
+ * iPhone). Sortie : bouton « Terminer » ou tap en dehors des tuiles.
+ *
+ * En édition, toutes les tuiles tremblent (jiggle CSS ±1,5° désynchronisé,
+ * voir style.css) et l'ordre est sauvegardé dans localStorage À CHAQUE dépôt.
+ *
+ * Souris ET tactile : Pointer Events lorsqu'ils sont disponibles (unifient
+ * souris/doigt/stylet), sinon repli explicite touchstart/touchmove/touchend.
+ * Jamais l'attribut draggable HTML5 : il interrompt les Pointer Events et ne
+ * fonctionne pas sur iOS Safari.
  * ========================================================================= */
+
+const LONG_PRESS_MS        = 500;  /* durée d'appui long avant le mode édition */
+const PRESS_MOVE_TOLERANCE = 10;   /* déplacement (px) annulant l'appui long   */
+
+let _dashEditing = false;          /* mode édition actif ?                     */
+let _drag  = null;                 /* déplacement en cours (voir dragStart)    */
+let _press = null;                 /* appui long en cours (voir pressStart)    */
 
 function initDashboardEditor() {
     const grid = document.getElementById('nav-grid');
     const btnEdit = document.getElementById('btnEditDash');
     const btnSave = document.getElementById('btnSaveDash');
-    const hint = document.getElementById('dashEditHint');
     if (!grid || !btnEdit || !btnSave) return;
 
-    // Charger l'ordre sauvegardé
+    /* Restaurer l'ordre mémorisé (propre à chaque appareil) */
     loadDashboardOrder(grid);
 
-    let editing = false;
-
-    btnEdit.addEventListener('click', () => {
-        editing = true;
-        grid.classList.add('editing');
-        btnEdit.style.display = 'none';
-        btnSave.style.display = 'inline-flex';
-        hint.style.display = 'inline';
-        attachDragHandlers(grid);
+    /* Écouteurs PERMANENTS sur les tuiles : le guard tactile vérifie l'état
+     * dynamiquement — hors édition un touchmove défile normalement la page,
+     * en édition il est bloqué pour laisser le drag suivre le doigt. */
+    grid.querySelectorAll('.nav-tile').forEach(tile => {
+        if (window.PointerEvent) {
+            tile.addEventListener('pointerdown', onTilePointerDown);
+        } else {
+            /* Repli explicite pour les navigateurs sans Pointer Events :
+             * pas de preventDefault au touchstart pour laisser le tap
+             * déclencher la navigation (le click natif doit survivre). */
+            tile.addEventListener('touchstart', onTileTouchStart, { passive: true });
+        }
+        tile.addEventListener('touchmove', touchGuard, { passive: false });
+        /* L'ancre <a> ne doit JAMAIS déclencher le drag natif HTML5 */
+        tile.addEventListener('dragstart', dragStartGuard);
+        /* Pas de menu contextuel (clic droit / long-press Android) : il
+         * interromprait l'appui long */
+        tile.addEventListener('contextmenu', contextMenuGuard);
     });
 
-    btnSave.addEventListener('click', () => {
-        editing = false;
-        grid.classList.remove('editing');
+    /* Suivi global du pointeur : dispatch selon l'état (_drag puis _press).
+     * Persistants — inactifs (retour immédiat) hors interactions tuiles. */
+    if (window.PointerEvent) {
+        document.addEventListener('pointermove', onGlobalPointerMove);
+        document.addEventListener('pointerup', onGlobalPointerEnd);
+        document.addEventListener('pointercancel', onGlobalPointerEnd);
+    } else {
+        document.addEventListener('touchmove', onGlobalTouchMove, { passive: false });
+        document.addEventListener('touchend', onGlobalTouchEnd);
+        document.addEventListener('touchcancel', onGlobalTouchEnd);
+    }
+
+    btnEdit.addEventListener('click', () => enterDashEditMode());
+    btnSave.addEventListener('click', () => exitDashEditMode());
+
+    /* Tap en dehors des tuiles (et de la barre d'édition) → sortie du mode
+     * édition, comme un tap sur l'écran d'accueil iPhone. */
+    document.addEventListener('click', (e) => {
+        if (!_dashEditing) return;
+        if (!(e.target instanceof Element)) return;
+        if (e.target.closest('.nav-tile') || e.target.closest('.dash-edit-bar')) return;
+        exitDashEditMode();
+    });
+}
+
+/* ----- Entrée / sortie du mode édition ----- */
+
+function enterDashEditMode() {
+    if (_dashEditing) return;
+    _dashEditing = true;
+    const grid = document.getElementById('nav-grid');
+    if (grid) grid.classList.add('editing');
+    _setDashEditUI(true);
+}
+
+function exitDashEditMode() {
+    if (!_dashEditing) return;
+    _dashEditing = false;
+    cancelLongPress();
+    if (_drag) dragEnd(_drag.pointerId);
+    const grid = document.getElementById('nav-grid');
+    if (grid) {
         grid.classList.add('no-enter-anim');
-        btnEdit.style.display = 'inline-flex';
-        btnSave.style.display = 'none';
-        hint.style.display = 'none';
-        detachDragHandlers(grid);
+        grid.classList.remove('editing');
+        grid.querySelectorAll('.nav-tile').forEach(t => {
+            t.classList.remove('drop-before', 'drop-after', 'dragging-ghost', 'pressing');
+        });
+        /* Sûreté : l'ordre est déjà sauvegardé à chaque dépôt */
         saveDashboardOrder(grid);
         setTimeout(() => grid.classList.remove('no-enter-anim'), 100);
-    });
+    }
+    _setDashEditUI(false);
+}
+
+/* Bascule les contrôles de la barre d'édition (bouton/hint). */
+function _setDashEditUI(editing) {
+    const btnEdit = document.getElementById('btnEditDash');
+    const btnSave = document.getElementById('btnSaveDash');
+    const hint = document.getElementById('dashEditHint');
+    if (btnEdit) btnEdit.style.display = editing ? 'none' : 'inline-flex';
+    if (btnSave) btnSave.style.display = editing ? 'inline-flex' : 'none';
+    if (hint) hint.style.display = editing ? 'inline' : 'none';
+}
+
+/* ----- Appui long : entrée en édition + soulèvement immédiat (iOS) ----- */
+
+/* Démarre l'attente d'appui long sur une tuile (pointeur encore posé). */
+function pressStart(tile, x, y, pointerId) {
+    cancelLongPress();
+    _press = { tile: tile, pointerId: pointerId, x: x, y: y };
+    /* Grossissement léger : feedback immédiat pendant l'attente */
+    tile.classList.add('pressing');
+    _press.timer = setTimeout(() => {
+        const p = _press;
+        _press = null;
+        if (!p || !p.tile || !p.tile.isConnected) return;
+        p.tile.classList.remove('pressing');
+        enterDashEditMode();
+        /* Le doigt est toujours posé (sinon ce timer aurait été annulé) :
+         * la tuile se soulève immédiatement et suit le doigt sans attendre
+         * un nouvel appui — fidèle à l'écran d'accueil iPhone. */
+        dragStart(p.tile, p.x, p.y, p.pointerId);
+    }, LONG_PRESS_MS);
+}
+
+/* Annule l'appui long si le pointeur s'éloigne (scroll/tap, pas un appui). */
+function pressMove(x, y) {
+    if (!_press) return;
+    if (Math.hypot(x - _press.x, y - _press.y) > PRESS_MOVE_TOLERANCE) cancelLongPress();
+}
+
+/* Annule l'appui long en cours (relâchement, sortie d'édition…). */
+function cancelLongPress() {
+    if (!_press) return;
+    clearTimeout(_press.timer);
+    if (_press.tile) _press.tile.classList.remove('pressing');
+    _press = null;
 }
 
 function loadDashboardOrder(grid) {
@@ -163,48 +629,19 @@ function applyOrder(grid, order) {
     setTimeout(() => grid.classList.remove('no-enter-anim'), 50);
 }
 
-/* ----- Drag & Drop via Pointer Events ----- */
-let _drag = null;
+/* ----- Glisser-déposer (clone flottant + réordonnancement en direct) ----- */
 
-function attachDragHandlers(grid) {
-    grid.querySelectorAll('.nav-tile').forEach(tile => {
-        tile.addEventListener('pointerdown', onPointerDown);
-        tile.addEventListener('click', clickGuard);
-        tile.addEventListener('dragstart', dragStartGuard);
-        tile.addEventListener('touchstart', touchGuard, { passive: false });
-        tile.addEventListener('touchmove', touchGuard, { passive: false });
-    });
-}
-
-function detachDragHandlers(grid) {
-    grid.querySelectorAll('.nav-tile').forEach(tile => {
-        tile.removeEventListener('pointerdown', onPointerDown);
-        tile.removeEventListener('click', clickGuard);
-        tile.removeEventListener('dragstart', dragStartGuard);
-        tile.removeEventListener('touchstart', touchGuard);
-        tile.removeEventListener('touchmove', touchGuard);
-        tile.classList.remove('drop-before', 'drop-after', 'dragging-ghost');
-    });
-}
-
-function clickGuard(e) { e.preventDefault(); }
-/* Bloque le drag-and-drop natif des ancres <a href> qui interrompt les Pointer Events */
-function dragStartGuard(e) { e.preventDefault(); }
-function touchGuard(e) {
-    const grid = e.currentTarget && e.currentTarget.parentElement;
-    if (grid && grid.classList.contains('editing')) e.preventDefault();
-}
-
-function onPointerDown(e) {
-    if (e.button !== undefined && e.button !== 0) return;
-    e.preventDefault();
-    const tile = e.currentTarget;
-    /* Capturer le pointeur : garantit la réception des pointermove et empêche le drag natif */
-    try { tile.setPointerCapture(e.pointerId); } catch (_) {}
+/* Soulève la tuile : clone flottant suivant le pointeur + trou translucide
+ * dans la grille (dragging-ghost). Le pointeur est déjà capturé par
+ * onTilePointerDown — les déplacements continuent d'arriver en bulle. */
+function dragStart(tile, x, y, pointerId) {
+    if (_drag) dragEnd(_drag.pointerId);
     const grid = tile.parentElement;
+    if (!grid) return;
     const rect = tile.getBoundingClientRect();
 
-    // Créer un clone flottant
+    /* Clone flottant : zoom + ombre portée (tuile « soulevée ») ; hors
+     * .nav-grid.editing → aucune animation, il ne tremble pas. */
     const floater = tile.cloneNode(true);
     floater.style.cssText = `position:fixed;z-index:99999;pointer-events:none;
         width:${rect.width}px;height:${rect.height}px;
@@ -215,27 +652,23 @@ function onPointerDown(e) {
     tile.classList.add('dragging-ghost');
 
     _drag = {
-        grid, sourceTile: tile, floater,
-        offsetX: e.clientX - rect.left,
-        offsetY: e.clientY - rect.top,
-        pointerId: e.pointerId,
+        grid: grid, sourceTile: tile, floater: floater,
+        offsetX: x - rect.left,
+        offsetY: y - rect.top,
+        pointerId: pointerId,
         moved: false
     };
-
-    document.addEventListener('pointermove', onPointerMove);
-    document.addEventListener('pointerup', onPointerUp);
-    document.addEventListener('pointercancel', onPointerUp);
 }
 
-function onPointerMove(e) {
+/* Déplace le clone et réordonne la grille en direct : la tuile la plus
+ * proche du pointeur fait place (marquage drop-before/after + insertion). */
+function dragMove(x, y) {
     if (!_drag) return;
-    if (e.cancelable) e.preventDefault();
     const d = _drag;
     d.moved = true;
-    d.floater.style.left = (e.clientX - d.offsetX) + 'px';
-    d.floater.style.top = (e.clientY - d.offsetY) + 'px';
+    d.floater.style.left = (x - d.offsetX) + 'px';
+    d.floater.style.top  = (y - d.offsetY) + 'px';
 
-    // Trouver la tuile la plus proche du pointeur
     const tiles = Array.from(d.grid.querySelectorAll('.nav-tile'));
     tiles.forEach(t => t.classList.remove('drop-before', 'drop-after'));
 
@@ -243,18 +676,16 @@ function onPointerMove(e) {
     tiles.forEach(t => {
         if (t === d.sourceTile) return;
         const r = t.getBoundingClientRect();
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-        const dist = Math.hypot(e.clientX - cx, e.clientY - cy);
+        const dist = Math.hypot(x - (r.left + r.width / 2), y - (r.top + r.height / 2));
         if (dist < minDist) { minDist = dist; closest = t; }
     });
 
     if (closest && minDist < 200) {
         const r = closest.getBoundingClientRect();
-        const before = e.clientX < r.left + r.width / 2;
+        const before = x < r.left + r.width / 2;
         closest.classList.add(before ? 'drop-before' : 'drop-after');
 
-        // Live reorder
+        /* Live reorder : la tuile survolée fait place dynamiquement */
         const desiredNext = before ? closest : closest.nextElementSibling;
         if (d.sourceTile.nextElementSibling !== desiredNext && d.sourceTile !== desiredNext) {
             d.grid.insertBefore(d.sourceTile, desiredNext);
@@ -262,22 +693,97 @@ function onPointerMove(e) {
     }
 }
 
-function onPointerUp(e) {
+/* Dépose la tuile : nettoyage + sauvegarde IMMÉDIATE de l'ordre — il survit
+ * à un rechargement même sans passer par « Terminer ». */
+function dragEnd(pointerId) {
     if (!_drag) return;
     const d = _drag;
+    _drag = null;
 
-    d.grid.querySelectorAll('.nav-tile').forEach(t => {
-        t.classList.remove('drop-before', 'drop-after');
-    });
+    d.grid.querySelectorAll('.nav-tile').forEach(t => t.classList.remove('drop-before', 'drop-after'));
     d.sourceTile.classList.remove('dragging-ghost');
     if (d.floater && d.floater.parentNode) d.floater.parentNode.removeChild(d.floater);
-    try { d.sourceTile.releasePointerCapture && d.sourceTile.releasePointerCapture(d.pointerId); } catch (_) {}
+    try {
+        if (pointerId !== null && d.sourceTile.releasePointerCapture) {
+            d.sourceTile.releasePointerCapture(pointerId);
+        }
+    } catch (_) {}
 
-    document.removeEventListener('pointermove', onPointerMove);
-    document.removeEventListener('pointerup', onPointerUp);
-    document.removeEventListener('pointercancel', onPointerUp);
+    if (d.moved) saveDashboardOrder(d.grid);
+}
 
-    _drag = null;
+/* ----- Aiguillage Pointer Events (souris + tactile unifiés) ----- */
+
+function onTilePointerDown(e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    const tile = e.currentTarget;
+    /* Capturer le pointeur : garantit la réception des pointermove et empêche le drag natif */
+    try { tile.setPointerCapture(e.pointerId); } catch (_) {}
+    if (_dashEditing) dragStart(tile, e.clientX, e.clientY, e.pointerId);
+    else pressStart(tile, e.clientX, e.clientY, e.pointerId);
+}
+
+function onGlobalPointerMove(e) {
+    if (_drag) {
+        if (e.cancelable) e.preventDefault();
+        dragMove(e.clientX, e.clientY);
+    } else if (_press) {
+        if (_press.pointerId !== null && e.pointerId !== _press.pointerId) return;
+        pressMove(e.clientX, e.clientY);
+    }
+}
+
+function onGlobalPointerEnd(e) {
+    if (_drag) {
+        if (_drag.pointerId !== null && e.pointerId !== undefined &&
+            e.pointerId !== _drag.pointerId) return;
+        dragEnd(e.pointerId !== undefined ? e.pointerId : null);
+    } else if (_press) {
+        if (_press.pointerId !== null && e.pointerId !== undefined &&
+            e.pointerId !== _press.pointerId) return;
+        cancelLongPress();
+    }
+}
+
+/* ----- Repli tactile explicite (navigateurs sans Pointer Events) ----- */
+
+function onTileTouchStart(e) {
+    const t = e.touches[0];
+    if (!t) return;
+    /* Pas de preventDefault ici : le tap doit déclencher le click natif
+     * (navigation) — le scroll est bloqué par touchGuard en édition. */
+    const tile = e.currentTarget;
+    if (_dashEditing) dragStart(tile, t.clientX, t.clientY, null);
+    else pressStart(tile, t.clientX, t.clientY, null);
+}
+
+function onGlobalTouchMove(e) {
+    const t = e.touches[0];
+    if (!t) return;
+    if (_drag) {
+        if (e.cancelable) e.preventDefault();
+        dragMove(t.clientX, t.clientY);
+    } else if (_press) {
+        pressMove(t.clientX, t.clientY);
+    }
+}
+
+function onGlobalTouchEnd() {
+    if (_drag) dragEnd(null);
+    else if (_press) cancelLongPress();
+}
+
+/* ----- Gardes d'événements ----- */
+
+function dragStartGuard(e) { e.preventDefault(); }
+function contextMenuGuard(e) { e.preventDefault(); }
+/* Bloque le défilement tactile pendant l'édition (le drag suit le doigt) ;
+ * hors édition, le scroll reste possible — l'appui long est alors annulé par
+ * le déplacement (pressMove), comme sur iPhone. */
+function touchGuard(e) {
+    const grid = e.currentTarget && e.currentTarget.parentElement;
+    if (grid && grid.classList.contains('editing')) e.preventDefault();
 }
 
 /* =========================================================================
@@ -374,6 +880,16 @@ function processTelemetry(data) {
         }
     }
 
+    /* Typage des canaux PWM 10-15 (synchronisation UI ← ESP32) */
+    if (data.pwm_type_mask !== undefined) {
+        applyPwmTypeMask(data.pwm_type_mask);
+    }
+
+    /* État réel des 4 sorties ON/OFF (synchronisation UI ← ESP32) */
+    if (data.gpio_state !== undefined) {
+        updateGpioStateUI(data.gpio_state);
+    }
+
     if (data.pwm && Array.isArray(data.pwm)) {
         for (let i = 0; i < 16 && i < data.pwm.length; i++) {
             pwmValues[i] = data.pwm[i];
@@ -434,7 +950,7 @@ function processTelemetry(data) {
         if (subEl) {
             const stTxt = immersed ? 'En immersion' : 'Hors de l\'eau';
             if (subEl.textContent !== stTxt) subEl.textContent = stTxt;
-            subEl.style.color = immersed ? '#29b6f6' : '#ffb300';
+            subEl.style.color = immersed ? 'var(--info)' : 'var(--warning)';
         }
 
         /* Profondeur : nulle hors de l'eau, calculée en immersion */
@@ -532,25 +1048,39 @@ function initPWMGrid() {
     for (let i = 0; i < 16; i++) {
         const ch = document.createElement('div');
         ch.className = 'pwm-channel';
-        const isMotor = (CH_TYPES[i] === 'motor');
+        const variante = _pwmBarVariant(i);
         ch.innerHTML = `
             <div class="ch-header">
-                <span class="ch-label">CH${i}: ${CH_NAMES[i]}</span>
+                <span class="ch-label">CH${i}: <span id="ch-lbl-${i}"></span></span>
                 <span class="ch-value" id="pwm-val-${i}">${NEUTRAL_US} µs</span>
             </div>
-            <div class="${isMotor ? 'pwm-bar-bg bidir' : 'pwm-bar-bg'}" id="pwm-bar-bg-${i}">
-                ${isMotor ? '<div class="pwm-center"></div>' : ''}
+            <div class="pwm-bar-bg${variante.className}" id="pwm-bar-bg-${i}">
+                ${variante.center ? '<div class="pwm-center"></div>' : ''}
                 <div class="pwm-bar-fill" id="pwm-fill-${i}"></div>
             </div>`;
         grid.appendChild(ch);
-        _pwmEls[i] = { val: ch.querySelector('.ch-value'), fill: ch.querySelector('.pwm-bar-fill') };
+        getEl('ch-lbl-' + i).textContent = CH_NAMES[i];   /* nom courant (NVS appliqué ensuite) */
+        _pwmEls[i] = {
+            val: ch.querySelector('.ch-value'),
+            fill: ch.querySelector('.pwm-bar-fill'),
+            bg: ch.querySelector('.pwm-bar-bg')
+        };
     }
 
     for (let i = 0; i < 16; i++) updatePWMBar(i, NEUTRAL_US);
 }
 
-const _pwmEls = [];                        /* Références DOM des 16 canaux (val, fill) */
+const _pwmEls = [];                        /* Références DOM des 16 canaux (val, fill, bg) */
 const _pwmLast = new Array(16).fill(null); /* Dernière valeur rendue par canal (anti-réécriture) */
+
+/** Variante de rendu d'un canal : 'center' = curseur centré (canaux 0-7 et
+ *  10-15 bidirectionnels), 'gauge' = jauge pleine échelle 0-100 % (10-15
+ *  unidirectionnels), 'plain' = barre simple historique (8-9, servos). */
+function _pwmBarVariant(ch) {
+    if (ch <= 7 || pwmChType(ch) === true) return { mode: 'center', className: ' bidir', center: true };
+    if (pwmChType(ch) === false) return { mode: 'gauge', className: ' gauge', center: false };
+    return { mode: 'plain', className: '', center: false };
+}
 
 function updatePWMBar(ch, us) {
     const refs = _pwmEls[ch];
@@ -558,27 +1088,159 @@ function updatePWMBar(ch, us) {
     if (_pwmLast[ch] === us) return;       /* inchangé → aucune écriture DOM */
     _pwmLast[ch] = us;
     const valEl = refs.val, fillEl = refs.fill;
-    valEl.textContent = us + ' µs';
-
-    const isMotor = (CH_TYPES[ch] === 'motor');
     const range = MAX_US - MIN_US;
+    const variante = _pwmBarVariant(ch);
 
-    if (isMotor) {
+    if (variante.mode === 'center') {
+        valEl.textContent = us + ' µs';
         const dev = (us - NEUTRAL_US) / (range / 2);
         const pct = Math.abs(dev) * 50;
+        fillEl.style.clipPath = '';
         if (dev >= 0) {
             fillEl.style.left = '50%';
             fillEl.style.width = pct + '%';
-            fillEl.style.background = dev > 0.5 ? '#ff3e9d' : '#00d9ff';
+            fillEl.style.background = dev > 0.5 ? 'var(--accent-magenta)' : 'var(--accent-cyan)';
         } else {
             fillEl.style.left = (50 - pct) + '%';
             fillEl.style.width = pct + '%';
-            fillEl.style.background = dev < -0.5 ? '#ff3b30' : '#00d9ff';
+            fillEl.style.background = dev < -0.5 ? 'var(--danger)' : 'var(--accent-cyan)';
         }
+    } else if (variante.mode === 'gauge') {
+        /* Jauge pleine échelle 0-100 % : le fond affiche le dégradé complet
+         * vert → orange → rouge ; le remplissage (même dégradé) révèle par
+         * clip-path la tranche correspondant à la valeur. */
+        const pct = Math.max(0, Math.min(100, ((us - MIN_US) / range) * 100));
+        valEl.textContent = Math.round(pct) + ' %';
+        fillEl.style.left = '';
+        fillEl.style.width = '100%';
+        fillEl.style.background = '';
+        fillEl.style.clipPath = 'inset(0 ' + (100 - pct).toFixed(1) + '% 0 0)';
     } else {
         const pct = ((us - MIN_US) / range) * 100;
+        fillEl.style.clipPath = '';
         fillEl.style.width = Math.max(0, Math.min(100, pct)) + '%';
-        fillEl.style.background = '#00d9ff';
+        fillEl.style.background = 'var(--accent-cyan)';
+    }
+}
+
+/**
+ * Applique un nouveau masque de typage des canaux 10-15 : reconstruit la
+ * structure de rendu des canaux concernés (curseur centré ↔ jauge 0-100 %)
+ * puis force un nouveau rendu. Adapte aussi le Banc de Test (curseurs
+ * µs ↔ 0-100 %, positions de sécurité). Appelée par la télémétrie WebSocket
+ * et par la sauvegarde de l'onglet Paramètres.
+ */
+function applyPwmTypeMask(mask) {
+    const m = (Number(mask) || 0) & 0x3F;
+    if (m === _pwmTypeMask) return;
+    _pwmTypeMask = m;
+    for (let i = PWM_TYPE_FIRST; i <= PWM_TYPE_LAST; i++) {
+        const refs = _pwmEls[i];
+        if (!refs || !refs.bg) continue;
+        const variante = _pwmBarVariant(i);
+        const cls = 'pwm-bar-bg' + variante.className;
+        if (refs.bg.className !== cls) refs.bg.className = cls;
+        refs.bg.innerHTML = (variante.center ? '<div class="pwm-center"></div>' : '')
+            + '<div class="pwm-bar-fill" id="pwm-fill-' + i + '"></div>';
+        refs.fill = refs.bg.querySelector('.pwm-bar-fill');
+        _pwmLast[i] = null;   /* structure modifiée → forcer le rendu */
+    }
+    for (let i = PWM_TYPE_FIRST; i <= PWM_TYPE_LAST; i++) updatePWMBar(i, pwmValues[i]);
+
+    /* Le Banc de Test suit le typage : ses curseurs basculent µs ↔ 0-100 %
+     * et reviennent aux positions de sécurité des canaux concernés. */
+    buildTestBenchSliders();
+}
+
+/**
+ * Met à jour les pastilles d'état et les boutons de test des 4 sorties
+ * ON/OFF (masque 4 bits — bit 0 = sortie 1). Mémorise l'état confirmé dans
+ * _gpioState (base du basculement) ; le libellé du bouton = action opposée.
+ */
+function updateGpioStateUI(mask) {
+    const m = Number(mask) || 0;
+    _gpioState = m;   /* état confirmé (base du basculement des boutons de test) */
+    for (let i = 0; i < 4; i++) {
+        const on = ((m >> i) & 1) === 1;
+        const txt = on ? 'ON' : 'OFF';
+        const cls = 'gpio-st ' + (on ? 'gpio-st-on' : 'gpio-st-off');
+
+        /* Pastilles d'état : carte Paramètres + Banc de Test */
+        for (const id of ['gpio-st-' + i, 'bench-gpio-st-' + i]) {
+            const el = getEl(id);
+            if (!el) continue;
+            if (el.textContent !== txt) el.textContent = txt;
+            if (el.className !== cls) el.className = cls;
+        }
+
+        /* Boutons associés : libellé = action, teinte = état */
+        const label = on ? 'Couper' : 'Activer';
+        for (const id of ['gpio-test-' + i, 'bench-gpio-test-' + i]) {
+            const btn = getEl(id);
+            if (!btn) continue;
+            if (btn.textContent !== label) btn.textContent = label;
+            if (btn.classList.contains('on') !== on) btn.classList.toggle('on', on);
+        }
+    }
+}
+
+/**
+ * Affiche (ou restaure) le message du hint des boutons de test GPIO.
+ * @param {boolean} isMaster true si le RPi 5 est maître (test écrasable).
+ */
+function showGpioTestHint(isMaster) {
+    const msg = isMaster
+        ? 'RPi 5 maître actif : le test a été appliqué, mais la prochaine trame descendante écrasera les sorties ON/OFF.'
+        : "Boutons de test (établi) : forcent l'état des sorties — le firmware relit et renvoie l'état réel. Écrasés par le watchdog, l'E-Stop ou une trame RPi 5 maître.";
+    for (const id of ['gpio-test-hint', 'bench-gpio-hint']) {
+        const hint = getEl(id);
+        if (!hint) continue;
+        hint.textContent = msg;
+        hint.style.color = isMaster ? 'var(--warning)' : '';
+    }
+}
+
+/**
+ * Bascule l'état d'une sortie ON/OFF via REST /api/gpio/test (masque envoyé
+ * = état confirmé _gpioState avec le bit de la sortie inversé). Partagée par
+ * les boutons de test de Paramètres ET du Banc de Test.
+ *
+ * Délai court de 6 s : sans cela le navigateur peut rester bloqué 30 s et
+ * plus si le contrôleur est injoignable (AP perdu, redémarrage en cours).
+ */
+async function toggleGpioOutput(i, btn) {
+    btn.disabled = true;
+    const mask = _gpioState ^ (1 << i);   /* bascule la sortie i */
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    try {
+        const res = await fetch('/api/gpio/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'mask=' + mask,
+            signal: ctrl.signal
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (!res.ok || ct.indexOf('json') === -1) {
+            /* Réponse non-JSON : route absente du firmware déployé (la requête
+             * est retombée sur le portail captif) ou erreur serveur */
+            throw new Error('non-json');
+        }
+        const data = await res.json();
+        if (data.status === 'ok') {
+            updateGpioStateUI(data.gpio_state);
+            showGpioTestHint(data.rpi5_master === true);
+        } else {
+            alert('Erreur : ' + (data.error || 'inconnue'));
+        }
+    } catch (e) {
+        alert(e.name === 'AbortError'
+            ? 'Test GPIO : contrôleur injoignable (pas de réponse en 6 s). Vérifiez la connexion Wi-Fi au ROV.'
+            : 'Test GPIO : le contrôleur ne répond pas sur /api/gpio/test — le firmware déployé est ancien ?\n'
+              + 'Flashez le firmware (pio run -t upload) puis réessayez.');
+    } finally {
+        clearTimeout(timer);
+        btn.disabled = false;
     }
 }
 
@@ -608,6 +1270,10 @@ function updatePWMBar(ch, us) {
  *
  * (lx, ly) = position absolue du label M1..M8, (vx, vy) = valeur en µs.
  */
+/* Références des <title> SVG des propulseurs — mis à jour lors d'un
+ * renommage des sorties (NVS → carte « Noms des sorties »). */
+const _thrTitleEls = [];
+
 const ROV_THRUSTERS = [
     { ch: 0, label: 'M1', type: 'H', x: 346, y:  81, angleDeg: 225, lx: 418, ly:  77, vx: 418, vy:  92 },
     { ch: 1, label: 'M2', type: 'H', x: 346, y: 319, angleDeg: 315, lx: 418, ly: 315, vx: 418, vy: 330 },
@@ -672,7 +1338,9 @@ function initROVSchematic() {
     /* ---- Propulseurs M1–M8 ---- */
     ROV_THRUSTERS.forEach(cfg => {
         const g = svgNew('g', { class: 'rov-thr', transform: 'translate(' + cfg.x + ',' + cfg.y + ')' }, svg);
-        svgNew('title', {}, g).textContent = 'CH' + cfg.ch + ' : ' + CH_NAMES[cfg.ch];
+        const titleEl = svgNew('title', {}, g);
+        titleEl.textContent = 'CH' + cfg.ch + ' : ' + CH_NAMES[cfg.ch];
+        _thrTitleEls[cfg.ch] = titleEl;   /* refreshOutputNameUI met à jour le tooltip */
 
         const el = { cfg: cfg, val: null, arrow: null, shaft: null, head: null, halo: null };
 
@@ -930,40 +1598,103 @@ function initFlightModeButtons() {
 }
 
 /* =========================================================================
- * BANC DE TEST
+ * BANC DE TEST — ADAPTATIF À LA CONFIGURATION (typage PWM + noms + GPIO)
  * ========================================================================= */
 
-function initTestBench() {
+/* Position de sécurité d'un canal (miroir firmware setAllNeutral) : 1500 µs
+ * pour un canal bidirectionnel, 1000 µs (0 %) pour un canal unidirectionnel. */
+function benchSafeUs(i) {
+    return (pwmChType(i) === false) ? MIN_US : NEUTRAL_US;
+}
+
+/**
+ * Reconstruit les 16 curseurs selon le typage PWM en vigueur : un canal 10-15
+ * unidirectionnel → curseur 0-100 % (converti en µs à l'envoi : 1000+%×10),
+ * tous les autres → 1000-2000 µs. Les libellés affichent les noms NVS.
+ * Rejouable à chaud (changement de typage, renommage) : chaque reconstuction
+ * recrée les écouteurs avec les éléments, sans doublon sur le DOM statique.
+ */
+function buildTestBenchSliders() {
     const grid = document.getElementById('slider-grid');
     if (!grid) return;
     grid.innerHTML = '';
 
     for (let i = 0; i < 16; i++) {
+        const unidir = (pwmChType(i) === false);
+        const minVal = unidir ? 0 : MIN_US;
+        const maxVal = unidir ? 100 : MAX_US;
+        const defVal = unidir ? 0 : NEUTRAL_US;
+
         const item = document.createElement('div');
         item.className = 'slider-item';
-        const minVal = (CH_TYPES[i] === 'dimmer') ? 0 : MIN_US;
-        const maxVal = (CH_TYPES[i] === 'dimmer') ? 100 : MAX_US;
-        const defVal = (CH_TYPES[i] === 'dimmer') ? 0 : NEUTRAL_US;
-
         item.innerHTML = `
             <div class="sl-header">
-                <span class="sl-label">CH${i}: ${CH_NAMES[i]}</span>
-                <span class="sl-value" id="sl-val-${i}">${defVal}</span>
+                <span class="sl-label">CH${i}: <span id="sl-lbl-${i}"></span></span>
+                <span class="sl-value" id="sl-val-${i}"></span>
             </div>
-            <input type="range" id="sl-${i}" min="${minVal}" max="${maxVal}" value="${defVal}" disabled>`;
+            <input type="range" id="sl-${i}" min="${minVal}" max="${maxVal}" value="${defVal}"${testUnlocked ? '' : ' disabled'}>`;
         grid.appendChild(item);
+
+        const lblEl = item.querySelector('.sl-label span');
+        if (lblEl) lblEl.textContent = CH_NAMES[i];
+        const valEl = item.querySelector('.sl-value');
+        if (valEl) valEl.textContent = unidir ? defVal + ' %' : defVal + ' µs';
 
         const slider = item.querySelector('input[type="range"]');
         slider.addEventListener('input', () => {
             const val = parseInt(slider.value);
-            document.getElementById(`sl-val-${i}`).textContent = val;
+            if (valEl) valEl.textContent = unidir ? val + ' %' : val + ' µs';
             if (testUnlocked && ws && ws.readyState === WebSocket.OPEN) {
                 const arr = [...pwmValues];
-                arr[i] = val;
+                arr[i] = unidir ? (MIN_US + val * 10) : val;   /* % → µs : 0 %=1000, 100 %=2000 */
                 ws.send(JSON.stringify({ pwm: arr }));
             }
         });
     }
+
+    refreshBenchNeutralBtn();
+}
+
+/* Libellé du bouton de sécurité : mentionne les deux cibles (1500 µs / 0 %)
+ * dès qu'au moins un canal typé 10-15 est unidirectionnel. */
+function refreshBenchNeutralBtn() {
+    const btnN = document.getElementById('btn-neutral');
+    if (!btnN) return;
+    let anyUnidir = false;
+    for (let i = PWM_TYPE_FIRST; i <= PWM_TYPE_LAST; i++) {
+        if (pwmChType(i) === false) { anyUnidir = true; break; }
+    }
+    btnN.textContent = anyUnidir
+        ? 'Tout en position de sécurité (1500 µs / 0 %)'
+        : 'Tout au Neutre (1500 µs)';
+}
+
+/* Construit les 4 tuiles ON/OFF du banc de test (noms NVS, état réel relu par
+ * le firmware — synchronisé par la télémétrie WebSocket). */
+function buildBenchGpio() {
+    const grid = document.getElementById('bench-gpio-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (let i = 0; i < 4; i++) {
+        const item = document.createElement('div');
+        item.className = 'gpio-test-item bench-gpio-item';
+        item.innerHTML = `
+            <span id="bench-gpio-name-${i}"></span>
+            <span class="gpio-st gpio-st-off" id="bench-gpio-st-${i}">OFF</span>
+            <button type="button" class="gpio-test-btn" id="bench-gpio-test-${i}">Activer</button>`;
+        grid.appendChild(item);
+
+        const nameEl = item.querySelector('span:first-child');
+        if (nameEl) nameEl.textContent = GPIO_NAMES[i];
+        const btn = item.querySelector('.gpio-test-btn');
+        btn.addEventListener('click', () => toggleGpioOutput(i, btn));
+    }
+    updateGpioStateUI(_gpioState);   /* applique l'état courant aux nouvelles tuiles */
+}
+
+function initTestBench() {
+    buildTestBenchSliders();
+    buildBenchGpio();
 
     const chk = document.getElementById('chk-unlock');
     const btnN = document.getElementById('btn-neutral');
@@ -978,16 +1709,21 @@ function initTestBench() {
 
     btnN.addEventListener('click', () => {
         if (!testUnlocked) return;
+        /* Positions de sécurité par canal : miroir du firmware setAllNeutral()
+         * (1500 µs bidir, 1000 µs = 0 % pour les canaux unidirectionnels). */
+        const arr = new Array(16);
+        for (let i = 0; i < 16; i++) arr[i] = benchSafeUs(i);
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ pwm: new Array(16).fill(NEUTRAL_US) }));
+            ws.send(JSON.stringify({ pwm: arr }));
         }
         for (let i = 0; i < 16; i++) {
             const sl = document.getElementById(`sl-${i}`);
-            if (sl) {
-                const def = (CH_TYPES[i] === 'dimmer') ? 0 : NEUTRAL_US;
-                sl.value = def;
-                document.getElementById(`sl-val-${i}`).textContent = def;
-            }
+            if (!sl) continue;
+            const unidir = (pwmChType(i) === false);
+            const def = unidir ? 0 : NEUTRAL_US;
+            sl.value = def;
+            const valEl = document.getElementById(`sl-val-${i}`);
+            if (valEl) valEl.textContent = unidir ? def + ' %' : def + ' µs';
         }
     });
 }
@@ -1116,6 +1852,10 @@ function initSettings() {
     /* Charger la config I2C actuelle depuis l'API */
     loadI2CConfig();
 
+    /* Charger le typage PWM (canaux 10-15) et la config GPIO ON/OFF */
+    loadPwmConfig();
+    loadGpioConfig();
+
     /* Bouton sauvegarde broches I2C bus n°1 — même comportement que le bus
      * n°2 : sauvegarde NVS puis redémarrage automatique du contrôleur après
      * 3 s (les nouvelles broches ne sont appliquées qu'au boot). */
@@ -1189,6 +1929,85 @@ function initSettings() {
                 btnI2C2.disabled = false;
             }
         });
+    }
+
+    /* Typage des canaux PWM 10-15 — appliqué à chaud, sans redémarrage */
+    const btnPwmTypes = document.getElementById('btn-save-pwm-types');
+    if (btnPwmTypes) {
+        btnPwmTypes.addEventListener('click', async () => {
+            let mask = 0;
+            for (let i = 0; i < 6; i++) {
+                const sel = document.getElementById('sel-pwm-type-' + (10 + i));
+                if (sel && sel.value === '1') mask |= (1 << i);
+            }
+            btnPwmTypes.disabled = true;
+            try {
+                const res = await fetch('/api/pwm/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'mask=' + mask
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    applyPwmTypeMask(data.type_mask !== undefined ? data.type_mask : mask);
+                    alert('Typage appliqué : masque 0x'
+                          + mask.toString(16).toUpperCase().padStart(2, '0'));
+                } else {
+                    alert('Erreur : ' + (data.error || 'inconnue'));
+                }
+            } catch (e) { alert('Erreur réseau : ' + e.message); }
+            btnPwmTypes.disabled = false;
+        });
+    }
+
+    /* Sauvegarde de l'assignation des 4 sorties GPIO ON/OFF — redémarrage différé */
+    const btnGpioPins = document.getElementById('btn-save-gpio-pins');
+    if (btnGpioPins) {
+        btnGpioPins.addEventListener('click', async () => {
+            const pins = [];
+            for (let i = 1; i <= 4; i++) {
+                pins.push(parseInt(document.getElementById('gpio-pin-' + i).value, 10));
+            }
+            for (const p of pins) {
+                if (isNaN(p) || p < 0 || p > 48) {
+                    alert('GPIO invalide : valeurs entre 0 et 48.');
+                    return;
+                }
+            }
+            if (new Set(pins).size !== 4) {
+                alert('Les 4 GPIO doivent être différents.');
+                return;
+            }
+            if (!confirm('Sauvegarder les sorties ON/OFF (GPIO ' + pins.join(', ')
+                        + ') et redémarrer le contrôleur ?')) {
+                return;
+            }
+            btnGpioPins.disabled = true;
+            try {
+                const res = await fetch('/api/gpio/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'p1=' + pins[0] + '&p2=' + pins[1] + '&p3=' + pins[2] + '&p4=' + pins[3]
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    showGpioRestartOverlay(3, pins);
+                } else {
+                    alert('Erreur : ' + (data.error || 'inconnue'));
+                    btnGpioPins.disabled = false;
+                }
+            } catch (e) {
+                alert('Erreur réseau : ' + e.message);
+                btnGpioPins.disabled = false;
+            }
+        });
+    }
+
+    /* Boutons de test des 4 sorties ON/OFF — bascule directe (REST /api/gpio/test,
+     * fonction toggleGpioOutput partagée avec le Banc de Test). */
+    for (let i = 0; i < 4; i++) {
+        const btnTest = document.getElementById('gpio-test-' + i);
+        if (btnTest) btnTest.addEventListener('click', () => toggleGpioOutput(i, btnTest));
     }
 
     /* Bouton lancer scan I2C */
@@ -1472,6 +2291,47 @@ function showRestartOverlay(seconds, bus, sda, scl) {
 }
 
 /**
+ * Affiche un compte à rebours avant redémarrage du contrôleur (assignation
+ * des 4 sorties GPIO ON/OFF), puis attend que l'API confirme les NOUVELLES
+ * broches avant de recharger l'interface — même principe que pour les
+ * broches I2C : le redémarrage réel est la seule preuve que le NVS relu.
+ * @param {number} seconds Décompte avant redémarrage de l'ESP32
+ * @param {number[]} pins Nouvelles broches attendues après redémarrage
+ */
+function showGpioRestartOverlay(seconds, pins) {
+    let s = seconds;
+    const overlay = document.createElement('div');
+    overlay.className = 'restart-overlay';
+    const render = () => {
+        overlay.innerHTML = '<div class="restart-box">'
+            + '<h3>Redémarrage du contrôleur</h3>'
+            + '<p>Sorties ON/OFF enregistrées (GPIO ' + pins.join(', ') + ').<br>'
+            + 'L\'ESP32 redémarre dans <span class="restart-count">' + s + '</span> s…</p>'
+            + '</div>';
+    };
+    render();
+    document.body.appendChild(overlay);
+
+    const countdown = setInterval(() => {
+        if (s > 1) { s--; render(); return; }
+        clearInterval(countdown);
+        overlay.innerHTML = '<div class="restart-box">'
+            + '<h3>Reconnexion…</h3><p>Attente du retour du contrôleur.</p></div>';
+        const ping = setInterval(async () => {
+            try {
+                const res = await fetch('/api/gpio/config', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const applied = Array.isArray(data.pins)
+                    && data.pins.length === 4
+                    && data.pins.every((v, idx) => Number(v) === pins[idx]);
+                if (applied) { clearInterval(ping); location.reload(); }
+            } catch (_) { /* ESP32 pas encore prêt : nouvelle tentative */ }
+        }, 2000);
+    }, 1000);
+}
+
+/**
  * Charge la configuration I2C actuelle (broches SDA/SCL des deux bus) depuis
  * l'API, met à jour l'affichage, les champs de saisie et la page Câblage.
  */
@@ -1492,6 +2352,41 @@ async function loadI2CConfig() {
         const info2El = document.getElementById('i2c2-current-pins');
         if (info2El) info2El.textContent = 'SDA=GPIO ' + sda2 + ', SCL=GPIO ' + scl2;
         updateWiringPins(sda, scl, sda2, scl2);
+    } catch (_) { /* silencieux si pas de connexion */ }
+}
+
+/**
+ * Charge le typage actuel des canaux PWM 10-15 depuis l'API, l'applique aux
+ * sélecteurs de l'onglet Paramètres et au rendu du PWM Monitor.
+ */
+async function loadPwmConfig() {
+    try {
+        const res  = await fetch('/api/pwm/config');
+        const data = await res.json();
+        const mask = (data.type_mask !== undefined) ? (data.type_mask & 0x3F) : 0x33;
+        for (let i = 0; i < 6; i++) {
+            const sel = document.getElementById('sel-pwm-type-' + (10 + i));
+            if (sel) sel.value = ((mask >> i) & 1) ? '1' : '0';
+        }
+        applyPwmTypeMask(mask);
+    } catch (_) { /* silencieux si pas de connexion */ }
+}
+
+/**
+ * Charge l'assignation des 4 sorties GPIO ON/OFF depuis l'API et met à jour
+ * les champs de saisie + les pastilles d'état (masque réel relu côté firmware).
+ */
+async function loadGpioConfig() {
+    try {
+        const res  = await fetch('/api/gpio/config');
+        const data = await res.json();
+        if (Array.isArray(data.pins)) {
+            for (let i = 0; i < 4; i++) {
+                const el = document.getElementById('gpio-pin-' + (i + 1));
+                if (el && data.pins[i] !== undefined) el.value = data.pins[i];
+            }
+        }
+        if (data.state !== undefined) updateGpioStateUI(data.state);
     } catch (_) { /* silencieux si pas de connexion */ }
 }
 
@@ -1921,7 +2816,7 @@ function updateVSI(depthM) {
         const vsTxt = (_vsiRate >= 0 ? '+' : '') + Math.round(_vsiRate) + ' cm/s';
         if (el.textContent !== vsTxt) el.textContent = vsTxt;
         /* Vert = remontée, ambre = descente */
-        el.style.color = (Math.abs(_vsiRate) < 5) ? '' : (_vsiRate > 0 ? '#00e676' : '#ffb300');
+        el.style.color = (Math.abs(_vsiRate) < 5) ? '' : (_vsiRate > 0 ? 'var(--success)' : 'var(--warning)');
     }
 }
 
@@ -2139,7 +3034,7 @@ function _rov3dMsg(html, isError) {
     if (!st) return;
     st.innerHTML = html;
     st.style.display = 'flex';
-    st.style.color = isError ? '#ff6a6a' : '';
+    st.style.color = isError ? 'var(--danger)' : '';
 }
 
 /**
@@ -2431,6 +3326,7 @@ function _rov3dLoop() {
  * ========================================================================= */
 
 document.addEventListener('DOMContentLoaded', () => {
+    initTheme();
     initTileNav();
     initDashboardEditor();
     initPWMGrid();
@@ -2439,6 +3335,11 @@ document.addEventListener('DOMContentLoaded', () => {
     initTareButton();
     initNorthTareButton();
     initTestBench();
+    initOutputNames();
+    loadOutputNames();
+    loadAppVersion();
+    initQnhCard();
+    loadQnhConfig();
     initWiFi();
     initSettings();
     initAviationInstruments();

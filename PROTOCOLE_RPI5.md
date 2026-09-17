@@ -12,11 +12,12 @@
 | :--- | :--- |
 | Topologie | Liaison point à point RPi 5 ↔ ESP32-S3 (full-duplex) |
 | Débit | **921 600 bauds**, 8 bits, sans parité, 1 stop (8N1) |
-| Trames | **Taille fixe** — descendante : **39 octets**, montante : **72 octets** |
+| Trames | **Taille fixe** — descendante : **40 octets**, montante : **73 octets** |
 | Intégrité | **CRC16-CCITT-FALSE** (polynôme `0x1021`, init `0xFFFF`) sur chaque trame |
-| Trame descendante | 20–50 Hz recommandé (commande : mode, armement, 16 consignes PWM) |
-| Trame montante | **100 Hz fixe** (télémétrie : IMU, pression, température, puissance, PWM) |
-| Failsafe | Watchdog **500 ms** par défaut : perte de liaison ⇒ tous les actionneurs au neutre |
+| Trame descendante | 20–50 Hz recommandé (commande : mode, armement, 16 consignes PWM, masque GPIO ON/OFF) |
+| Trame montante | **100 Hz fixe** (télémétrie : IMU, pression, température, puissance, PWM, état des sorties ON/OFF) |
+| Sorties ON/OFF | 4 sorties numériques (GPIO 15/16/17/18 par défaut) pilotées par `gpio_cmd`, état réel dans `gpio_state` — forcées à OFF sur watchdog ou E-Stop |
+| Failsafe | Watchdog **500 ms** par défaut : perte de liaison ⇒ tous les actionneurs à leur position de sécurité + 4 sorties ON/OFF à OFF |
 | Endianness | Tous les champs multi-octets en **little-endian**, **sauf le CRC** (big-endian) |
 
 **Principe de fonctionnement côté RPi 5 :** le Pi envoie en continu des trames de commande (au moins toutes les 400 ms pour ne pas déclencher le watchdog) et lit en continu les trames de télémétrie qui arrivent à 100 Hz. Le firmware applique les consignes, ou bascule automatiquement en sécurité si le flux s'interrompt.
@@ -44,8 +45,8 @@ Le firmware embarque **deux interfaces physiques** pour le protocole binaire. Le
 
 | Sens | En-tête (2 octets) | Type (offset 2) | Taille totale |
 | :--- | :--- | :--- | :--- |
-| RPi 5 → ESP32-S3 (descendante) | `0xAA` `0x55` | `0x01` | **39 octets** |
-| ESP32-S3 → RPi 5 (montante) | `0x55` `0xAA` | `0x02` | **72 octets** |
+| RPi 5 → ESP32-S3 (descendante) | `0xAA` `0x55` | `0x01` | **40 octets** |
+| ESP32-S3 → RPi 5 (montante) | `0x55` `0xAA` | `0x02` | **73 octets** |
 
 Les en-têtes ont des motifs **opposés** (`AA 55` vs `55 AA`) : un simple `find` sur la séquence correcte suffit à se resynchroniser dans un flux bruité.
 
@@ -55,8 +56,8 @@ Le CRC couvre les octets **de l'offset 2 jusqu'à l'avant-dernier octet de la tr
 
 | Trame | Octets couverts par le CRC | CRC stocké aux offsets |
 | :--- | :--- | :--- |
-| Descendante (39 octets) | `[2..36]` | `[37]` = octet **fort**, `[38]` = octet **faible** |
-| Montante (72 octets) | `[2..69]` | `[70]` = octet **fort**, `[71]` = octet **faible** |
+| Descendante (40 octets) | `[2..37]` | `[38]` = octet **fort**, `[39]` = octet **faible** |
+| Montante (73 octets) | `[2..70]` | `[71]` = octet **fort**, `[72]` = octet **faible** |
 
 Paramètres : polynôme `0x1021`, valeur initiale `0xFFFF`, ni réflexion d'entrée/sortie, ni XOR final.
 **Valeur de contrôle** : `crc16_ccitt(b"123456789") == 0x29B1`.
@@ -65,13 +66,13 @@ Paramètres : polynôme `0x1021`, valeur initiale `0xFFFF`, ni réflexion d'entr
 
 ### 3.3 Résynchronisation
 
-Une trame descendante invalide (CRC KO) est **silencieusement ignorée** par le firmware : la machine à états repart en attente d'en-tête. Côté RPi 5, appliquer la même stratégie : chercher `0x55 0xAA`, tenter de décoder 72 octets, en cas de CRC invalide **avancer d'un seul octet** et recommencer (jamais sauter 72 octets d'un bloc).
+Une trame descendante invalide (CRC KO) est **silencieusement ignorée** par le firmware : la machine à états repart en attente d'en-tête. Côté RPi 5, appliquer la même stratégie : chercher `0x55 0xAA`, tenter de décoder 73 octets, en cas de CRC invalide **avancer d'un seul octet** et recommencer (jamais sauter 73 octets d'un bloc).
 
 ---
 
-## 4. Trame descendante — RPi 5 → ESP32-S3 (39 octets)
+## 4. Trame descendante — RPi 5 → ESP32-S3 (40 octets)
 
-Format : `[0xAA][0x55][TYPE][MODE][ARM][PWM_0..15][CRC_HI][CRC_LO]`
+Format : `[0xAA][0x55][TYPE][MODE][ARM][PWM_0..15][GPIO_CMD][CRC_HI][CRC_LO]`
 
 | Offset | Taille | Champ | Type | Valeurs | Description |
 | ---: | ---: | :--- | :--- | :--- | :--- |
@@ -81,8 +82,9 @@ Format : `[0xAA][0x55][TYPE][MODE][ARM][PWM_0..15][CRC_HI][CRC_LO]`
 | 3 | 1 | `mode` | `uint8_t` | `0` `1` `2` | Mode de pilotage : **0** = Passif (manuel direct), **1** = Auto Roulis + Tangage, **2** = Auto Full (Roll+Pitch+Yaw+Profondeur). Toute valeur > 2 est ignorée (mode inchangé). |
 | 4 | 1 | `arm_state` | `uint8_t` | `0` `1` `2` | **0** = Désarmé, **1** = Armé, **2** = E-Stop (arrêt d'urgence) |
 | 5 | 32 | `pwm[0..15]` | `uint16_t` × 16 (LE) | 1000–2000 | Consignes en **µs**. `pwm[k]` occupe les offsets `5 + 2k` (octet faible d'abord) : `pwm[0]` @ 5–6 … `pwm[15]` @ 35–36. Neutre : **1500**. Le firmware borne toute valeur à 1000–2000 µs. |
-| 37 | 1 | `crc16_hi` | `uint8_t` | — | CRC16 (voir §3.2) — octet fort |
-| 38 | 1 | `crc16_lo` | `uint8_t` | — | CRC16 — octet faible |
+| 37 | 1 | `gpio_cmd` | `uint8_t` | masque 4 bits | Commandes des 4 sorties tout-ou-rien : **bit 0 = sortie 1** … **bit 3 = sortie 4** (1 = ON, 0 = OFF). Bits 4–7 ignorés. Les sorties sont pilotables **même désarmé** (auxiliaires) ; neutralisées à OFF par l'E-Stop et le watchdog. |
+| 38 | 1 | `crc16_hi` | `uint8_t` | — | CRC16 (voir §3.2) — octet fort |
+| 39 | 1 | `crc16_lo` | `uint8_t` | — | CRC16 — octet faible |
 
 ### 4.1 Affectation des 16 canaux
 
@@ -94,17 +96,30 @@ Format : `[0xAA][0x55][TYPE][MODE][ARM][PWM_0..15][CRC_HI][CRC_LO]`
 | 12–13 | Gradateurs MOSFET projecteurs LED | 1000 µs = 0 % → 2000 µs = 100 % | 1000 µs (0 %) |
 | 14–15 | Canaux auxiliaires / extensions | 1000–2000 µs | 1500 µs |
 
+> **Depuis le protocole v1.1.0**, les canaux 10 à 15 sont **typables individuellement** (Bidirectionnel / Unidirectionnel), configurables dans l'onglet Paramètres de l'interface Web et persistés en NVS — voir §4.3.
+
 ### 4.2 Cadence et comportement d'émission
 
 * **Envoyer en continu**, même quand rien ne change : c'est ce flux qui alimente le watchdog (§6.1) et le statut « maître » (§6.3).
 * Cadence recommandée : **20 à 50 trames/s** (une trame toutes les 20–50 ms). À 100 Hz, aucune contre-indication technique, seulement de la bande passante inutile.
 * En cas de coupure, le failsafe s'active après le **timeout watchdog (500 ms par défaut)** : prévoir un envoi toutes les 400 ms *au pire* si l'application est chargée.
 
+### 4.3 Typage des canaux 10–15 (Bidirectionnel / Unidirectionnel)
+
+Chaque canal 10 à 15 est configurable **individuellement** depuis l'onglet Paramètres de l'interface Web (ressource NVS, appliqué à chaud — aucun redémarrage requis) :
+
+| Type | Plage des consignes | Position de sécurité (failsafe / E-Stop / watchdog) |
+| :--- | :--- | :--- |
+| **Bidirectionnel** | 1000–2000 µs, neutre 1500 µs | **1500 µs** |
+| **Unidirectionnel** (pleine échelle) | 1000 µs = 0 % → 2000 µs = 100 % | **1000 µs (0 %)** |
+
+Configuration par défaut : CH10/11 (pinces/outils) et CH14/15 (auxiliaires) en **Bidirectionnel**, CH12/13 (gradateurs LED) en **Unidirectionnel**. Le firmware borne toujours les consignes à 1000–2000 µs quel que soit le type ; le type ne change que la **position de sécurité** appliquée par le failsafe (et l'affichage côté interface Web).
+
 ---
 
-## 5. Trame montante — ESP32-S3 → RPi 5 (72 octets)
+## 5. Trame montante — ESP32-S3 → RPi 5 (73 octets)
 
-Format : `[0x55][0xAA][TYPE][STATUS][QUAT][GYRO][PRESS][TEMP][POWER×6][PWM_ACT×16][CRC]`
+Format : `[0x55][0xAA][TYPE][STATUS][QUAT][GYRO][PRESS][TEMP][POWER×6][PWM_ACT×16][GPIO_STATE][CRC]`
 
 Émise **en continu à 100 Hz** (toutes les 10 ms) dès que le firmware a démarré.
 
@@ -120,7 +135,8 @@ Format : `[0x55][0xAA][TYPE][STATUS][QUAT][GYRO][PRESS][TEMP][POWER×6][PWM_ACT�
 | 22 | 4 | `temperature` | `int32_t` (LE) | **÷ 100** → °C | Température de l'eau (ex. 2500 = 25,00 °C) |
 | 26 | 12 | `power[6]` | `uint16_t` × 6 (LE) | **÷ 1000** → V / A | 3 wattmètres : `[V1,I1, V2,I2, V3,I3]` en mV / mA — voir §5.2 |
 | 38 | 32 | `pwm_actual[16]` | `uint16_t` × 16 (LE) | µs (entiers) | Consignes PWM courantes. `pwm_actual[k]` occupe les offsets `38 + 2k`. |
-| 70 | 2 | `crc16` | `uint16_t` (**BE**) | — | CRC16 sur `[2..69]` — octet fort puis faible |
+| 70 | 1 | `gpio_state` | `uint8_t` | masque 4 bits — voir §5.5 | État **réel relu** des 4 sorties ON/OFF : bit 0 = sortie 1 … bit 3 = sortie 4 (1 = ON) |
+| 71 | 2 | `crc16` | `uint16_t` (**BE**) | — | CRC16 sur `[2..70]` — octet fort puis faible |
 
 ### 5.1 Sémantique exacte des bits de `status`
 
@@ -169,7 +185,16 @@ Profondeur (le firmware n'envoie que la pression absolue ; à convertir côté R
 `pwm_actual` reflète **les consignes courantes appliquées au contrôleur PWM** (après clamp 1000–2000 µs et, en mode AUTO, après corrections PID et mixage) — et non l'état électrique des sorties :
 
 * Si `status & 0x10` (**dry-run**) : les valeurs affichées sont mémorisées mais **aucune sortie physique** n'est pilotée (le PCA9685 reste au neutre).
-* Si `status & 0x08` (**watchdog**) : les sorties ont été forcées au neutre ; `pwm_actual` peut encore montrer les dernières consignes jusqu'à la trame suivante.
+* Si `status & 0x08` (**watchdog**) : les sorties ont été forcées à leur position de sécurité ; `pwm_actual` peut encore montrer les dernières consignes jusqu'à la trame suivante.
+
+### 5.5 `gpio_state` — état réel des 4 sorties ON/OFF
+
+`gpio_state` reflète l'état **physiquement relu** des 4 sorties tout-ou-rien (niveau des broches après écriture) — et non la dernière commande reçue. Si `gpio_cmd` (trame descendante) et `gpio_state` diffèrent durablement, la commande n'a pas pu être appliquée.
+
+* **Watchdog déclenché** (`status & 0x08`) : les 4 sorties sont forcées **à OFF** ⇒ `gpio_state = 0x00`.
+* **E-Stop** (`arm_state = 2`) : idem, `gpio_state = 0x00`.
+* Les broches sont assignées par défaut à **GPIO 15/16/17/18** (reconfigurables dans l'onglet Paramètres de l'interface Web, appliquées au redémarrage) et initialisées **à OFF** au boot.
+* Les sorties ON/OFF sont indépendantes du **dry-run** (§6.4) : le dry-run ne concerne que les sorties PWM/PCA9685.
 
 ---
 
@@ -178,7 +203,7 @@ Profondeur (le firmware n'envoie que la pression absolue ; à convertir côté R
 ### 6.1 Watchdog série — failsafe 500 ms
 
 * Le firmware attend **au moins une trame descendante valide** dans une fenêtre de **500 ms** (défaut, réglable 100 ms–plusieurs s dans l'onglet Paramètres via NVS — clé `serial_timeout`).
-* Dépassement ⇒ **tous les canaux PWM forcés au neutre** (1500 µs, 0 % pour les gradateurs) et bit `0x08` positionné dans la télémétrie.
+* Dépassement ⇒ **tous les canaux PWM forcés à leur position de sécurité** (1500 µs pour les bidirectionnels, 1000 µs / 0 % pour les unidirectionnels) et **les 4 sorties ON/OFF forcées à OFF** (`gpio_state = 0x00`). Bit `0x08` positionné dans la télémétrie.
 * Dès qu'une trame valide arrive : le watchdog est réarmé, le bit `0x08` disparaît, et **les consignes de cette trame sont appliquées au cycle suivant (≤ 10 ms)**.
 * Au démarrage du firmware : le watchdog **ne se déclenche pas** tant qu'aucune trame n'a jamais été reçue (les sorties restent de toute façon en dry-run/neutre par défaut).
 
@@ -186,9 +211,9 @@ Profondeur (le firmware n'envoie que la pression absolue ; à convertir côté R
 
 | `arm_state` | Effet immédiat à la réception de CHAQUE trame |
 | :--- | :--- |
-| **0 — Désarmé** | Canaux **0–7 forcés au neutre** (1500 µs). Canaux **8–15 acceptés tels quels** (pan/tilt, pince, gradateurs utilisables désarmé). Reset des PID. |
-| **1 — Armé** | **Les 16 canaux** sont appliqués (`pwm[0..15]`). Le **mode** est appliqué (passif / auto roulis-tangage / auto full). Le contrôleur de vol considère le RPi 5 comme maître. |
-| **2 — E-Stop** | **Tous** les canaux au neutre (1500 µs / 0 %) + reset des PID. Priorité absolue, appliqué à chaque trame reçue. |
+| **0 — Désarmé** | Canaux **0–7 forcés au neutre** (1500 µs). Canaux **8–15 acceptés tels quels** (pan/tilt, pince, gradateurs utilisables désarmé). Les **4 sorties ON/OFF restent pilotables** (`gpio_cmd` appliqué — auxiliaires utilisables désarmé). Reset des PID. |
+| **1 — Armé** | **Les 16 canaux** sont appliqués (`pwm[0..15]`) ainsi que le **masque `gpio_cmd`**. Le **mode** est appliqué (passif / auto roulis-tangage / auto full). Le contrôleur de vol considère le RPi 5 comme maître. |
+| **2 — E-Stop** | **Tous** les canaux à leur position de sécurité (1500 µs / 0 %) + **les 4 sorties ON/OFF forcées à OFF** + reset des PID. Priorité absolue, appliqué à chaque trame reçue. |
 
 > **Point opérationnel :** seules les trames **ARMÉES** transmettent le `mode` et rafraîchissent la maîtrise du RPi 5 (§6.3). Pour reprendre la main après un long arrêt, il suffit de renvoyer des trames armées.
 
@@ -203,13 +228,15 @@ Profondeur (le firmware n'envoie que la pression absolue ; à convertir côté R
 
 Au boot, les sorties physiques sont **neutralisées** (dry-run actif, bit `0x10`). Les consignes reçues sont suivies dans `pwm_actual` mais le PCA9685 n'émet rien. L'activation des sorties réelles se fait **uniquement** depuis l'interface Web (bouton « Sorties Matérielles », WebSocket `{output_enable: true}` ou REST `POST /api/pwm/output-enable`). C'est un garde-fou de banc : le RPi 5 ne peut pas le désactiver à distance.
 
+> **Sorties ON/OFF :** le dry-run ne les concerne pas — les 4 GPIO sont des sorties numériques à part entière, initialisées à OFF au boot puis pilotables par `gpio_cmd` (et forcées à OFF par le watchdog et l'E-Stop, voir §5.5).
+
 ### 6.5 Redémarrage automatique du firmware (perte définitive de l'IMU)
 
 Le firmware embarque un **watchdog IMU** dédié au BNO085 (capteur d'attitude, seul sur le bus I2C n°1). Si le flux de quaternions se fige en opération (plongée, longue inactivité), la récupération escalade automatiquement en 3 niveaux :
 
 1. **Reprise douce SH-2** — après 1 s sans quaternion : ré-initialisation logicielle du capteur (réécriture des rapports SH-2) ;
 2. **Reset matériel du bus I2C** — si le niveau 1 échoue ou si le contrôleur I2C reste bloqué (`ESP_ERR_INVALID_STATE`) : destruction puis recréation de l'instance `Adafruit_BNO08x`, 9 impulsions SCL + condition STOP (bit-bang), réinitialisation complète de `Wire` ;
-3. **Redémarrage contrôlé** — si le capteur (qui **a déjà fonctionné depuis le boot**) ne répond toujours pas après **3 tentatives de niveau 2** ou **8 s sans aucun quaternion** : le firmware force **tous les canaux PWM au neutre** (1500 µs), émet un log explicite sur le moniteur série, puis déclenche `esp_restart()` — **redémarrage automatique de l'ESP32**.
+3. **Redémarrage contrôlé** — si le capteur (qui **a déjà fonctionné depuis le boot**) ne répond toujours pas après **3 tentatives de niveau 2** ou **8 s sans aucun quaternion** : le firmware force **tous les canaux PWM à leur position de sécurité** (1500 µs, 0 % pour les unidirectionnels), émet un log explicite sur le moniteur série, puis déclenche `esp_restart()` — **redémarrage automatique de l'ESP32**.
 
 **Ce que le RPi 5 doit savoir :**
 
@@ -256,27 +283,28 @@ def crc16_ccitt(data: bytes) -> int:
             crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
     return crc
 
-# ==================== Trame descendante (39 octets) ====================
+# ==================== Trame descendante (40 octets) ====================
 
-def build_downlink_frame(mode: int, arm_state: int, pwm_us) -> bytes:
-    """Construit la trame de commande RPi 5 -> ESP32-S3 (39 octets).
-    pwm_us : séquence de 16 valeurs en microsecondes (1000-2000)."""
-    payload = struct.pack('<BBB16H', 0x01, mode, arm_state, *pwm_us)
-    crc = crc16_ccitt(payload)                 # CRC sur [2..36]
+def build_downlink_frame(mode: int, arm_state: int, pwm_us, gpio_cmd: int = 0) -> bytes:
+    """Construit la trame de commande RPi 5 -> ESP32-S3 (40 octets).
+    pwm_us : séquence de 16 valeurs en microsecondes (1000-2000).
+    gpio_cmd : masque 4 bits des sorties ON/OFF (bit 0 = sortie 1, 1 = ON)."""
+    payload = struct.pack('<BBB16HB', 0x01, mode, arm_state, *pwm_us, gpio_cmd)
+    crc = crc16_ccitt(payload)                 # CRC sur [2..37]
     return bytes((0xAA, 0x55)) + payload + struct.pack('>H', crc)   # CRC big-endian
 
-# ==================== Trame montante (72 octets) ====================
+# ==================== Trame montante (73 octets) ====================
 
 def parse_uplink_frame(frame: bytes) -> dict:
     """Valide et décode une trame de télémétrie (ESP32-S3 -> RPi 5)."""
-    if len(frame) != 72:
-        raise ValueError(f'trame de {len(frame)} octets (attendu 72)')
+    if len(frame) != 73:
+        raise ValueError(f'trame de {len(frame)} octets (attendu 73)')
     if frame[0] != 0x55 or frame[1] != 0xAA or frame[2] != 0x02:
         raise ValueError('en-tête invalide')
-    if (frame[70] << 8 | frame[71]) != crc16_ccitt(frame[2:70]):    # CRC sur [2..69]
+    if (frame[71] << 8 | frame[72]) != crc16_ccitt(frame[2:71]):    # CRC sur [2..70]
         raise ValueError('CRC16 invalide')
     (type_, status, w, x, y, z, gx, gy, gz, pressure, temperature, *rest) = \
-        struct.unpack_from('<BB4h3h2i6H16H', frame, 2)
+        struct.unpack_from('<BB4h3h2i6H16HB', frame, 2)
     return {
         'status': status,
         'armed': bool(status & STATUS_ARMED),      # liaison établie (≥ 1 trame reçue)
@@ -289,10 +317,11 @@ def parse_uplink_frame(frame: bytes) -> dict:
         'temperature_c': temperature / 100.0,                   # °C
         'power': list(rest[:6]),                                # mV / mA
         'pwm_us': list(rest[6:22]),                             # µs
+        'gpio_state': rest[22],                                 # masque réel des 4 sorties ON/OFF
     }
 
 class UplinkReader:
-    """Réassemble les trames 72 octets dans un flux d'octets bruité
+    """Réassemble les trames 73 octets dans un flux d'octets bruité
     (resynchronisation automatique sur 0x55 0xAA, ignore le bruit et le debug)."""
 
     def __init__(self):
@@ -308,12 +337,12 @@ class UplinkReader:
                 del self.buf[:-1]          # conserve au plus 1 octet (préfixe possible)
                 break
             del self.buf[:idx]
-            if len(self.buf) < 72:
+            if len(self.buf) < 73:
                 break
-            frame = bytes(self.buf[:72])
-            if frame[2] == 0x02 and (frame[70] << 8 | frame[71]) == crc16_ccitt(frame[2:70]):
+            frame = bytes(self.buf[:73])
+            if frame[2] == 0x02 and (frame[71] << 8 | frame[72]) == crc16_ccitt(frame[2:71]):
                 frames.append(frame)
-                del self.buf[:72]
+                del self.buf[:73]
             else:
                 del self.buf[:1]           # faux en-tête : avancer d'un octet
         return frames
@@ -325,6 +354,7 @@ def main():
     reader = UplinkReader()
     pwm = [1500] * 16                              # toutes voies au neutre
     pwm[0] = 1600                                  # exemple : M1 en avant (µs)
+    gpio = 0b0000                                  # sorties ON/OFF (bit 0 = sortie 1)
 
     next_tx = time.monotonic()
     try:
@@ -332,14 +362,14 @@ def main():
             now = time.monotonic()
             if now >= next_tx:                     # --- émission descendante 25 Hz ---
                 next_tx += 1.0 / TX_HZ
-                port.write(build_downlink_frame(MODE_PASSIF, ARM_ARMED, pwm))
+                port.write(build_downlink_frame(MODE_PASSIF, ARM_ARMED, pwm, gpio))
 
             for frame in reader.feed(port.read(port.in_waiting or 4096)):
                 t = parse_uplink_frame(frame)      # --- décodage télémétrie ---
                 print('quat=(%.3f, %.3f, %.3f, %.3f)  P=%.1f mbar  T=%.1f C  '
-                      'pwm0=%d  wdg=%s  dry=%s'
+                      'pwm0=%d  gpio=0x%X  wdg=%s  dry=%s'
                       % (*t['quat'], t['pressure_mbar'], t['temperature_c'],
-                         t['pwm_us'][0], t['watchdog'], t['dry_run']))
+                         t['pwm_us'][0], t['gpio_state'], t['watchdog'], t['dry_run']))
             time.sleep(0.001)
     finally:
         port.close()
@@ -360,25 +390,26 @@ assert crc16_ccitt(b'123456789') == 0x29B1
 
 ### 8.2 Trame descendante de référence
 
-`MODE_PASSIF` + `ARM_ARMED` + toutes voies à 1500 µs :
+`MODE_PASSIF` + `ARM_ARMED` + toutes voies à 1500 µs + `gpio_cmd = 0x05` (sorties 1 et 3 à ON) :
 
 ```
 AA 55 01 00 01 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05
-DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 34 16
+DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 05 30 72
 ```
 
-* 39 octets. `DC 05` = `0x05DC` = 1500 LE, répété 16 fois. CRC final `0x3416` (octet fort `0x34` puis `0x16`).
-* Génération : `build_downlink_frame(0, 1, [1500]*16).hex() == 'aa55010001' + 'dc05'*16 + '3416'`
+* 40 octets. `DC 05` = `0x05DC` = 1500 LE, répété 16 fois. `gpio_cmd = 0x05` à l'offset 37. CRC final `0x3072` (octet fort `0x30` puis `0x72`).
+* Génération : `build_downlink_frame(0, 1, [1500]*16, 0x05).hex() == 'aa55010001' + 'dc05'*16 + '05' + '3072'``
 
 ### 8.3 Trame montante de référence
 
-Télémétrie à l'équilibre (quaternion identité, 1013,2 mbar, 25,00 °C), `status = 0x12` (liaison + dry-run), canal 0 à 1600 µs, les autres à 1500 :
+Télémétrie à l'équilibre (quaternion identité, 1013,2 mbar, 25,00 °C), `status = 0x12` (liaison + dry-run), canal 0 à 1600 µs, les autres à 1500, `gpio_state = 0x05` (sorties 1 et 3 à ON) :
 
 ```
-55 AA 02 12 10 27 00 00 00 00 00 00 00 00 00 00 00 00 94 27 00 00
-C4 09 00 00 88 13 20 03 E0 2E 2C 01 D0 39 68 5B 40 06 DC 05 DC 05
-DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05
-DC 05 DC 05 26 A7
+55 AA 02 12 10 27 00 00 00 00 00 00 00 00 00 00
+00 00 94 27 00 00 C4 09 00 00 88 13 20 03 E0 2E
+2C 01 D0 39 68 5B 40 06 DC 05 DC 05 DC 05 DC 05
+DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05 DC 05
+DC 05 DC 05 DC 05 05 B3 01
 ```
 
 Décodage attendu :
@@ -392,7 +423,8 @@ Décodage attendu :
 | `temperature_c` | `25.0` |
 | `power` | `[5000, 800, 12000, 300, 14800, 23400]` → Pi à 5,0 V/0,8 A, Aux 12,0 V/0,3 A, Moteurs 14,8 V/23,4 A |
 | `pwm_us` | `[1600, 1500, 1500, …, 1500]` (16 valeurs) |
-| CRC | `0x26A7` (offset 70 = `0x26`, offset 71 = `0xA7`) |
+| `gpio_state` | `0x05` → sorties 1 et 3 à ON (offset 70) |
+| CRC | `0xB301` (offset 71 = `0xB3`, offset 72 = `0x01`) |
 
 ### 8.4 Test de robustesse du réassemblage
 
@@ -408,22 +440,34 @@ Injecter du bruit texte, couper une trame en deux, insérer un faux en-tête `55
 | Aucune trame reçue | 1) Interface choisie côté ESP32 (onglet Paramètres : USB-CDC / UART GPIO) ≠ branchement. 2) Baud ≠ **921600**. 3) UART : TX/RX **croisés** et GND commun. 4) UART Pi non activé (`raspi-config`). |
 | Trames reçues mais CRC invalide en permanence | Endianness du CRC inversé (le CRC est **big-endian**, cf. §3.2) ou trame décodée sur un mauvais alignement. |
 | Texte `[SERIAL] …` entre les trames binaires | Normal en mode **USB-CDC** (debug partagé) : le `UplinkReader` du §7 filtre tout seul. Pour un lien 100 % propre, passer en **UART matériel**. |
-| Trames de **71 octets** (au lieu de 72) | **Firmware antérieur au correctif** : reflasher le firmware (voir §10). Un parseur conforme au présent document les rejettera (CRC calculé sur 67 octets et dernier canal tronqué). |
+| Trames de **39/72 octets** (au lieu de 40/73) | **Firmware antérieur à la v1.1.0** (sans sorties ON/OFF, voir §10.1) : reflasher le firmware (USB ou OTA). Un parseur conforme au présent document rejettera ces trames (CRC décalé d'un octet). |
+| Trames de **71 octets** (au lieu de 73) | **Firmware antérieur au correctif historique de taille montante** (voir §10.2) : reflasher. |
 | Interruption de télémétrie de ~2-4 s puis reprise avec `dry=True` | **Normal** : redémarrage automatique du watchdog IMU (BNO085 définitivement muet, §6.5). La propulsion est restée au neutre pendant toute l'opération ; réactiver les sorties depuis l'interface Web si nécessaire. |
 | `wdg=True`/`dry=True` persistants dans la télémétrie | `wdg` : vérifier que vos trames partent bien toutes les < 500 ms (et CRC valide). `dry` : activer les sorties via l'interface Web (bouton « Sorties Matérielles »). |
 | Propulseurs inertes malgré `arm_state = 1` | Dry-run actif (`dry=True`) ou watchdog déclenché. Vérifier `status` dans la télémétrie. |
 
 ---
 
-## 10. Note de version — correctif critique de la trame montante (71 → 72 octets)
+## 10. Notes de version
 
-Un défaut historique affectait la trame montante : la constante de taille valait **71** alors que la structure `UplinkFrame_t` occupe **72** octets. Conséquences pour les firmwares antérieurs au correctif :
+### 10.1 v1.1.0 — ajout des sorties tout-ou-rien (39/72 → 40/73 octets)
+
+La version 1.1.0 du protocole ajoute les 4 sorties ON/OFF :
+
+* trame descendante : champ `gpio_cmd` à l'offset **37** ⇒ **40 octets**, CRC sur `[2..37]` stocké en `[38]`/`[39]` ;
+* trame montante : champ `gpio_state` à l'offset **70** ⇒ **73 octets**, CRC sur `[2..70]` stocké en `[71]`/`[72]`.
+
+Un firmware antérieur (v1.0.0) émet et attend des trames de **39/72 octets** : l'incompatibilité est **binaire et totale** — les deux extrémités (firmware ESP32 et code RPi 5) doivent être mises à jour ensemble. Le firmware actuel embarque des `static_assert` (vérifiés à la compilation) garantissant tailles et offsets.
+
+### 10.2 Correctif historique — trame montante 71 → 72 octets
+
+Un défaut historique affectait la trame montante : la constante de taille valait **71** alors que la structure `UplinkFrame_t` occupait **72** octets. Conséquences pour les firmwares antérieurs à ce correctif :
 
 * trame émise sur le fil : **71 octets** (dernier octet jamais transmis) ;
-* CRC calculé sur `[2..68]` et stocké aux offsets **69–70** au lieu de 70–71 ;
+* CRC calculé sur `[2..68]` et stocké aux offsets **69–70** (au lieu de 71–72 depuis la v1.1.0, voir §10.1) ;
 * l'octet de poids fort du canal `pwm_actual[15]` était **écrasé par le CRC**.
 
-Le firmware actuel émet la trame **conforme à ce document (72 octets, CRC sur `[2..69]`)`. Si vous observez des trames de 71 octets sur le fil, le firmware en place est antérieur au correctif : **reflasher** (USB ou OTA depuis l'interface Web) avant d'intégrer le code côté RPi 5.
+Si vous observez des trames de **71 octets** sur le fil, le firmware en place est antérieur à ce correctif : **reflasher** (USB ou OTA depuis l'interface Web). Le firmware actuel émet la trame **conforme à ce document** (73 octets, CRC sur `[2..70]`).
 
 ---
 
