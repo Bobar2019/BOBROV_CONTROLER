@@ -150,6 +150,18 @@ public:
      */
     String getLastBNO085Error();
 
+    /**
+     * @brief true si le flux de quaternions BNO085 est mort (stall en cours).
+     *
+     * Vrai lorsque le capteur était présent/initialisé et a déjà fourni au
+     * moins un quaternion depuis le boot, mais qu'aucun nouveau quaternion
+     * n'est arrivé depuis plus de BNO085_STALL_TIMEOUT_MS : récupération
+     * (niveaux 1/2) en cours ou redémarrage de niveau 3 imminent.
+     * Utilisé par la tâche de contrôle pour verrouiller les propulseurs au
+     * neutre pendant toute la phase de récupération.
+     */
+    bool isBNO085Stalled() const;
+
     /* -----------------------------------------------------------------
      * DIAGNOSTIC I2C — SCAN & CONFIGURATION DYNAMIQUE DES BROCHES
      * ----------------------------------------------------------------- */
@@ -241,6 +253,7 @@ private:
 
     /* -- Supervision / auto-récupération BNO085 (sans broche INT) -- */
     void _recoverBNO085();              ///< Ré-init capteur puis bus I2C si nécessaire (hors mutex)
+    void _bno085EmergencyRestart(const char* reason);  ///< Niveau 3 : neutre propulsion + esp_restart() (ne retourne pas)
     void _resetI2CBus();                ///< Réinit logicielle propre du bus I2C (9 impulsions SCL)
 
     /* -- Zéros en mode réel pour capteurs absents -- */
@@ -279,6 +292,7 @@ private:
     /* -- Supervision BNO085 sans INT : cadencement + auto-récupération -- */
     bool     _bno085Present;            ///< BNO085 vu sur le bus au boot (à superviser en continu)
     uint32_t _lastBNO085Event;          ///< Horodatage (ms) dernier QUATERNION reçu / dernière récupération
+    uint32_t _lastBNO085QuatTime;       ///< Horodatage (ms) dernier QUATERNION RÉEL — jamais réarmé par les tentatives ; 0 = jamais fonctionné depuis le boot (garde-fou anti-boucle du niveau 3)
     uint32_t _lastBNO085Attempt;        ///< Horodatage (ms) de fin de la dernière tentative de récupération
     uint8_t  _bno085FailStreak;         ///< Tentatives consécutives n'ayant PAS restauré le flux de quaternions
     uint16_t _bno085Recoveries;         ///< Compteur de récupérations (diagnostic)

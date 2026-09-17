@@ -22,8 +22,10 @@
 
 #include "sensor_driver.h"
 #include "config.h"
+#include "pwm_controller.h"   /* g_pwm : neutralisation de sécurité (niveau 3) */
 #include <math.h>
 #include <Wire.h>
+#include <esp_system.h>       /* esp_restart() : redémarrage contrôlé (niveau 3) */
 #include <Preferences.h>
 #include <Adafruit_BNO08x.h>
 
@@ -77,6 +79,7 @@ SensorDriver::SensorDriver()
     _imuWork.quat[0]  = 10000; /* Identité */
     _bno085Present    = false;
     _lastBNO085Event  = 0;
+    _lastBNO085QuatTime = 0;    /* 0 = aucun quaternion reçu depuis le boot (garde-fou anti-boucle du niveau 3) */
     _lastBNO085Attempt = 0;     /* fin de la dernière tentative de récupération */
     _bno085FailStreak = 0;      /* tentatives sans retour du flux de quaternions */
     _bno085Recoveries = 0;
@@ -785,6 +788,12 @@ void SensorDriver::_readBNO085() {
         }
     }
 
+    /* ---- CHRONO DU WATCHDOG NIVEAU 3 : seul un QUATERNION RÉEL le réarme
+     *      (jamais les tentatives de récupération, qui utilisent
+     *      _lastBNO085Event — sinon le critère « délai critique » ne pourrait
+     *      jamais conclure). 0 = capteur jamais fonctionnel depuis le boot. ---- */
+    if (gotQuat) _lastBNO085QuatTime = millis();
+
     /* ---- AUTO-GUÉRISON Rotation Vector : SH-2 n'accuse pas les Set Feature
      *      (sh2_setSensorConfig ne garantit que l'écriture I2C). Si aucun
      *      rapport magnétique n'arrive — commande perdue au boot, hub occupé,
@@ -882,22 +891,40 @@ void SensorDriver::_readBNO085() {
 }
 
 /* =========================================================================
- * AUTO-RÉCUPÉRATION BNO085 / BUS I2C (sans broche INT)
+ * AUTO-RÉCUPÉRATION BNO085 / BUS I2C (sans broche INT) — WATCHDOG 3 NIVEAUX
  *
  * Quand le coprocesseur ARM du BNO085 renvoie un NACK, le driver i2c-ng de
  * l'ESP-IDF bascule en ESP_ERR_INVALID_STATE et chaque lecture SHTP échoue
  * (~30 ms de driver bloquant par tentative) alors que le reste du bus
- * continue de fonctionner. La récupération ESCALADE en trois phases :
- *   1. ré-init SHTP légère du seul capteur (premier échec),
- *   2. reset bus + réinit complète de tous les capteurs (échecs suivants),
- *   3. capteur déclaré MUET : polling SHTP coupé (badge rouge + message Web)
- *      et une tentative complète toutes les BNO085_BACKOFF_MS seulement.
+ * continue de fonctionner. La récupération ESCALADE en trois niveaux :
+ *   1. ré-init SHTP légère du seul capteur (premier échec) ;
+ *   2. reset bus I2C matériel + réinit complète de tous les capteurs
+ *      (échecs suivants — voir _recoverI2CBus / _resetI2CBus) ;
+ *   3. ULTIME SECOURS : le capteur a FONCTIONNÉ puis demeure muet après
+ *      BNO085_REBOOT_ATTEMPTS tentatives de niveau 2 (ou
+ *      BNO085_REBOOT_TIMEOUT_MS sans quaternion — voir _taskLoop) →
+ *      propulsion au neutre + esp_restart() (_bno085EmergencyRestart). Un
+ *      capteur JAMAIS fonctionnel depuis le boot est exempté du niveau 3 :
+ *      il retombe sur le mode espacé (tentative toutes les BNO085_BACKOFF_MS,
+ *      badge rouge) pour ne pas boucler sur des redémarrages sans fin.
  * Toujours HORS mutex (le PID et le WebSocket continuent de tourner) ; le bus
  * n'ayant qu'un seul propriétaire (cette tâche), aucune protection de
  * concurrence supplémentaire n'est nécessaire côté I2C.
  * ========================================================================= */
 
 void SensorDriver::_recoverBNO085() {
+    /* ---- NIVEAU 3 (ultime secours) : le capteur A DÉJÀ fonctionné depuis le
+     *      boot (_lastBNO085QuatTime != 0) mais BNO085_REBOOT_ATTEMPTS
+     *      tentatives de niveau 2 n'ont rien restauré → neutralisation de la
+     *      propulsion + redémarrage contrôlé de l'ESP32 (ne retourne jamais).
+     *      Le garde-fou « jamais fonctionnel » laisse un capteur à demi-vivant
+     *      dès la mise sous tension au MODE ESPACÉ ci-dessous : aucune boucle
+     *      de redémarrages sans fin. ---- */
+    if (_lastBNO085QuatTime != 0 &&
+        _bno085FailStreak >= BNO085_STREAK_BUS_RESET - 1 + BNO085_REBOOT_ATTEMPTS) {
+        _bno085EmergencyRestart("tentatives de recuperation epuisees");
+    }
+
     /* ---- MODE ESPACÉ (capteur muet) : polling coupé, une tentative complète
      *      toutes les BNO085_BACKOFF_MS seulement — chaque NACK de lecture
      *      coûte ~30 ms de driver bloquant et étoufferait la tâche capteurs. ---- */
@@ -955,6 +982,60 @@ void SensorDriver::_recoverBNO085() {
         Serial.println("[SENSORS] BNO085 : déclaré muet — polling coupé, tentatives toutes les "
                        + String(BNO085_BACKOFF_MS / 1000) + " s");
     }
+}
+
+/* =========================================================================
+ * NIVEAU 3 — ULTIME SECOURS : NEUTRE FORCÉ + REDÉMARRAGE CONTRÔLÉ DE L'ESP32
+ *
+ * Dernier recours quand le BNO085 — déjà fonctionnel — ne répond toujours
+ * plus après l'épuisement des niveaux 1 et 2 : le coprocesseur SH-2 ou le
+ * contrôleur I2C de l'ESP32 est dans un état que le logiciel ne sait plus
+ * réparer. Un redémarrage complet est la seule issue connue.
+ *
+ * ORDRE CRITIQUE POUR LA SÉCURITÉ :
+ *   1. neutralisation immédiate des 16 canaux PCA9685 à 1500 µs — le
+ *      PCA9685 est un générateur autonome qui CONSERVE ses registres pendant
+ *      le reboot : les propulseurs restent physiquement au neutre tout le
+ *      redémarrage ;
+ *   2. logs explicites sur le moniteur série ;
+ *   3. esp_restart() — le firmware repart en dry-run, sorties au neutre.
+ * Appelée depuis la tâche capteurs (HORS mutex) ; ne retourne JAMAIS.
+ * ========================================================================= */
+
+void SensorDriver::_bno085EmergencyRestart(const char* reason) {
+    /* 1. NEUTRALISATION IMMÉDIATE de la propulsion — écriture physique des
+     *    1500 µs sur les 16 canaux (setAllNeutral est inconditionnel, même en
+     *    dry-run : la sécurité primant sur le mode de test). */
+    g_pwm.setAllNeutral();
+
+    /* 2. Journalisation explicite (moniteur série) */
+    Serial.println();
+    Serial.println("[SENSORS] ==================================================");
+    Serial.println("[SENSORS] !!! NIVEAU 3 : BNO085 IRRÉCUPÉRABLE (" + String(reason) + ") !!!");
+    Serial.println("[SENSORS] Récupération SH-2 (niv.1) et reset bus I2C (niv.2) épuisés.");
+    Serial.println("[SENSORS] Propulsion FORCÉE AU NEUTRE (1500 us, 16 canaux PCA9685).");
+    Serial.println("[SENSORS] REDÉMARRAGE CONTRÔLÉ de l'ESP32 dans 200 ms (esp_restart).");
+    Serial.println("[SENSORS] Le neutre physique est maintenu par le PCA9685 autonome");
+    Serial.println("[SENSORS] pendant tout le redémarrage ; le firmware repart en dry-run.");
+    Serial.println("[SENSORS] ==================================================");
+
+    /* 3. Vider le FIFO série USB-CDC avant le reset, puis redémarrer. */
+    Serial.flush();
+    delay(200);
+    esp_restart();   /* ne retourne jamais */
+}
+
+/* =========================================================================
+ * VERROU PROPULSION « FLUX IMU MORT » — lu par la tâche de contrôle (100 Hz)
+ * ========================================================================= */
+
+bool SensorDriver::isBNO085Stalled() const {
+    /* Vrai uniquement si le capteur A DÉJÀ fourni un quaternion depuis le boot
+     * (garde-fou : le délai de démarrage du capteur et le mode espacé d'un
+     * capteur jamais fonctionnel ne verrouillent pas la propulsion — ils sont
+     * couverts par le neutre par défaut du boot). */
+    return _bno085Present && _lastBNO085QuatTime != 0 &&
+           (millis() - _lastBNO085QuatTime) > BNO085_STALL_TIMEOUT_MS;
 }
 
 /* =========================================================================
@@ -1147,6 +1228,16 @@ void SensorDriver::_taskLoop() {
         _processBusRequests();
 
         uint32_t now = millis();
+
+        /* ---- NIVEAU 3 (critère TEMPS, prioritaire) : le capteur A fonctionné
+         *      depuis le boot puis plus AUCUN quaternion pendant
+         *      BNO085_REBOOT_TIMEOUT_MS — les niveaux 1/2 (supervision
+         *      ci-dessous) ont échoué ou sont trop lents : propulsion au neutre
+         *      puis redémarrage contrôlé immédiat (ne retourne jamais). ---- */
+        if (_bno085Present && _lastBNO085QuatTime != 0 &&
+            (now - _lastBNO085QuatTime) > BNO085_REBOOT_TIMEOUT_MS) {
+            _bno085EmergencyRestart("delai critique sans quaternion IMU");
+        }
 
         /* ---- SUPERVISION BNO085 (sans broche INT) : si le capteur était présent
          *      au boot mais n'a fourni aucun QUATERNION depuis

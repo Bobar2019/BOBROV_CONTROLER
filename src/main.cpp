@@ -215,6 +215,18 @@ static void vTaskControl(void* param) {
             }
         }
 
+        /* ---- 2c. VERROU SÉCURITÉ « FLUX IMU MORT » (watchdog BNO085) ----
+         *      Tant que le flux de quaternions est mort (capteur en cours de
+         *      récupération niveaux 1/2, ou imminence du niveau 3), les
+         *      propulseurs sont FORCÉS au neutre à CHAQUE cycle : une consigne
+         *      RPi 5 réappliquée entre deux tentatives ne peut jamais repartir
+         *      avec une attitude inconnue. Servos/auxiliaires (8-15) exclus. ---- */
+        if (g_sensors.isBNO085Stalled()) {
+            for (uint8_t i = 0; i < 8; i++) {
+                g_pwm.setPWMuS(i, PWM_NEUTRAL_US);
+            }
+        }
+
         /* ---- 3. Construction de la trame montante de télémétrie ---- */
         UplinkFrame_t ul;
         ul.header1 = UL_HEADER_1;    /* 0x55 */

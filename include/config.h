@@ -108,13 +108,46 @@ constexpr uint8_t  BNO085_STREAK_BUS_RESET = 2;
  *
  * Au-delà, le capteur est déclaré muet : le polling SHTP est STOPPÉ (chaque NACK
  * de lecture coûte ~30 ms de log série bloquant et étouffe la tâche capteurs —
- * les INA226/MS5803 en paissent), badge rouge + message Web explicite, et une
+ * les INA226/MS5803 en pâtissent), badge rouge + message Web explicite, et une
  * tentative complète n'a plus lieu que toutes les BNO085_BACKOFF_MS.
+ *
+ * NOTE : ce mode espacé ne peut plus être atteint par un capteur qui A FONCTIONNÉ
+ * depuis le boot — celui-ci déclenche le redémarrage de niveau 3
+ * (BNO085_REBOOT_ATTEMPTS) avant. Il reste le régime de repli d'un capteur à
+ * demi-vivant dès la mise sous tension (jamais de quaternion depuis le boot),
+ * pour éviter une boucle de redémarrages sans fin.
  */
 constexpr uint8_t  BNO085_STREAK_BACKOFF   = 5;
 
 /** @brief Récupération BNO085 : période (ms) des tentatives en mode espacé */
 constexpr uint32_t BNO085_BACKOFF_MS       = 30000UL;
+
+/* =========================================================================
+ * SECTION 1b : NIVEAU 3 — REDÉMARRAGE CONTRÔLÉ DE L'ESP32 (ULTIME SECOURS)
+ * ========================================================================= */
+
+/**
+ * @brief Niveau 3 : nombre de tentatives de NIVEAU 2 (reset bus + recréation de
+ *        l'instance BNO08x) consécutives sans quaternion avant redémarrage.
+ *
+ * Le flux a fonctionné puis gelé en opération et ne revient pas malgré
+ * 1 reprise douce SH-2 (niveau 1) + ce nombre de resets matériels du bus
+ * (niveaux 2) : la propulsion est forcée au neutre puis l'ESP32 redémarre
+ * (esp_restart) — le boot réinitialise le contrôleur I2C, le coprocesseur
+ * SH-2 du BNO085 et toute la pile capteurs : seule issue connue du gel
+ * définitif en plongée.
+ */
+constexpr uint8_t  BNO085_REBOOT_ATTEMPTS  = 3;
+
+/**
+ * @brief Niveau 3 : délai critique (ms) sans AUCUN quaternion avant redémarrage.
+ *
+ * Second déclencheur, indépendant du compteur d'essais : dès que le flux vital
+ * (Rotation Vector OU Game Rotation Vector) est muet depuis plus longtemps que
+ * ce délai, la propulsion est neutralisée et l'ESP32 redémarre sans attendre.
+ * Bornes recommandées : 5000–10000 ms.
+ */
+constexpr uint32_t BNO085_REBOOT_TIMEOUT_MS = 8000UL;
 
 /**
  * @brief Remappage de montage du BNO085 : rotation fixe autour de l'axe Z (°).

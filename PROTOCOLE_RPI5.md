@@ -203,6 +203,23 @@ Profondeur (le firmware n'envoie que la pression absolue ; à convertir côté R
 
 Au boot, les sorties physiques sont **neutralisées** (dry-run actif, bit `0x10`). Les consignes reçues sont suivies dans `pwm_actual` mais le PCA9685 n'émet rien. L'activation des sorties réelles se fait **uniquement** depuis l'interface Web (bouton « Sorties Matérielles », WebSocket `{output_enable: true}` ou REST `POST /api/pwm/output-enable`). C'est un garde-fou de banc : le RPi 5 ne peut pas le désactiver à distance.
 
+### 6.5 Redémarrage automatique du firmware (perte définitive de l'IMU)
+
+Le firmware embarque un **watchdog IMU** dédié au BNO085 (capteur d'attitude, seul sur le bus I2C n°1). Si le flux de quaternions se fige en opération (plongée, longue inactivité), la récupération escalade automatiquement en 3 niveaux :
+
+1. **Reprise douce SH-2** — après 1 s sans quaternion : ré-initialisation logicielle du capteur (réécriture des rapports SH-2) ;
+2. **Reset matériel du bus I2C** — si le niveau 1 échoue ou si le contrôleur I2C reste bloqué (`ESP_ERR_INVALID_STATE`) : destruction puis recréation de l'instance `Adafruit_BNO08x`, 9 impulsions SCL + condition STOP (bit-bang), réinitialisation complète de `Wire` ;
+3. **Redémarrage contrôlé** — si le capteur (qui **a déjà fonctionné depuis le boot**) ne répond toujours pas après **3 tentatives de niveau 2** ou **8 s sans aucun quaternion** : le firmware force **tous les canaux PWM au neutre** (1500 µs), émet un log explicite sur le moniteur série, puis déclenche `esp_restart()` — **redémarrage automatique de l'ESP32**.
+
+**Ce que le RPi 5 doit savoir :**
+
+* **Propulsion au neutre pendant toute la phase de récupération (niveaux 1 & 2)** : dès le 1er échec, les canaux 0-7 sont verrouillés à 1500 µs **à chaque cycle de contrôle** — une consigne armée réappliquée entre deux tentatives ne peut jamais faire repartir la propulsion avec une attitude inconnue. Les canaux 8-15 (servos, pince, gradateurs) restent pilotables.
+* **Pendant le redémarrage (~2-3 s)** : la télémétrie est interrompue, **mais les propulseurs restent physiquement au neutre** — le PCA9685 est un générateur autonome qui conserve ses registres pendant le reboot de l'ESP32 (neutre maintenu sans aucune intervention). Les trames descendantes émises pendant cette fenêtre sont simplement perdues.
+* **Après le redémarrage** : la télémétrie reprend seule. Le bit **liaison établie (`0x02`) repasse à 0 puis à 1** dès la première trame descendante valide reçue, et les sorties repartent en **dry-run (`0x10` = 1)** — comme à chaque boot, la réactivation des sorties réelles redevient une action manuelle dans l'interface Web.
+* **Aucune action spécifique n'est requise côté RPi 5** : continuer à émettre normalement (la cadence 20-50 Hz ré-établit liaison et maîtrise automatiquement).
+
+> **Garde-fou anti-boucle :** ce redémarrage ne se produit que si le capteur **a déjà fourni au moins un quaternion depuis le boot**. Un BNO085 jamais détecté ou jamais fonctionnel au démarrage n'est **jamais** redémarré en boucle : il reste en mode espacé (badge rouge, une tentative complète toutes les 30 s) et la propulsion demeure au neutre par défaut.
+
 ---
 
 ## 7. Exemple Python complet (validé hors ligne)
@@ -392,6 +409,7 @@ Injecter du bruit texte, couper une trame en deux, insérer un faux en-tête `55
 | Trames reçues mais CRC invalide en permanence | Endianness du CRC inversé (le CRC est **big-endian**, cf. §3.2) ou trame décodée sur un mauvais alignement. |
 | Texte `[SERIAL] …` entre les trames binaires | Normal en mode **USB-CDC** (debug partagé) : le `UplinkReader` du §7 filtre tout seul. Pour un lien 100 % propre, passer en **UART matériel**. |
 | Trames de **71 octets** (au lieu de 72) | **Firmware antérieur au correctif** : reflasher le firmware (voir §10). Un parseur conforme au présent document les rejettera (CRC calculé sur 67 octets et dernier canal tronqué). |
+| Interruption de télémétrie de ~2-4 s puis reprise avec `dry=True` | **Normal** : redémarrage automatique du watchdog IMU (BNO085 définitivement muet, §6.5). La propulsion est restée au neutre pendant toute l'opération ; réactiver les sorties depuis l'interface Web si nécessaire. |
 | `wdg=True`/`dry=True` persistants dans la télémétrie | `wdg` : vérifier que vos trames partent bien toutes les < 500 ms (et CRC valide). `dry` : activer les sorties via l'interface Web (bouton « Sorties Matérielles »). |
 | Propulseurs inertes malgré `arm_state = 1` | Dry-run actif (`dry=True`) ou watchdog déclenché. Vérifier `status` dans la télémétrie. |
 
