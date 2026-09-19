@@ -2,18 +2,21 @@
  * @file flight_controller.h
  * @brief Contrôleur de vol pour le ROV BOB-CONTROL (modes PID et mixage moteurs).
  *
- * Gère trois modes de pilotage :
- * - PASSIF (0)      : consignes PWM appliquées telles quelles.
- * - AUTO_ROULIS (1) : stabilisation PID roulis + tangage sur les verticaux M5-M8.
- * - AUTO_FULL (2)   : stabilisation complète Roll + Pitch + Yaw + Altitude.
+ * Gère un pilotage combinatoire par masque de bits (assistances superposables,
+ * protocole v1.4.0) :
+ * - MODE_BIT_RT (0x01)      : stabilisation PID roulis + tangage sur les verticaux M5-M8.
+ * - MODE_BIT_DEPTH (0x02)   : tenue de profondeur (PID altitude sur M5-M8).
+ * - MODE_BIT_CAP (0x04)     : maintien de cap (PID lacet sur les horizontaux M1-M4).
+ * - MODE_BIT_SURFACE (0x08) : retour surface PRIORITAIRE (verticaux vers la surface).
+ * Exemple : 0x03 = Auto R/T + tenue de profondeur simultanées.
  *
  * La priorité du maître (RPi 5 vs interface Web) est gérée par détection
  * de heartbeat : si aucune trame RPi 5 n'est reçue depuis RPI5_TIMEOUT_MS,
  * le maître bascule sur l'interface Web ESP32.
  *
  * @author Didier Dero
- * @version 1.0.0
- * @date Août 2026
+ * @version 1.1.0
+ * @date Septembre 2026
  */
 
 #ifndef FLIGHT_CONTROLLER_H
@@ -68,13 +71,26 @@ public:
     void begin(AutopilotConfig* cfg, SemaphoreHandle_t mutex);
 
     /**
-     * @brief Définit le mode actif (depuis n'importe quelle source).
-     * @param mode Valeur MODE_PASSIF, MODE_AUTO_ROULIS ou MODE_AUTO_FULL.
+     * @brief Définit le masque d'assistances actif (depuis n'importe quelle source).
+     * @param mode Masque superposable MODE_BIT_* (0x00 = Passif).
+     *             Les bits 4-7 sont ignorés (masqués par MODE_MASK_ALL).
      */
     void setMode(uint8_t mode);
 
-    /** @brief Retourne le mode actuellement actif */
+    /** @brief Retourne le masque d'assistances actuellement actif */
     uint8_t getActiveMode() const;
+
+    /** @brief true si la boucle Auto Roulis/Tangage tourne réellement (faux si retour surface) */
+    bool isRollPitchActive() const;
+
+    /** @brief true si la tenue de profondeur tourne réellement (faux si retour surface) */
+    bool isDepthHoldActive() const;
+
+    /** @brief true si l'Auto Cap est réellement actif */
+    bool isCapHoldActive() const;
+
+    /** @brief true si le retour surface prioritaire est actif */
+    bool isSurfaceReturnActive() const;
 
     /** @brief Indique si le RPi 5 est actuellement le maître */
     bool isRPi5Master() const;
@@ -82,8 +98,8 @@ public:
     /**
      * @brief Appelé quand une trame valide est reçue du RPi 5.
      *
-     * Met à jour le timestamp heartbeat et applique le mode reçu.
-     * @param rpiMode Mode envoyé par le RPi 5 (champ mode de la trame descendante).
+     * Met à jour le timestamp heartbeat et applique le masque d'assistances reçu.
+     * @param rpiMode Masque superposable (champ mode de la trame descendante).
      */
     void updateFromRPi5(uint8_t rpiMode);
 
@@ -100,11 +116,15 @@ public:
     /**
      * @brief Boucle principale de contrôle PID + mixage (appelée à 100 Hz).
      *
-     * Applique les corrections PID selon le mode actif sur le buffer PWM
-     * fourni. En mode PASSIF, le buffer n'est pas modifié.
+     * Applique les corrections PID des assistances actives (superposables)
+     * sur le buffer PWM fourni. En mode PASSIF (0x00), le buffer n'est pas
+     * modifié.
      *
      * Le clamp 1000-2000 µs est appliqué APRÈS la somme totale de toutes
-     * les corrections (Roll + Pitch + Yaw + Profondeur).
+     * les corrections (Roll + Pitch + Yaw + Profondeur). Le retour surface
+     * est prioritaire : il suspend Roll/Pitch et la profondeur, force les
+     * verticaux M5-M8 à MOTOR_EMERGENCY_SURFACE_US et laisse l'Auto Cap
+     * agir sur M1-M4.
      *
      * @param imu      Données IMU courantes (Euler Roll/Pitch/Yaw).
      * @param press    Données de pression courantes (profondeur).
@@ -126,12 +146,21 @@ private:
     AutopilotConfig*  _config;              ///< Pointeur vers la config PID
     SemaphoreHandle_t _mutex;               ///< Mutex configuration partagée
 
-    volatile uint8_t  _activeMode;          ///< Mode actif (MODE_PASSIF/AUTO_ROULIS/AUTO_FULL)
+    volatile uint8_t  _activeMode;          ///< Masque d'assistances actif (MODE_BIT_*)
     volatile bool     _rpiMaster;           ///< true = RPi 5 est maître
     unsigned long     _lastRPi5FrameTime;   ///< Timestamp dernière trame RPi 5 valide
 
-    /** @brief Cible d'altitude pour le PID (en mètres, 0 = niveau mer) */
+    /** @brief Cible du PID profondeur (profondeur capturée à l'activation) */
     float _altTarget;
+
+    /** @brief true = profondeur de consigne capturée (invalidé par resetPID) */
+    volatile bool _depthHoldValid;
+
+    /** @brief Cap de consigne du PID lacet (capturé à l'activation de l'Auto Cap) */
+    float _yawSetpoint;
+
+    /** @brief true = cap de consigne capturé (invalidé par resetPID) */
+    volatile bool _yawSetpointValid;
 
     /** @brief Applique le clamp 1000-2000 µs sur un tableau PWM */
     void _clampPWM(uint16_t* pwm, uint8_t count);

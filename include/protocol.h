@@ -8,8 +8,8 @@
  * Polynôme CRC : 0x1021 (CCITT), valeur initiale : 0xFFFF.
  *
  * @author Didier Dero
- * @version 1.1.0
- * @date Août 2026
+ * @version 1.4.0
+ * @date Septembre 2026
  */
 
 #ifndef PROTOCOL_H
@@ -50,12 +50,21 @@
 #define PROTO_NUM_PWM   16
 
 /* =========================================================================
- * CONSTANTES DE MODE DE PILOTAGE
- * ========================================================================= */
+ * MODE DE PILOTAGE — MASQUE DE BITS SUPERPOSABLES (TRAME DESCENDANTE)
+ * =========================================================================
+ *
+ * Le champ `mode` n'est plus une valeur énumérée : chaque bit active une
+ * assistance indépendante et plusieurs bits se COMBINENT (ex. 0x03 = Auto
+ * R/T + Tenue de profondeur). 0x00 = Passif (manuel direct). Les bits 4-7
+ * sont ignorés (masqués à la réception). */
 
-#define MODE_PASSIF         0   ///< Mode Passif (Manuel direct — PWM_in = PWM_out)
-#define MODE_AUTO_ROULIS    1   ///< Stabilisation Roll + Pitch automatique via PID (M5-M8)
-#define MODE_AUTO_FULL      2   ///< Stabilisation complète Roll+Pitch+Yaw+Altitude
+#define MODE_BIT_RT       0x01  ///< Bit 0 : Auto Roulis + Tangage (PID sur les verticaux M5-M8)
+#define MODE_BIT_DEPTH    0x02  ///< Bit 1 : Tenue de profondeur (PID altitude sur M5-M8)
+#define MODE_BIT_CAP      0x04  ///< Bit 2 : Auto Cap (PID lacet sur les horizontaux M1-M4)
+#define MODE_BIT_SURFACE  0x08  ///< Bit 3 : Retour surface (PRIORITAIRE — verticaux vers la surface)
+#define MODE_MASK_ALL     0x0F  ///< Masque des bits valides (bits 4-7 ignorés)
+
+#define MODE_PASSIF       0x00  ///< Aucune assistance (manuel direct — PWM_in = PWM_out)
 
 /* =========================================================================
  * CONSTANTES D'ÉTAT D'ARMEMENT
@@ -69,10 +78,13 @@
  * BITS DE STATUT (TRAME MONTANTE)
  * ========================================================================= */
 
-#define STATUS_BIT_ARMED    0x02    ///< Bit 1 : Système armé (bit 0 réservé)
-#define STATUS_BIT_AUTO     0x04    ///< Bit 2 : Autopilote actif
+#define STATUS_BIT_ARMED    0x02    ///< Bit 1 : Liaison établie (≥ 1 trame descendante reçue)
+#define STATUS_BIT_RT       0x04    ///< Bit 2 : Auto Roulis + Tangage réellement actif
 #define STATUS_BIT_WDG      0x08    ///< Bit 3 : Watchdog série déclenché
 #define STATUS_BIT_DRYRUN   0x10    ///< Bit 4 : Sorties physiques neutralisées (Dry-run / Mode Témoin)
+#define STATUS_BIT_DEPTH    0x20    ///< Bit 5 : Tenue de profondeur réellement active
+#define STATUS_BIT_CAP      0x40    ///< Bit 6 : Auto Cap réellement actif
+#define STATUS_BIT_SURFACE  0x80    ///< Bit 7 : Retour surface actif (commande prioritaire)
 
 /* =========================================================================
  * STRUCTURES BINAIRES PACKED
@@ -93,7 +105,7 @@ typedef struct {
     uint8_t  header1;                       ///< 0xAA
     uint8_t  header2;                       ///< 0x55
     uint8_t  type;                          ///< 0x01 (commande)
-    uint8_t  mode;                          ///< Mode : 0=Manuel, 1=AutoRoll, 2=Depth, 3=Full
+    uint8_t  mode;                          ///< Masque d'assistances superposables (MODE_BIT_* — 0x00 = Passif)
     uint8_t  arm_state;                     ///< 0=Désarmé, 1=Armé, 2=E-Stop
     uint16_t pwm[PROTO_NUM_PWM];            ///< Consignes PWM en µs (1000-2000) — offsets 5..36
     uint8_t  gpio_cmd;                      ///< Masque 4 bits sorties ON/OFF (bit 0 = sortie 1 … bit 3 = sortie 4) — offset 37

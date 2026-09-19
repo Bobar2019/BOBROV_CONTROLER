@@ -10,8 +10,13 @@
  * Les canaux 10 à 15 sont typables (bidirectionnel 1500 µs / unidirectionnel
  * pleine échelle 0-100 %) — choix persisté en NVS (clé « pwm_types »).
  *
+ * Le driver PCA9685 est alloué dans begin() sur le bus ET l'adresse I2C
+ * ROUTÉS (v1.3.0, g_i2cRouter — &Wire/&Wire1 et adresse NVS) : ni port ni
+ * adresse codés en dur, le module est réassignable depuis l'interface Web
+ * (Plug & Play).
+ *
  * @author Didier Dero
- * @version 1.2.0
+ * @version 1.3.0
  */
 
 #ifndef PWM_CONTROLLER_H
@@ -59,6 +64,64 @@ public:
     void getCurrentValues(uint16_t* out) const;
 
     /* -----------------------------------------------------------------
+     * ISOLEMENT MOTEURS & REMONTÉE D'URGENCE (v1.1.0 — INA3221/ACS770)
+     * ----------------------------------------------------------------- */
+
+    /**
+     * @brief Isole un canal propulseur : la position de sécurité devient
+     *        inconditionnelle, TOUTE consigne future sur ce canal est ignorée.
+     *
+     * Le canal est physiquement forcé au neutre (1500 µs, canaux 0-7 ESC) et
+     * le buffer _current[] y est maintenu : une consigne RPi 5 / PID / banc
+     * de test / routine de check ne peut PLUS jamais le réactiver (sécurité
+     * « désactivation logicielle » — seule une réinitialisation la lève).
+     *
+     * @param channel Canal à isoler (0-7 = M1-M8 ; les autres ignorés).
+     */
+    void isolateMotor(uint8_t channel);
+
+    /**
+     * @brief Lève l'isolement PROVISOIRE d'un canal (processus d'identification).
+     *
+     * Réservé au gestionnaire de sécurité moteurs : _identifyAndIsolate()
+     * isole successivement les moteurs suspects pour trouver le coupable, puis
+     * relâche par cette méthode les moteurs innocents (le canal reste au neutre
+     * où isolateMotor() l'a placé — c'est à la source de consigne suivante,
+     * RPi 5 / PID, de reprendre la main). Ne doit JAMAIS servir à relâcher un
+     * moteur dont la culpabilité est confirmée.
+     *
+     * @param channel Canal à relâcher (0-7 = M1-M8 ; les autres ignorés).
+     */
+    void releaseMotor(uint8_t channel);
+
+    /** @brief Retourne true si le canal est isolé (désactivé logiquement) */
+    bool isMotorIsolated(uint8_t channel) const;
+
+    /** @brief Retourne le masque 8 bits des canaux isolés (bit n ↔ canal n) */
+    uint8_t getIsolatedMask() const;
+
+    /** @brief Lève tous les isolements (réinitialisation / reboot uniquement) */
+    void clearIsolations();
+
+    /**
+     * @brief Active/désactive la remontée d'urgence (moteur isolé en plongée).
+     *
+     * Active : les verticaux M5-M8 (canaux 4-7) non isolés sont pilotés à
+     * MOTOR_EMERGENCY_SURFACE_US (poussée vers la surface). Toute consigne
+     * future sur ces canaux — PID, RPi 5, watchdog, setAllNeutral() — est
+     * filtrée et remplacée par la consigne de surface (mode survie : le ROV
+     * remonte quoi qu'il arrive). Le mode Témoin (Dry-Run) reste respecté :
+     * aucun mouvement physique n'est forcé tant que les sorties ne sont pas
+     * activées.
+     * Désactive : retour au neutre des verticaux concernés, sortie laissée au
+     * pilote.
+     */
+    void setEmergencySurface(bool active);
+
+    /** @brief Retourne true si la remontée d'urgence est active */
+    bool isEmergencySurfaceActive() const;
+
+    /* -----------------------------------------------------------------
      * TYPAGE DES CANAUX 10–15 (BIDIRECTIONNEL / UNIDIRECTIONNEL)
      * ----------------------------------------------------------------- */
 
@@ -101,11 +164,13 @@ public:
     bool isPhysicalOutputsEnabled() const;
 
 private:
-    Adafruit_PWMServoDriver _pwm;                       ///< Driver PCA9685 (bus I2C n°2 / Wire1, GPIO 6/7)
+    Adafruit_PWMServoDriver* _pwm;                      ///< Driver PCA9685, alloué dans begin() sur le bus ROUTÉ (g_i2cRouter)
     uint16_t _current[NUM_PWM_CHANNELS];                ///< Valeurs courantes (µs)
     SemaphoreHandle_t _mutex;                           ///< Mutex d'accès
     volatile bool _physicalOutputsEnabled;              ///< false = Mode Témoin (Dry-Run)
     volatile uint8_t _typeMask;                         ///< Typage canaux 10-15 (bit n ↔ ch 10+n, 1 = bidir)
+    volatile uint8_t _isolatedMask;                     ///< Canaux M1-M8 isolés (bit n ↔ canal n) — v1.1.0
+    volatile bool _emergencySurface;                    ///< Remontée d'urgence active — v1.1.0
 
     /** @brief Applique la position de sécurité sur le PCA9685 (sans modifier _current) */
     void _forcePhysicalNeutral();

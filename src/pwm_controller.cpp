@@ -8,11 +8,12 @@
  * conservant le buffer de télémétrie pour affichage WebSocket.
  *
  * @author Didier Dero
- * @version 1.1.0
+ * @version 1.2.0
  */
 
 #include "pwm_controller.h"
 #include "config.h"
+#include "i2c_router.h"     /* g_i2cRouter : bus et adresse routés du PCA9685 (v1.3.0) */
 #include <Wire.h>
 #include <Preferences.h>
 
@@ -31,14 +32,17 @@ PWMController g_pwm;
  * @brief Constructeur : initialise les valeurs courantes au neutre.
  *
  * Le mutex est créé mais le PCA9685 n'est pas encore initialisé
- * (l'initialisation I2C se fait dans begin()). Le driver est lié au bus
- * I2C n°2 (Wire1, GPIO 6/7), partagé avec le MS5837 de la tâche capteurs.
+ * (l'initialisation I2C se fait dans begin()). Le driver y est alloué sur
+ * le bus ET l'adresse ROUTÉS du PCA9685 (g_i2cRouter — &Wire ou &Wire1 +
+ * adresse NVS), partagé avec les capteurs routés sur le même bus.
  */
 PWMController::PWMController()
-    : _pwm(PCA9685_I2C_ADDR, Wire1)   /* bus I2C n°2 — MS5837 + PCA9685 */
+    : _pwm(nullptr)                     /* driver alloué dans begin() sur le bus/adresse routés (v1.3.0) */
     , _mutex(nullptr)
     , _physicalOutputsEnabled(false)    /* Mode Témoin par défaut au boot */
     , _typeMask(PWM_TYPE_DEFAULT_MASK)  /* typage provisoire avant lecture NVS (begin) */
+    , _isolatedMask(0)                  /* aucun moteur isolé au boot (v1.1.0) */
+    , _emergencySurface(false)          /* remontée d'urgence inactive (v1.1.0) */
 {
     /* Initialiser tous les canaux au neutre par défaut */
     for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
@@ -67,20 +71,30 @@ void PWMController::begin() {
     /* Chargement du typage des canaux 10-15 (clé NVS « pwm_types ») */
     _loadChannelTypes();
 
-    /* NOTE : le PCA9685 vit sur le bus I2C n°2 (Wire1, GPIO 6/7), partagé
-     * avec le MS5837. Le bus est configuré une seule fois par
-     * SensorDriver::begin() — exécuté AVANT PWMController::begin() dans
-     * main.cpp — de sorte que sa fréquence/timeout ne sont jamais modifiés
-     * pendant une transaction ; les accès des deux tâches sont ensuite
-     * sérialisés par le verrou interne de Wire1 (une par instance). */
-
-    /* Reset et configuration du PCA9685 */
-    if (!_pwm.begin()) {
-        Serial.println("[PWM] PCA9685 INTROUVABLE sur le bus I2C n°2 (0x40) — sorties inertes");
+    /* NOTE : le PCA9685 vit sur le bus ET l'adresse I2C ROUTÉS (v1.3.0 —
+     * &Wire ou &Wire1 + adresse selon la carte NVS, chargée par
+     * SensorDriver::begin() exécuté AVANT PWMController::begin() dans
+     * main.cpp : les deux bus matériels sont déjà configurés, de sorte que
+     * fréquence/timeout ne sont plus jamais modifiés pendant une
+     * transaction ; les accès concurrents des tâches capteurs/contrôle sont
+     * sérialisés par le verrou interne de l'instance TwoWire du bus routé). */
+    const uint8_t pwmAddr = g_i2cRouter.addrOf(I2C_DEV_PCA9685);
+    _pwm = new Adafruit_PWMServoDriver(pwmAddr,
+                                       *g_i2cRouter.wireOf(I2C_DEV_PCA9685));
+    if (_pwm == nullptr) {
+        Serial.println("[PWM] PCA9685 : échec d'allocation du driver — sorties inertes");
         return;
     }
-    _pwm.setOscillatorFrequency(25000000UL);    /* Oscillateur interne 25 MHz */
-    _pwm.setPWMFreq(PCA9685_FREQ_HZ);          /* 50 Hz pour servos/ESC */
+    const uint8_t pwmBus = g_i2cRouter.busOf(I2C_DEV_PCA9685);
+
+    /* Reset et configuration du PCA9685 */
+    if (!_pwm->begin()) {
+        Serial.println("[PWM] PCA9685 INTROUVABLE sur le bus I2C n°" + String(pwmBus)
+                       + " (0x" + String(pwmAddr, HEX) + ") — sorties inertes");
+        return;
+    }
+    _pwm->setOscillatorFrequency(25000000UL);    /* Oscillateur interne 25 MHz */
+    _pwm->setPWMFreq(PCA9685_FREQ_HZ);          /* 50 Hz pour servos/ESC */
 
     /* Délai de stabilisation après changement de fréquence */
     delay(10);
@@ -88,7 +102,8 @@ void PWMController::begin() {
     /* Application de la position de sécurité sur tous les canaux (failsafe initial) */
     setAllNeutral();
 
-    Serial.println("[PWM] PCA9685 initialisé à 50 Hz, canaux à la position de sécurité (bus I2C n°2)");
+    Serial.println("[PWM] PCA9685 initialisé à 50 Hz, canaux à la position de sécurité (bus I2C n°"
+                   + String(pwmBus) + ", 0x" + String(pwmAddr, HEX) + ")");
 }
 
 /* =========================================================================
@@ -109,6 +124,21 @@ void PWMController::begin() {
  */
 void PWMController::setPWMuS(uint8_t channel, uint16_t microseconds) {
     if (channel >= NUM_PWM_CHANNELS) return;
+    if (!_pwm) return;   /* driver non alloué (PCA9685 absent / heap épuisé) */
+
+    /* Canal propulseur isolé (v1.1.0) : consigne REFUSÉE — la position de
+     * sécurité est inconditionnelle, aucune source (RPi 5, PID, banc de test,
+     * routine de check) ne peut réactiver un moteur désactivé logiquement. */
+    if (channel < MOTOR_NUM_CHANNELS && (_isolatedMask & (1u << channel))) return;
+
+    /* Remontée d'urgence (v1.1.0) : consigne d'un vertical non isolé
+     * REMPLACÉE par la poussée de surface — le PID, le RPi 5 ou le watchdog
+     * ne peuvent pas contrer le mode survie (signal propre à 100 %, sans
+     * oscillation entre consigne et urgence). */
+    if (_emergencySurface && channel >= MOTOR_VERT_FIRST &&
+        channel < MOTOR_VERT_FIRST + MOTOR_VERT_COUNT) {
+        microseconds = MOTOR_EMERGENCY_SURFACE_US;
+    }
 
     /* Bornage de la valeur dans la plage valide */
     if (microseconds < PWM_MIN_US) microseconds = PWM_MIN_US;
@@ -121,7 +151,7 @@ void PWMController::setPWMuS(uint8_t channel, uint16_t microseconds) {
         /* Écriture physique uniquement si les sorties sont activées */
         if (_physicalOutputsEnabled) {
             uint16_t ticks = _usToTicks(microseconds);
-            _pwm.setPWM(channel, 0, ticks);
+            _pwm->setPWM(channel, 0, ticks);
         }
         xSemaphoreGive(_mutex);
     }
@@ -139,9 +169,19 @@ void PWMController::setPWMuS(uint8_t channel, uint16_t microseconds) {
  * @param values Tableau de 16 valeurs en µs (PWM_MIN_US à PWM_MAX_US).
  */
 void PWMController::setAllPWM(const uint16_t* values) {
+    if (!_pwm) return;   /* driver non alloué (PCA9685 absent / heap épuisé) */
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
+            /* Canal propulseur isolé (v1.1.0) : consigne refusée canal par canal */
+            if (i < MOTOR_NUM_CHANNELS && (_isolatedMask & (1u << i))) continue;
             uint16_t us = values[i];
+            /* Remontée d'urgence (v1.1.0) : consigne d'un vertical remplacée
+             * par la poussée de surface — même en mise à jour groupée PID, le
+             * mode survie prime, sans oscillation. */
+            if (_emergencySurface && i >= MOTOR_VERT_FIRST &&
+                i < MOTOR_VERT_FIRST + MOTOR_VERT_COUNT) {
+                us = MOTOR_EMERGENCY_SURFACE_US;
+            }
             /* Bornage individuel de chaque canal */
             if (us < PWM_MIN_US) us = PWM_MIN_US;
             if (us > PWM_MAX_US) us = PWM_MAX_US;
@@ -150,7 +190,7 @@ void PWMController::setAllPWM(const uint16_t* values) {
             /* Écriture physique uniquement si les sorties sont activées */
             if (_physicalOutputsEnabled) {
                 uint16_t ticks = _usToTicks(us);
-                _pwm.setPWM(i, 0, ticks);
+                _pwm->setPWM(i, 0, ticks);
             }
         }
         xSemaphoreGive(_mutex);
@@ -168,16 +208,37 @@ void PWMController::setAllPWM(const uint16_t* values) {
  * Les valeurs sont écrites PHYSIQUEMENT sur le PCA9685 — y compris en mode
  * Témoin, la position de sécurité étant le seul état sûr — et mémorisées
  * dans _current[] pour la télémétrie (WebSocket / trame montante).
+ *
+ * EXCEPTION remontée d'urgence (v1.1.0) : les verticaux M5-M8 non isolés
+ * gardent la consigne de surface dans _current[] — le failsafe (perte du
+ * RPi 5) ne doit pas interrompre la remontée d'un ROV en mode survie. En
+ * mode Témoin, l'écriture physique reste au neutre (aucun mouvement forcé).
  */
 void PWMController::setAllNeutral() {
+    if (!_pwm) return;   /* driver non alloué (PCA9685 absent / heap épuisé) */
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
-            const uint16_t us = _safeUsForChannel(i);
-            _pwm.setPWM(i, 0, _usToTicks(us));
+            const uint16_t safeUs = _safeUsForChannel(i);
+            /* Vertical non isolé en remontée d'urgence : la consigne de
+             * survie prime sur la position de sécurité générique. */
+            const bool emergencyUs =
+                _emergencySurface && i >= MOTOR_VERT_FIRST &&
+                i < MOTOR_VERT_FIRST + MOTOR_VERT_COUNT &&
+                !(_isolatedMask & (1u << i));
+            const uint16_t us = emergencyUs ? MOTOR_EMERGENCY_SURFACE_US : safeUs;
             _current[i] = us;
+            /* Écriture physique : la consigne de survie ne force AUCUN
+             * mouvement en mode Témoin (le neutre reste l'état physique
+             * sûr) — elle s'applique dès l'activation des sorties. */
+            _pwm->setPWM(i, 0, _usToTicks(_physicalOutputsEnabled ? us : safeUs));
         }
         xSemaphoreGive(_mutex);
-        Serial.println("[PWM] Failsafe : canaux à la position de sécurité (neutre 1500 µs / 0 %)");
+        if (_emergencySurface) {
+            Serial.println("[PWM] Failsafe : position de sécurité SAUF verticaux "
+                           "(remontée d'urgence maintenue)");
+        } else {
+            Serial.println("[PWM] Failsafe : canaux à la position de sécurité (neutre 1500 µs / 0 %)");
+        }
     }
 }
 
@@ -208,6 +269,109 @@ void PWMController::getCurrentValues(uint16_t* out) const {
 }
 
 /* =========================================================================
+ * ISOLEMENT MOTEURS & REMONTÉE D'URGENCE (v1.1.0 — INA3221/ACS770)
+ * ========================================================================= */
+
+/**
+ * @brief Isole un canal propulseur et le force à sa position de sécurité.
+ *
+ * Écrit PHYSIQUEMENT le neutre sur le PCA9685 (y compris en mode Témoin : la
+ * sécurité d'un moteur suspecté bloqué ne souffre aucune exception) et
+ * maintient le buffer _current[] — la télémétrie continue d'exposer l'état
+ * réel du canal pendant que toute consigne future est refusée (setPWMuS /
+ * setAllPWM testent _isolatedMask).
+ */
+void PWMController::isolateMotor(uint8_t channel) {
+    if (channel >= MOTOR_NUM_CHANNELS) return;
+    if (!_pwm) return;   /* driver non alloué (PCA9685 absent / heap épuisé) */
+
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        _isolatedMask |= (uint8_t)(1u << channel);
+        const uint16_t us = _safeUsForChannel(channel);
+        _pwm->setPWM(channel, 0, _usToTicks(us));
+        _current[channel] = us;
+        xSemaphoreGive(_mutex);
+        Serial.println("[PWM] Moteur M" + String(channel + 1)
+                       + " ISOLÉ (position de sécurité inconditionnelle)");
+    }
+}
+
+bool PWMController::isMotorIsolated(uint8_t channel) const {
+    if (channel >= MOTOR_NUM_CHANNELS) return false;
+    return (_isolatedMask & (1u << channel)) != 0;
+}
+
+uint8_t PWMController::getIsolatedMask() const {
+    return _isolatedMask;
+}
+
+void PWMController::clearIsolations() {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        _isolatedMask = 0;
+        xSemaphoreGive(_mutex);
+        Serial.println("[PWM] Tous les isolements moteurs LEVÉS");
+    }
+}
+
+/** @brief Lève l'isolement PROVISOIRE d'un canal (doc : pwm_controller.h) */
+void PWMController::releaseMotor(uint8_t channel) {
+    if (channel >= MOTOR_NUM_CHANNELS) return;
+
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (_isolatedMask & (1u << channel)) {
+            _isolatedMask &= (uint8_t)~(1u << channel);
+            Serial.println("[PWM] Isolement PROVISOIRE de M" + String(channel + 1)
+                           + " levé (moteur innocent — reste au neutre)");
+        }
+        xSemaphoreGive(_mutex);
+    }
+}
+
+/**
+ * @brief Active/désactive la remontée d'urgence (moteur isolé en plongée).
+ *
+ * Active : place les verticaux non isolés (canaux 4-7) à la consigne de
+ * surface dans _current[] ; l'écriture PHYSIQUE n'a lieu que si les sorties
+ * sont actives (le mode Témoin n'est jamais contourné pour un mouvement).
+ * Toute consigne future sur ces canaux est ensuite filtrée par
+ * setPWMuS()/setAllPWM()/setAllNeutral() — le mode survie ne peut être
+ * contré ni par le PID, ni par le RPi 5, ni par le watchdog.
+ * Désactive : retour au neutre des verticaux concernés (écriture physique
+ * inconditionnelle — c'est une position de sécurité), sortie laissée au
+ * pilote.
+ */
+void PWMController::setEmergencySurface(bool active) {
+    if (!_pwm) return;   /* driver non alloué (PCA9685 absent / heap épuisé) */
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        _emergencySurface = active;
+        for (uint8_t i = MOTOR_VERT_FIRST; i < MOTOR_VERT_FIRST + MOTOR_VERT_COUNT; i++) {
+            if (_isolatedMask & (1u << i)) continue;   /* isolé → reste au neutre */
+            if (active) {
+                _current[i] = MOTOR_EMERGENCY_SURFACE_US;
+                if (_physicalOutputsEnabled) {
+                    _pwm->setPWM(i, 0, _usToTicks(MOTOR_EMERGENCY_SURFACE_US));
+                }
+            } else {
+                const uint16_t us = _safeUsForChannel(i);
+                _current[i] = us;
+                _pwm->setPWM(i, 0, _usToTicks(us));
+            }
+        }
+        if (active) {
+            Serial.println("[PWM] REMONTÉE D'URGENCE ACTIVE — verticaux à "
+                           + String(MOTOR_EMERGENCY_SURFACE_US) + " µs");
+        } else {
+            Serial.println("[PWM] Remontée d'urgence désactivée — verticaux au neutre");
+        }
+        xSemaphoreGive(_mutex);
+    }
+}
+
+bool PWMController::isEmergencySurfaceActive() const {
+    return _emergencySurface;
+}
+
+/* =========================================================================
  * MODE TÉMOIN (DRY-RUN) — SORTIES PHYSIQUES
  * ========================================================================= */
 
@@ -224,6 +388,7 @@ void PWMController::getCurrentValues(uint16_t* out) const {
  * @param enabled État souhaité des sorties physiques.
  */
 void PWMController::setPhysicalOutputsEnabled(bool enabled) {
+    if (!_pwm) return;   /* driver non alloué (PCA9685 absent / heap épuisé) */
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         bool wasEnabled = _physicalOutputsEnabled;
         _physicalOutputsEnabled = enabled;
@@ -232,7 +397,7 @@ void PWMController::setPhysicalOutputsEnabled(bool enabled) {
             /* Passage Dry-Run → Actif : appliquer les valeurs du buffer */
             for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
                 uint16_t ticks = _usToTicks(_current[i]);
-                _pwm.setPWM(i, 0, ticks);
+                _pwm->setPWM(i, 0, ticks);
             }
             Serial.println("[PWM] Sorties physiques ACTIVÉES (propulsion active)");
         } else if (!enabled && wasEnabled) {
@@ -260,8 +425,9 @@ bool PWMController::isPhysicalOutputsEnabled() const {
  * @note Doit être appelée avec le mutex déjà acquis.
  */
 void PWMController::_forcePhysicalNeutral() {
+    if (!_pwm) return;
     for (uint8_t i = 0; i < NUM_PWM_CHANNELS; i++) {
-        _pwm.setPWM(i, 0, _usToTicks(_safeUsForChannel(i)));
+        _pwm->setPWM(i, 0, _usToTicks(_safeUsForChannel(i)));
     }
 }
 

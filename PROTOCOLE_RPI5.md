@@ -14,7 +14,7 @@
 | Débit | **921 600 bauds**, 8 bits, sans parité, 1 stop (8N1) |
 | Trames | **Taille fixe** — descendante : **40 octets**, montante : **73 octets** |
 | Intégrité | **CRC16-CCITT-FALSE** (polynôme `0x1021`, init `0xFFFF`) sur chaque trame |
-| Trame descendante | 20–50 Hz recommandé (commande : mode, armement, 16 consignes PWM, masque GPIO ON/OFF) |
+| Trame descendante | 20–50 Hz recommandé (commande : masque d'assistances, armement, 16 consignes PWM, masque GPIO ON/OFF) |
 | Trame montante | **100 Hz fixe** (télémétrie : IMU, pression, température, puissance, PWM, état des sorties ON/OFF) |
 | Sorties ON/OFF | 4 sorties numériques (GPIO 15/16/17/18 par défaut) pilotées par `gpio_cmd`, état réel dans `gpio_state` — forcées à OFF sur watchdog ou E-Stop |
 | Failsafe | Watchdog **500 ms** par défaut : perte de liaison ⇒ tous les actionneurs à leur position de sécurité + 4 sorties ON/OFF à OFF |
@@ -79,12 +79,14 @@ Format : `[0xAA][0x55][TYPE][MODE][ARM][PWM_0..15][GPIO_CMD][CRC_HI][CRC_LO]`
 | 0 | 1 | `header1` | `uint8_t` | `0xAA` | En-tête 1 |
 | 1 | 1 | `header2` | `uint8_t` | `0x55` | En-tête 2 |
 | 2 | 1 | `type` | `uint8_t` | `0x01` | Type « commande » |
-| 3 | 1 | `mode` | `uint8_t` | `0` `1` `2` | Mode de pilotage : **0** = Passif (manuel direct), **1** = Auto Roulis + Tangage, **2** = Auto Full (Roll+Pitch+Yaw+Profondeur). Toute valeur > 2 est ignorée (mode inchangé). |
+| 3 | 1 | `mode` | `uint8_t` | masque de bits | **Masque d'assistances superposables** (v1.4.0) — chaque bit active une boucle indépendante : bit 0 (`0x01`) = Auto Roulis/Tangage, bit 1 (`0x02`) = Tenue de Profondeur, bit 2 (`0x04`) = Auto Cap (Yaw), bit 3 (`0x08`) = Retour Surface (**prioritaire**). `0x00` = Passif (manuel direct). Exemple : `0x03` = Auto R/T + Tenue de Profondeur. Bits 4–7 ignorés. |
 | 4 | 1 | `arm_state` | `uint8_t` | `0` `1` `2` | **0** = Désarmé, **1** = Armé, **2** = E-Stop (arrêt d'urgence) |
 | 5 | 32 | `pwm[0..15]` | `uint16_t` × 16 (LE) | 1000–2000 | Consignes en **µs**. `pwm[k]` occupe les offsets `5 + 2k` (octet faible d'abord) : `pwm[0]` @ 5–6 … `pwm[15]` @ 35–36. Neutre : **1500**. Le firmware borne toute valeur à 1000–2000 µs. |
 | 37 | 1 | `gpio_cmd` | `uint8_t` | masque 4 bits | Commandes des 4 sorties tout-ou-rien : **bit 0 = sortie 1** … **bit 3 = sortie 4** (1 = ON, 0 = OFF). Bits 4–7 ignorés. Les sorties sont pilotables **même désarmé** (auxiliaires) ; neutralisées à OFF par l'E-Stop et le watchdog. |
 | 38 | 1 | `crc16_hi` | `uint8_t` | — | CRC16 (voir §3.2) — octet fort |
 | 39 | 1 | `crc16_lo` | `uint8_t` | — | CRC16 — octet faible |
+
+> **Composition des assistances (v1.4.0) :** le champ `mode` est un masque — les boucles PID se superposent librement (ex. `0x03` = Auto R/T + tenue de profondeur). À l'activation d'une tenue, la consigne est capturée sur place : **profondeur courante** pour le bit 1, **cap courant** pour le bit 2. Le **bit 3 (Retour Surface) est prioritaire** : il suspend l'Auto R/T et la tenue de profondeur et force les moteurs verticaux M5–M8 vers la surface (≈ 1700 µs) ; l'Auto Cap (bit 2) reste actif sur les horizontaux M1–M4.
 
 ### 4.1 Affectation des 16 canaux
 
@@ -133,7 +135,7 @@ Format : `[0x55][0xAA][TYPE][STATUS][QUAT][GYRO][PRESS][TEMP][POWER×6][PWM_ACT�
 | 12 | 6 | `gyro[3]` | `int16_t` × 3 (LE) | **÷ 100** → °/s | Vitesses angulaires X, Y, Z du repère véhicule |
 | 18 | 4 | `pressure` | `int32_t` (LE) | **÷ 10** → mbar | Pression absolue (ex. 10132 = 1013,2 mbar) |
 | 22 | 4 | `temperature` | `int32_t` (LE) | **÷ 100** → °C | Température de l'eau (ex. 2500 = 25,00 °C) |
-| 26 | 12 | `power[6]` | `uint16_t` × 6 (LE) | **÷ 1000** → V / A | 3 wattmètres : `[V1,I1, V2,I2, V3,I3]` en mV / mA — voir §5.2 |
+| 26 | 12 | `power[6]` | `uint16_t` × 6 (LE) | **÷ 1000** → V / A | Énergie propulsion (v1.1.0) : `[V_BAT, rés, signal_H, I_H, signal_V, I_V]` en mV / mA — voir §5.2 |
 | 38 | 32 | `pwm_actual[16]` | `uint16_t` × 16 (LE) | µs (entiers) | Consignes PWM courantes. `pwm_actual[k]` occupe les offsets `38 + 2k`. |
 | 70 | 1 | `gpio_state` | `uint8_t` | masque 4 bits — voir §5.5 | État **réel relu** des 4 sorties ON/OFF : bit 0 = sortie 1 … bit 3 = sortie 4 (1 = ON) |
 | 71 | 2 | `crc16` | `uint16_t` (**BE**) | — | CRC16 sur `[2..70]` — octet fort puis faible |
@@ -144,19 +146,30 @@ Format : `[0x55][0xAA][TYPE][STATUS][QUAT][GYRO][PRESS][TEMP][POWER×6][PWM_ACT�
 | :--- | :--- | :--- |
 | 0 | `0x01` | Réservé (toujours 0) |
 | 1 | `0x02` | **Liaison établie** : positionné dès qu'**au moins une trame descendante valide a été reçue depuis le boot**. ⚠️ Ce n'est **pas** l'état d'armement courant — c'est un témoin de liaison (« le firmware a déjà entendu le RPi 5 »). |
-| 2 | `0x04` | Autopilote actif — **réservé, jamais émis** par le firmware actuel (toujours 0) |
+| 2 | `0x04` | **Auto Roulis/Tangage réellement actif** (v1.4.0) : boucle PID roulis + tangage en cours d'exécution — 0 si la boucle est absente du masque ou **suspendue par le retour surface**. |
 | 3 | `0x08` | **Watchdog série déclenché** : plus aucune trame descendante valide reçue depuis > timeout (défaut 500 ms). Redescend automatiquement dès qu'une trame valide arrive. |
 | 4 | `0x10` | **Dry-run (Mode Témoin)** : sorties physiques PCA9685 neutralisées (les consignes sont mémorisées dans `pwm_actual` mais aucune impulsion n'est émise vers les actionneurs). |
+| 5 | `0x20` | **Tenue de Profondeur réellement active** (v1.4.0) : boucle PID altitude en cours d'exécution — 0 si absente du masque ou **suspendue par le retour surface**. |
+| 6 | `0x40` | **Auto Cap réellement actif** (v1.4.0) : boucle PID lacet en cours d'exécution (indépendante du retour surface). |
+| 7 | `0x80` | **Retour Surface réellement actif** (v1.4.0) : verticaux M5–M8 forcés vers la surface, Roll/Pitch et tenue de profondeur suspendus. |
 
-### 5.2 Détail des 6 mesures de puissance
+### 5.2 Détail des 6 mesures de puissance (v1.1.0 — INA3221)
+
+**Sémantique v1.1.0 :** l'INA3221 (triple mesure, `0x40`) remplace le premier INA226 et supervise l'énergie de propulsion. **Le format binaire est inchangé** (mêmes 6 slots mV/mA, mêmes offsets) — seule la sémantique des valeurs change :
 
 | Index `power` | Offset | Mesure | Source (bus I2C n°1) |
-| :--- | :--- | :--- | :--- |
-| `power[0]` / `power[1]` | 26 / 28 | Tension (mV) / Courant (mA) | **INA226 #1** (`0x41`) — alimentation **Raspberry Pi 5** |
-| `power[2]` / `power[3]` | 30 / 32 | Tension (mV) / Courant (mA) | **INA226 #2** (`0x44`) — ligne **Aux / LEDs** |
-| `power[4]` / `power[5]` | 34 / 36 | Tension (mV) / Courant (mA) | **INA226 #3** (`0x45`) — ligne **Moteurs / propulsion** |
+| :--- | ---: | :--- | :--- |
+| `power[0]` | 26 | **Tension batterie propulsion V_BAT** (mV) | **INA3221** (`0x40`) canal 1 |
+| `power[1]` | 28 | Réservé (**0**) | INA3221 canal 1 — pas de shunt sur ce canal |
+| `power[2]` | 30 | Signal brut capteur horizontaux (mV) | INA3221 canal 2 — tension ACS770 lue sur IN- |
+| `power[3]` | 32 | **Courant propulseurs horizontaux M1–M4** (mA) | **ACS770-100U** via INA3221 canal 2 (40 mV/A) |
+| `power[4]` | 34 | Signal brut capteur verticaux (mV) | INA3221 canal 3 — tension ACS770 lue sur IN- |
+| `power[5]` | 36 | **Courant propulseurs verticaux M5–M8** (mA) | **ACS770-100U** via INA3221 canal 3 (40 mV/A) |
 
-Le courant est émis en valeur **absolue** (mA). Capteur absent ⇒ 0.
+* Le courant est émis en valeur **absolue** (mA) ; plage utile **±4,09 A** (au-delà, l'ACS770 sature — le firmware le traite comme un défaut de surintensité). Capteur absent ⇒ 0.
+* Les champs `power[2]` / `power[4]` (signal brut mV) sont fournis pour diagnostic — le firmware applique déjà la conversion en Ampères dans `power[3]` / `power[5]`.
+* Les deux **INA226 résiduels** (#2 Aux/LEDs `0x44`, #3 `0x45`) ne transitent **pas** dans la trame série : ils restent visibles uniquement dans la télémétrie WebSocket de l'interface Web embarquée (`power[3]` / `power[4]` du JSON).
+* Ancienne sémantique (firmware ≤ v1.0.1) : `[V,I]` du Pi, Aux et Moteurs — un récepteur ignorant la version décodait 3 wattmètres.
 
 ### 5.3 Repère IMU et conversions complémentaires
 
@@ -212,7 +225,7 @@ Profondeur (le firmware n'envoie que la pression absolue ; à convertir côté R
 | `arm_state` | Effet immédiat à la réception de CHAQUE trame |
 | :--- | :--- |
 | **0 — Désarmé** | Canaux **0–7 forcés au neutre** (1500 µs). Canaux **8–15 acceptés tels quels** (pan/tilt, pince, gradateurs utilisables désarmé). Les **4 sorties ON/OFF restent pilotables** (`gpio_cmd` appliqué — auxiliaires utilisables désarmé). Reset des PID. |
-| **1 — Armé** | **Les 16 canaux** sont appliqués (`pwm[0..15]`) ainsi que le **masque `gpio_cmd`**. Le **mode** est appliqué (passif / auto roulis-tangage / auto full). Le contrôleur de vol considère le RPi 5 comme maître. |
+| **1 — Armé** | **Les 16 canaux** sont appliqués (`pwm[0..15]`) ainsi que le **masque `gpio_cmd`**. Le **masque d'assistances** est appliqué (superposition Auto R/T, tenue de profondeur, Auto Cap, retour surface). Le contrôleur de vol considère le RPi 5 comme maître. |
 | **2 — E-Stop** | **Tous** les canaux à leur position de sécurité (1500 µs / 0 %) + **les 4 sorties ON/OFF forcées à OFF** + reset des PID. Priorité absolue, appliqué à chaque trame reçue. |
 
 > **Point opérationnel :** seules les trames **ARMÉES** transmettent le `mode` et rafraîchissent la maîtrise du RPi 5 (§6.3). Pour reprendre la main après un long arrêt, il suffit de renvoyer des trames armées.
@@ -266,10 +279,14 @@ PORT = '/dev/ttyACM0'      # USB-CDC natif  |  UART GPIO : '/dev/serial0'
 BAUD = 921600
 TX_HZ = 25.0               # cadence descendante recommandée : 20-50 Hz
 
-MODE_PASSIF, MODE_AUTO_ROULIS, MODE_AUTO_FULL = 0, 1, 2
+# Mode = masque d'assistances superposables (v1.4.0) — combiner avec |
+MODE_PASSIF = 0x00
+MODE_RT, MODE_DEPTH, MODE_CAP, MODE_SURFACE = 0x01, 0x02, 0x04, 0x08
+
 ARM_DISARMED, ARM_ARMED, ARM_ESTOP = 0, 1, 2
 
-STATUS_ARMED, STATUS_AUTO, STATUS_WDG, STATUS_DRYRUN = 0x02, 0x04, 0x08, 0x10
+STATUS_ARMED, STATUS_RT, STATUS_WDG, STATUS_DRYRUN = 0x02, 0x04, 0x08, 0x10
+STATUS_DEPTH, STATUS_CAP, STATUS_SURFACE = 0x20, 0x40, 0x80
 
 # ==================== CRC16-CCITT-FALSE ====================
 
@@ -287,6 +304,7 @@ def crc16_ccitt(data: bytes) -> int:
 
 def build_downlink_frame(mode: int, arm_state: int, pwm_us, gpio_cmd: int = 0) -> bytes:
     """Construit la trame de commande RPi 5 -> ESP32-S3 (40 octets).
+    mode : masque d'assistances superposables (MODE_RT | MODE_DEPTH | ...).
     pwm_us : séquence de 16 valeurs en microsecondes (1000-2000).
     gpio_cmd : masque 4 bits des sorties ON/OFF (bit 0 = sortie 1, 1 = ON)."""
     payload = struct.pack('<BBB16HB', 0x01, mode, arm_state, *pwm_us, gpio_cmd)
@@ -308,7 +326,10 @@ def parse_uplink_frame(frame: bytes) -> dict:
     return {
         'status': status,
         'armed': bool(status & STATUS_ARMED),      # liaison établie (≥ 1 trame reçue)
-        'auto': bool(status & STATUS_AUTO),        # réservé (jamais émis)
+        'auto_rt': bool(status & STATUS_RT),       # Auto Roulis/Tangage réellement actif
+        'depth_hold': bool(status & STATUS_DEPTH), # tenue de profondeur active
+        'cap_hold': bool(status & STATUS_CAP),     # Auto Cap actif
+        'surface': bool(status & STATUS_SURFACE),  # retour surface prioritaire actif
         'watchdog': bool(status & STATUS_WDG),
         'dry_run': bool(status & STATUS_DRYRUN),
         'quat': (w / 10000.0, x / 10000.0, y / 10000.0, z / 10000.0),
@@ -421,7 +442,7 @@ Décodage attendu :
 | `gyro` | `(0.0, 0.0, 0.0)` °/s |
 | `pressure_mbar` | `1013.2` |
 | `temperature_c` | `25.0` |
-| `power` | `[5000, 800, 12000, 300, 14800, 23400]` → Pi à 5,0 V/0,8 A, Aux 12,0 V/0,3 A, Moteurs 14,8 V/23,4 A |
+| `power` | `[5000, 800, 12000, 300, 14800, 23400]` → sémantique v1.1.0 (valeurs de test arbitraires) : V_BAT 5,0 V, réservé 800, signal H 12,0 V / courant H 0,3 A, signal V 14,8 V / courant V 23,4 A — voir §5.2 |
 | `pwm_us` | `[1600, 1500, 1500, …, 1500]` (16 valeurs) |
 | `gpio_state` | `0x05` → sorties 1 et 3 à ON (offset 70) |
 | CRC | `0xB301` (offset 71 = `0xB3`, offset 72 = `0x01`) |
@@ -468,6 +489,15 @@ Un défaut historique affectait la trame montante : la constante de taille valai
 * l'octet de poids fort du canal `pwm_actual[15]` était **écrasé par le CRC**.
 
 Si vous observez des trames de **71 octets** sur le fil, le firmware en place est antérieur à ce correctif : **reflasher** (USB ou OTA depuis l'interface Web). Le firmware actuel émet la trame **conforme à ce document** (73 octets, CRC sur `[2..70]`).
+
+### 10.3 v1.4.0 — mode combinatoire (masque de bits) et confirmations d'assistance
+
+**Tailles et offsets inchangés** (40/73 octets) : seuls les champs `mode` (offset 3, descendante) et `status` (offset 3, montante) changent de sémantique.
+
+* **Descendante** : `mode` n'est plus une valeur énumérée (0, 1, 2) mais un **masque de bits** — bit 0 (`0x01`) Auto R/T, bit 1 (`0x02`) Tenue de Profondeur, bit 2 (`0x04`) Auto Cap, bit 3 (`0x08`) Retour Surface (prioritaire). Les assistances se **superposent** (ex. `0x03` = Auto R/T + Tenue de Profondeur) ; bits 4–7 ignorés (masqués, sans erreur CRC).
+* **Montante** : `status` confirme l'activation **réelle et combinée** des boucles au moment de l'émission — bit 2 (`0x04`) Auto R/T, bit 5 (`0x20`) Tenue de Profondeur, bit 6 (`0x40`) Auto Cap, bit 7 (`0x80`) Retour Surface.
+* **Sémantique de capture** : l'activation de la tenue de profondeur capture la **profondeur courante** comme consigne (maintien sur place) ; l'activation de l'Auto Cap capture le **cap courant**. Ces consignes sont recapturées à chaque changement de masque.
+* ⚠️ **Incompatibilité sémantique** : un code conçu pour l'ancien protocole qui envoie `mode = 2` (ex-Auto Full) n'active plus que la **tenue de profondeur**. L'équivalent de l'ancien Auto Full est désormais `0x07` (R/T + profondeur + cap).
 
 ---
 

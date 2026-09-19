@@ -35,6 +35,7 @@
                 <span id="badge-rpi" class="badge badge-off">RPi: --</span>
                 <span id="badge-mode" class="badge badge-real">RÉEL</span>
                 <span id="badge-wdg" class="badge badge-ok">WDG: OK</span>
+                <span id="badge-sim" class="badge badge-sim" style="display:none">SIM: ACTIVE</span>
             </div>
             <button id="theme-toggle" class="theme-toggle" type="button"
                     aria-label="Passer au thème clair" title="Passer au thème clair">
@@ -281,7 +282,7 @@
                     <div class="sensor-grid">
                         <div class="sensor-badge" id="sens-bno085"><span class="led led-off"></span>BNO085</div>
                         <div class="sensor-badge" id="sens-ms5803"><span class="led led-off"></span>MS5803</div>
-                        <div class="sensor-badge" id="sens-ina0"><span class="led led-off"></span>INA226 #1</div>
+                        <div class="sensor-badge" id="sens-ina3221"><span class="led led-off"></span>INA3221</div>
                         <div class="sensor-badge" id="sens-ina1"><span class="led led-off"></span>INA226 #2</div>
                         <div class="sensor-badge" id="sens-ina2"><span class="led led-off"></span>INA226 #3</div>
                         <div class="sensor-badge" id="sens-pca"><span class="led led-off"></span>PCA9685</div>
@@ -361,15 +362,50 @@
                         <div class="mode-btn-group">
                             <button class="btn mode-btn active" data-mode="0" id="btn-mode-0">PASSIF</button>
                             <button class="btn mode-btn" data-mode="1" id="btn-mode-1">AUTO ROULIS ET TANGAGE</button>
-                            <button class="btn mode-btn" data-mode="2" id="btn-mode-2">AUTO FULL</button>
+                            <button class="btn mode-btn" data-mode="7" id="btn-mode-2" title="Masque 0x07 : Auto R/T + Tenue de profondeur + Auto Cap">AUTO FULL</button>
                         </div>
                     </div>
                 </div>
 
+                <!-- Double alimentation (v1.1.0) : batterie 1 « propulsion » supervisée
+                     par l'INA3221 (V_BAT + 2 × ACS770), batterie 2 « électronique de
+                     commande & éclairage » supervisée par les 2 INA226 — et voyant
+                     « Statut Moteurs » (vert = OK, orange = avertissement batterie,
+                     rouge = moteur isolé). -->
                 <div class="telem-row">
-                    <div class="card" id="power-card-0"><h3>Wattmètre 1 — RPi 5</h3><div class="power-val"><span id="p0-v">0 mV</span> / <span id="p0-i">0 mA</span></div></div>
-                    <div class="card" id="power-card-1"><h3>Wattmètre 2 — Aux/LED</h3><div class="power-val"><span id="p1-v">0 mV</span> / <span id="p1-i">0 mA</span></div></div>
-                    <div class="card" id="power-card-2"><h3>Wattmètre 3 — Propulsion</h3><div class="power-val"><span id="p2-v">0 mV</span> / <span id="p2-i">0 mA</span></div></div>
+                    <div class="card" id="ina3221-card">
+                        <h3>Wattmètre 1 — Propulsion (INA3221)</h3>
+                        <div class="ina3221-grid">
+                            <div class="ina3221-ch">
+                                <span class="ina3221-ch-label">Tension Batterie</span>
+                                <span class="power-val"><span id="ina3221-vbat">0.00 V</span></span>
+                                <span class="ina3221-ch-sub">Canal 1 — V_BAT</span>
+                            </div>
+                            <div class="ina3221-ch">
+                                <span class="ina3221-ch-label">Courant Horizontaux</span>
+                                <span class="power-val"><span id="ina3221-ih">0.00 A</span></span>
+                                <span class="ina3221-ch-sub">Canal 2 — ACS770</span>
+                            </div>
+                            <div class="ina3221-ch">
+                                <span class="ina3221-ch-label">Courant Verticaux</span>
+                                <span class="power-val"><span id="ina3221-iv">0.00 A</span></span>
+                                <span class="ina3221-ch-sub">Canal 3 — ACS770</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card" id="motors-status-card">
+                        <h3>Statut Moteurs</h3>
+                        <div class="motors-health-row">
+                            <span class="led led-off" id="motors-led"></span>
+                            <span id="motors-status-text">—</span>
+                        </div>
+                        <div class="motors-detail" id="motors-detail">En attente du contrôleur…</div>
+                    </div>
+                </div>
+
+                <div class="telem-row">
+                    <div class="card" id="power-card-1"><h3>Wattmètre 2 — Électronique de commande (INA226)</h3><div class="power-val"><span id="p1-v">0 mV</span> / <span id="p1-i">0 mA</span></div></div>
+                    <div class="card" id="power-card-2"><h3>Wattmètre 3 — Projecteur LED (INA226)</h3><div class="power-val"><span id="p2-v">0 mV</span> / <span id="p2-i">0 mA</span></div></div>
                 </div>
 
             </div>
@@ -404,8 +440,8 @@
             <div class="page-header"><h1>Paramètres</h1></div>
             <div class="content-area">
                 <!-- Liaison Série RPi 5 -->
-                <div class="card">
-                    <h3>Liaison Série RPi 5</h3>
+                <details class="card acc" open>
+                    <summary class="acc-sum"><h3>Liaison Série RPi 5</h3></summary>
                     <p class="card-hint">Interface physique pour le protocole binaire temps réel</p>
                     <div class="settings-grid">
                         <label>Interface
@@ -416,11 +452,11 @@
                         </label>
                     </div>
                     <button id="btn-save-comm" class="btn btn-primary">Appliquer la liaison série</button>
-                </div>
+                </details>
 
                 <!-- Typage des canaux PWM 10 à 15 (outils) -->
-                <div class="card">
-                    <h3>Typage des canaux PWM 10 à 15</h3>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Typage des canaux PWM 10 à 15</h3></summary>
                     <p class="card-hint">Bidirectionnel : neutre 1500 µs, plage 1000–2000 µs (pinces/outils).
                         Unidirectionnel : pleine échelle 0–100 % (gradateurs LED). Sauvegarde NVS, appliqué à chaud.</p>
                     <div class="settings-grid">
@@ -462,11 +498,11 @@
                         </label>
                     </div>
                     <button id="btn-save-pwm-types" class="btn btn-primary">Appliquer le typage PWM</button>
-                </div>
+                </details>
 
                 <!-- Sorties tout-ou-rien (4 × GPIO ON/OFF) -->
-                <div class="card">
-                    <h3>Sorties Tout-ou-Rien (GPIO ON/OFF ×4)</h3>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Sorties Tout-ou-Rien (GPIO ON/OFF ×4)</h3></summary>
                     <p class="card-hint">Sorties numériques pilotées par le masque gpio_cmd de la trame descendante
                         (bit 0 = sortie 1). Watchdog série et E-Stop les forcent à OFF.</p>
                     <div class="settings-grid">
@@ -493,11 +529,11 @@
                         <span class="gpio-test-item"><span id="gpio-name-3">Sortie 4</span> <span class="gpio-st gpio-st-off" id="gpio-st-3">OFF</span><button type="button" class="gpio-test-btn" id="gpio-test-3">Activer</button></span>
                     </div>
                     <p class="card-hint" id="gpio-test-hint">Boutons de test (établi) : forcent l'état des sorties — le firmware relit et renvoie l'état réel. Écrasés par le watchdog, l'E-Stop ou une trame RPi 5 maître.</p>
-                </div>
+                </details>
 
                 <!-- Noms personnalisés des sorties (16 PWM + 4 GPIO, NVS) -->
-                <div class="card">
-                    <h3>Noms des sorties</h3>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Noms des sorties</h3></summary>
                     <p class="card-hint">Nom affiché de chaque sortie dans le Banc de Test, le PWM Monitor et les états GPIO.
                         Vide = nom par défaut. Sauvegarde NVS appliquée à chaud (sans redémarrage).</p>
                     <div class="names-grid">
@@ -524,11 +560,11 @@
                     </div>
                     <button id="btn-save-names" class="btn btn-primary">Appliquer les noms</button>
                     <p class="card-hint" id="names-status"></p>
-                </div>
+                </details>
 
                 <!-- Calibration altimétrique QNH (v1.0.1 — Open-Meteo, Chamoson VS) -->
-                <div class="card">
-                    <h3>Calibration Altimètre (QNH)</h3>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Calibration Altimètre (QNH)</h3></summary>
                     <p class="card-hint">Correction du QNH réel (Open-Meteo — Chamoson, VS) pour l'altitude barométrique
                         hors de l'eau uniquement : la profondeur immergée reste fondée sur la tare de surface locale et
                         la boucle de contrôle n'est jamais impactée. Fallback transparent sur 1013.25 mbar si Internet
@@ -541,12 +577,48 @@
                         <span id="qnh-refresh-label">Actualiser le QNH maintenant</span><span id="qnh-refresh-spinner" class="qnh-spinner" hidden></span>
                     </button>
                     <p class="card-hint" id="qnh-status">QNH actuel utilisé : — mbar</p>
-                </div>
+                </details>
+
+                <!-- Gestion de sécurité moteurs (v1.1.0 — INA3221 + ACS770) :
+                     check au démarrage, détection surintensité avec isolement
+                     logiciel et remontée d'urgence. Sauvegarde NVS à chaud. -->
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Gestion Moteurs — Sécurité Propulsion</h3></summary>
+                    <p class="card-hint">Surveillance des propulseurs par l'INA3221 (tension batterie + courants
+                        ACS770 horizontaux/verticaux). Après la connexion Wi-Fi, le check pulse chaque moteur
+                        un par un et vérifie son courant ; en navigation, la détection d'intensité isole
+                        logiciellement le moteur en défaut. Sauvegarde NVS appliquée à chaud.</p>
+                    <label class="qnh-toggle-row">
+                        <input type="checkbox" id="motors-check-enable">
+                        <span>Check Propulseurs au démarrage</span>
+                    </label>
+                    <label class="qnh-toggle-row">
+                        <input type="checkbox" id="motors-detect-enable">
+                        <span>Détection surintensité &amp; isolation</span>
+                    </label>
+                    <label class="qnh-toggle-row motors-sub-toggle" id="motors-emergency-row">
+                        <input type="checkbox" id="motors-emergency-enable">
+                        <span>Remontée d'urgence si moteur vertical isolé</span>
+                    </label>
+                    <div class="settings-grid">
+                        <label>Seuil d'intensité max — moteur bloqué (A)
+                            <input type="number" id="motors-cur-thresh" min="0.5" max="80" step="0.1" value="3">
+                        </label>
+                        <label>Seuil de tension basse — batterie propulseurs (V)
+                            <input type="number" id="motors-vbat-low" min="9" max="30" step="0.1" value="14">
+                        </label>
+                    </div>
+                    <div class="motors-actions">
+                        <button id="btn-save-motors" class="btn btn-primary" type="button">Sauvegarder les paramètres</button>
+                        <button id="btn-motors-check" class="btn" type="button">Lancer le check propulseurs<span id="motors-check-spinner" class="qnh-spinner" hidden></span></button>
+                    </div>
+                    <p class="card-hint" id="motors-config-status">—</p>
+                </details>
 
                 <!-- Configuration Broches I2C (bus n°1) -->
-                <div class="card">
-                    <h3>Configuration Bus I2C n°1</h3>
-                    <p class="card-hint">Bus n°1 — BNO085 + INA226 ×3. Broches SDA/SCL actuelles : <strong id="i2c-current-pins">—</strong></p>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Configuration Bus I2C n°1</h3></summary>
+                    <p class="card-hint">Bus n°1 — BNO085 + INA3221 + INA226 ×2. Broches SDA/SCL actuelles : <strong id="i2c-current-pins">—</strong></p>
                     <div class="settings-grid">
                         <label>SDA bus n°1 (GPIO)
                             <input type="number" id="i2c-sda-pin" min="0" max="48" value="10">
@@ -557,11 +629,11 @@
                     </div>
                     <button id="btn-save-i2c-pins" class="btn btn-primary">Sauvegarder &amp; redémarrer</button>
                     <p class="card-hint">Sauvegarde NVS puis redémarrage du contrôleur après 3 s — broches appliquées au démarrage.</p>
-                </div>
+                </details>
 
                 <!-- Configuration Broches I2C n°2 (MS5837 + PCA9685) -->
-                <div class="card">
-                    <h3>Configuration Bus I2C n°2</h3>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Configuration Bus I2C n°2</h3></summary>
                     <p class="card-hint">Bus n°2 — MS5837 + PCA9685. Broches SDA/SCL actuelles : <strong id="i2c2-current-pins">—</strong></p>
                     <div class="settings-grid">
                         <label>SDA bus n°2 (GPIO)
@@ -573,11 +645,11 @@
                     </div>
                     <button id="btn-save-i2c2-pins" class="btn btn-primary">Sauvegarder &amp; redémarrer</button>
                     <p class="card-hint">Sauvegarde NVS puis redémarrage du contrôleur après 3 s — broches appliquées au démarrage (bus partagé avec les sorties PWM).</p>
-                </div>
+                </details>
                 <!-- Scanner I2C (deux bus) -->
-                <div class="card">
-                    <h3>Scanner I2C</h3>
-                    <p class="card-hint">Scan complet des deux bus I2C (adresses 0x01 à 0x7F) — n°1 : BNO085 + INA226, n°2 : MS5837 + PCA9685</p>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Scanner I2C &amp; Routage Plug &amp; Play</h3></summary>
+                    <p class="card-hint">Scan complet des deux bus I2C (adresses 0x01 à 0x7F) — les adresses découvertes alimentent les sélecteurs du routage ci-dessous (câbler → scanner → choisir).</p>
                     <button id="btn-i2c-scan" class="btn btn-primary">
                         <span id="i2c-scan-spinner" class="btn-spinner" style="display:none"></span>
                         Lancer le scan I2C
@@ -599,10 +671,31 @@
                     <div id="i2c-scan-empty" class="i2c-scan-empty" style="display:none">
                         Aucun périphérique détecté sur les deux bus I2C. Vérifiez le câblage : bus n°1 (SDA=GPIO 10, SCL=GPIO 11), bus n°2 (SDA=GPIO 6, SCL=GPIO 7).
                     </div>
-                </div>
+
+                    <!-- Routage I2C Plug &amp; Play : assignation module → (bus, adresse) (v1.3.0) -->
+                    <div class="i2c-routing">
+                        <h4>Routage I2C Plug &amp; Play</h4>
+                        <p class="card-hint">Assignez chaque module à son bus physique (I2C_0 = Wire, I2C_1 = Wire1) et à son adresse I2C, choisie parmi celles découvertes par le scan. Enregistré en NVS puis appliqué au redémarrage — le routage ne change jamais à chaud : le bus du PCA9685 porte les sorties PWM 100 Hz. Deux modules ne peuvent pas partager le même bus à la même adresse.</p>
+                        <table class="i2c-scan-table">
+                            <thead>
+                                <tr>
+                                    <th>Module</th>
+                                    <th>Adresse</th>
+                                    <th>Bus assigné</th>
+                                </tr>
+                            </thead>
+                            <tbody id="i2c-routing-tbody"></tbody>
+                        </table>
+                        <p class="card-hint i2c-routing-warning" id="i2c-routing-warning" style="display:none"></p>
+                        <button id="btn-save-i2c-routing" class="btn btn-primary">
+                            <span id="i2c-routing-spinner" class="btn-spinner" style="display:none"></span>
+                            Enregistrer le routage I2C
+                        </button>
+                    </div>
+                </details>
                 <!-- Mise à jour OTA (micrologiciel + fichiers Web) -->
-                <div class="card">
-                    <h3>Mise à jour OTA</h3>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Mise à jour OTA</h3></summary>
                     <p class="card-hint">Téléversement sans câble USB — propulsion neutralisée pendant l'écriture, redémarrage automatique à la fin.</p>
                     <div class="settings-grid">
                         <label>Cible
@@ -620,34 +713,49 @@
                         <div><strong>Firmware</strong> — <code>pio run</code> → <code>.pio/build/esp32-s3-devkitc-1/firmware.bin</code></div>
                         <div><strong>Fichiers Web</strong> — <code>pio run -t buildfs</code> → <code>.pio/build/esp32-s3-devkitc-1/littlefs.bin</code></div>
                     </div>
-                </div>
+                </details>
                 <!-- PID -->
-                <div class="settings-grid">
-                    <div class="card">
-                        <h3>PID Roll</h3>
-                        <label>Kp <input type="number" id="pid-r-kp" step="0.01" value="2.0"></label>
-                        <label>Ki <input type="number" id="pid-r-ki" step="0.01" value="0.05"></label>
-                        <label>Kd <input type="number" id="pid-r-kd" step="0.01" value="0.5"></label>
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>PID &amp; Watchdog Série</h3></summary>
+                    <div class="settings-grid">
+                        <div class="card">
+                            <h3>PID Roll</h3>
+                            <label>Kp <input type="number" id="pid-r-kp" step="0.01" value="2.0"></label>
+                            <label>Ki <input type="number" id="pid-r-ki" step="0.01" value="0.05"></label>
+                            <label>Kd <input type="number" id="pid-r-kd" step="0.01" value="0.5"></label>
+                        </div>
+                        <div class="card">
+                            <h3>PID Pitch</h3>
+                            <label>Kp <input type="number" id="pid-p-kp" step="0.01" value="2.0"></label>
+                            <label>Ki <input type="number" id="pid-p-ki" step="0.01" value="0.05"></label>
+                            <label>Kd <input type="number" id="pid-p-kd" step="0.01" value="0.5"></label>
+                        </div>
+                        <div class="card">
+                            <h3>PID Profondeur</h3>
+                            <label>Kp <input type="number" id="pid-d-kp" step="0.01" value="3.0"></label>
+                            <label>Ki <input type="number" id="pid-d-ki" step="0.01" value="0.1"></label>
+                            <label>Kd <input type="number" id="pid-d-kd" step="0.01" value="1.0"></label>
+                        </div>
+                        <div class="card">
+                            <h3>Watchdog Série</h3>
+                            <label>Timeout (ms) <input type="number" id="wdg-timeout" step="50" min="100" value="500"></label>
+                        </div>
                     </div>
-                    <div class="card">
-                        <h3>PID Pitch</h3>
-                        <label>Kp <input type="number" id="pid-p-kp" step="0.01" value="2.0"></label>
-                        <label>Ki <input type="number" id="pid-p-ki" step="0.01" value="0.05"></label>
-                        <label>Kd <input type="number" id="pid-p-kd" step="0.01" value="0.5"></label>
+                    <div class="settings-actions">
+                        <button id="btn-save-pid" class="btn btn-success">Sauvegarder les paramètres</button>
                     </div>
-                    <div class="card">
-                        <h3>PID Profondeur</h3>
-                        <label>Kp <input type="number" id="pid-d-kp" step="0.01" value="3.0"></label>
-                        <label>Ki <input type="number" id="pid-d-ki" step="0.01" value="0.1"></label>
-                        <label>Kd <input type="number" id="pid-d-kd" step="0.01" value="1.0"></label>
-                    </div>
-                    <div class="card">
-                        <h3>Watchdog Série</h3>
-                        <label>Timeout (ms) <input type="number" id="wdg-timeout" step="50" min="100" value="500"></label>
-                    </div>
-                </div>
-                <div class="settings-actions">
-                    <button id="btn-save-pid" class="btn btn-success">Sauvegarder les paramètres</button>
+                </details>
+
+                <!-- Simulateur de Test Virtuel (établi) : lanceur en bas de la page
+                     Paramètres — le panneau latéral s'ouvre en surimpression et
+                     conserve son état pendant la navigation SPA. Masqué sur
+                     natel/GSM (voir style.css, media query 768 px). -->
+                <div class="card sim-launch-card">
+                    <h3>Simulateur de Test Virtuel</h3>
+                    <p class="card-hint">Injection de fausses valeurs capteurs pour tester les
+                        coupures de sécurité sur l'établi (seuils ACS770, tensions batteries,
+                        blocage moteurs). Disponible sur grand écran uniquement.</p>
+                    <button id="btn-sim-open" class="btn btn-primary" type="button">Ouvrir le simulateur</button>
                 </div>
             </div>
         </div>
@@ -729,15 +837,15 @@
                         BNO085 lorsqu'ils partagent le même bus — d'où la séparation physique.
                         Chaque bus doit avoir ses propres résistances de pull-up (4,7 kΩ vers 3V3).</p>
 
-                    <h4 id="wiring-bus1-title">Bus n°1 — Wire (GPIO 10 / GPIO 11) : BNO085 + INA226 ×3</h4>
+                    <h4 id="wiring-bus1-title">Bus n°1 — Wire (GPIO 10 / GPIO 11) : BNO085 + INA3221 + INA226 ×2</h4>
                     <div class="wiring-diagram">
                         <pre class="wiring-ascii" id="wiring-diagram-bus1">
  GPIO 10 (SDA) ──┬─────────┬─────────┬─────────┬───[4,7 kΩ]── 3V3
                  │         │         │         │
-              ┌──┴───┐  ┌──┴───┐  ┌──┴───┐  ┌──┴───┐
-              │BNO085│  │INA226│  │INA226│  │INA226│
-              │ 0x4A │  │ 0x41 │  │ 0x44 │  │ 0x45 │
-              └──┬───┘  └──┬───┘  └──┬───┘  └──┬───┘
+              ┌──┴────┐ ┌──┴────┐ ┌──┴────┐ ┌──┴────┐
+              │ BNO085│ │INA3221│ │INA226 │ │INA226 │
+              │ 0x4A  │ │ 0x40  │ │ 0x44  │ │ 0x45  │
+              └──┬────┘ └──┬────┘ └──┬────┘ └──┬────┘
                  │         │         │         │
  GPIO 11 (SCL) ──┴─────────┴─────────┴─────────┴───[4,7 kΩ]── 3V3
 
@@ -764,10 +872,10 @@
                     <table class="wiring-table wiring-table-pins">
                         <thead><tr><th>Signal</th><th>Broche ESP32-S3</th><th>Description</th></tr></thead>
                         <tbody>
-                            <tr><td class="pin-sda">SDA (bus n°1)</td><td id="pin-b1-sda">GPIO 10</td><td>Données I2C — BNO085 + INA226 ×3</td></tr>
-                            <tr><td class="pin-scl">SCL (bus n°1)</td><td id="pin-b1-scl">GPIO 11</td><td>Horloge I2C — BNO085 + INA226 ×3</td></tr>
-                            <tr><td class="pin-sda">SDA (bus n°2)</td><td id="pin-b2-sda">GPIO 6</td><td>Données I2C — MS5837 + PCA9685</td></tr>
-                            <tr><td class="pin-scl">SCL (bus n°2)</td><td id="pin-b2-scl">GPIO 7</td><td>Horloge I2C — MS5837 + PCA9685</td></tr>
+                            <tr><td class="pin-sda">SDA (bus n°1)</td><td id="pin-b1-sda">GPIO 10</td><td>Données I2C — <span class="bus-mods" data-bus="1">BNO085 + INA3221 + INA226 ×2</span></td></tr>
+                            <tr><td class="pin-scl">SCL (bus n°1)</td><td id="pin-b1-scl">GPIO 11</td><td>Horloge I2C — <span class="bus-mods" data-bus="1">BNO085 + INA3221 + INA226 ×2</span></td></tr>
+                            <tr><td class="pin-sda">SDA (bus n°2)</td><td id="pin-b2-sda">GPIO 6</td><td>Données I2C — <span class="bus-mods" data-bus="2">MS5837 + PCA9685</span></td></tr>
+                            <tr><td class="pin-scl">SCL (bus n°2)</td><td id="pin-b2-scl">GPIO 7</td><td>Horloge I2C — <span class="bus-mods" data-bus="2">MS5837 + PCA9685</span></td></tr>
                             <tr><td class="pin-3v3">3V3</td><td>3V3</td><td>Alimentation logique capteurs</td></tr>
                             <tr><td class="pin-gnd">GND</td><td>GND</td><td>Masse commune</td></tr>
                         </tbody>
@@ -777,12 +885,12 @@
                     <table class="wiring-table wiring-table-i2c">
                         <thead><tr><th>Module</th><th>Bus I2C</th><th>Adresse I2C</th><th>Fonction</th><th>Remarque</th></tr></thead>
                         <tbody>
-                            <tr><td>BNO085</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x4A</td><td>IMU 9-DOF (fusion inertielle)</td><td>Quaternions natifs — bus dédié</td></tr>
-                            <tr><td>INA226 #1</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x41</td><td>Wattmètre RPi (V + I)</td><td>Tension et courant carte RPi</td></tr>
-                            <tr><td>INA226 #2</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x44</td><td>Wattmètre Auxiliaire</td><td>Éclairage, capteurs, etc.</td></tr>
-                            <tr><td>INA226 #3</td><td class="mod-bus1">n°1 (GPIO 10/11)</td><td>0x45</td><td>Wattmètre Propulsion</td><td>Courant moteurs + ESC</td></tr>
-                            <tr><td>MS5803 / MS5837</td><td class="mod-bus2">n°2 (GPIO 6/7)</td><td>0x76</td><td>Pression / Profondeur</td><td>Résolution 0.01 mbar — séparé du BNO085 (incompatibilité bus)</td></tr>
-                            <tr><td>PCA9685</td><td class="mod-bus2">n°2 (GPIO 6/7)</td><td>0x40</td><td>Contrôleur PWM 16 canaux</td><td>50 Hz, ESC/Servos/Gradateurs</td></tr>
+                            <tr><td>BNO085</td><td class="mod-bus" data-module="bno085">n°1 (GPIO 10/11)</td><td class="mod-addr" data-module="bno085">0x4A</td><td>IMU 9-DOF (fusion inertielle)</td><td>Quaternions natifs — bus dédié</td></tr>
+                            <tr><td>INA3221</td><td class="mod-bus" data-module="ina3221">n°1 (GPIO 10/11)</td><td class="mod-addr" data-module="ina3221">0x40</td><td>Triple mesure énergie propulsion</td><td>Ch1 : V_BAT — Ch2/3 : courants ACS770 (propulseurs H/V)</td></tr>
+                            <tr><td>INA226 #2</td><td class="mod-bus" data-module="ina226_2">n°1 (GPIO 10/11)</td><td class="mod-addr" data-module="ina226_2">0x44</td><td>Wattmètre Électronique de commande</td><td>Batterie 2 — carte de commande &amp; capteurs</td></tr>
+                            <tr><td>INA226 #3</td><td class="mod-bus" data-module="ina226_3">n°1 (GPIO 10/11)</td><td class="mod-addr" data-module="ina226_3">0x45</td><td>Wattmètre Projecteur LED</td><td>Batterie 2 — éclairage (projecteur)</td></tr>
+                            <tr><td>MS5803 / MS5837</td><td class="mod-bus" data-module="ms5803">n°2 (GPIO 6/7)</td><td class="mod-addr" data-module="ms5803">0x76</td><td>Pression / Profondeur</td><td>Résolution 0.01 mbar — séparé du BNO085 (incompatibilité bus)</td></tr>
+                            <tr><td>PCA9685</td><td class="mod-bus" data-module="pca9685">n°2 (GPIO 6/7)</td><td class="mod-addr" data-module="pca9685">0x40</td><td>Contrôleur PWM 16 canaux</td><td>50 Hz, ESC/Servos/Gradateurs</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -791,10 +899,81 @@
         </div>
     </section>
 
+    <!-- Panneau latéral off-canvas : Simulateur de Test Virtuel (établi).
+         Placé HORS des sections SPA : son état d'ouverture/fermeture persiste donc
+         naturellement lors de la navigation entre onglets. Masqué intégralement
+         sur natel/GSM (voir style.css, media query 768 px). -->
+    <aside id="sim-panel" class="sim-panel" aria-hidden="true">
+        <!-- Poignée de redimensionnement (bord gauche) : glisser à la souris
+             ou au doigt pour régler la largeur, mémorisée par le navigateur. -->
+        <div class="sim-resize-handle" id="sim-resize-handle"
+             role="separator" aria-orientation="vertical"
+             title="Glisser pour régler la largeur"></div>
+        <div class="sim-panel-header">
+            <h3>Simulateur de Test Virtuel</h3>
+            <button id="btn-sim-close" class="sim-close-btn" type="button"
+                    aria-label="Fermer le panneau" title="Fermer">✕</button>
+        </div>
+        <div class="sim-panel-body">
+            <p class="card-hint">Injecte de fausses valeurs capteurs (INA3221/INA226) pour tester
+                les coupures de sécurité sur l'établi. État volatile : tout redémarrage du
+                firmware repart simulation inactive.</p>
+
+            <div class="sim-master-row">
+                <label class="dryrun-switch">
+                    <input type="checkbox" id="sim-active">
+                    <span class="dryrun-slider"></span>
+                </label>
+                <span class="sim-master-label">Activer la simulation capteurs</span>
+            </div>
+
+            <div class="sim-group-title">Tensions batteries</div>
+            <div class="sim-sl-row">
+                <span class="sim-sl-label">Batterie 1 — Propulsion</span>
+                <span class="sim-sl-value" id="sim-vbat1-val">16.80 V</span>
+            </div>
+            <input type="range" id="sim-vbat1" class="sim-slider" min="0" max="26" step="0.1" value="16.8">
+            <div class="sim-sl-row">
+                <span class="sim-sl-label">Batterie 2 — Électronique de commande</span>
+                <span class="sim-sl-value" id="sim-vbat2-val">12.00 V</span>
+            </div>
+            <input type="range" id="sim-vbat2" class="sim-slider" min="0" max="30" step="0.1" value="12">
+
+            <div class="sim-group-title">Courants ACS770 (jusqu'à 80 A — seuil de coupure)</div>
+            <div class="sim-sl-row">
+                <span class="sim-sl-label">Banc horizontal M1-M4</span>
+                <span class="sim-sl-value" id="sim-curh-val">0.0 A</span>
+            </div>
+            <input type="range" id="sim-curh" class="sim-slider" min="0" max="80" step="0.5" value="0">
+            <div class="sim-sl-row">
+                <span class="sim-sl-label">Banc vertical M5-M8</span>
+                <span class="sim-sl-value" id="sim-curv-val">0.0 A</span>
+            </div>
+            <input type="range" id="sim-curv" class="sim-slider" min="0" max="80" step="0.5" value="0">
+
+            <div class="sim-group-title">Blocage moteurs simulé</div>
+            <div class="sim-stall-grid">
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m1" data-motor="1"><span>M1</span></label>
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m2" data-motor="2"><span>M2</span></label>
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m3" data-motor="3"><span>M3</span></label>
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m4" data-motor="4"><span>M4</span></label>
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m5" data-motor="5"><span>M5</span></label>
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m6" data-motor="6"><span>M6</span></label>
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m7" data-motor="7"><span>M7</span></label>
+                <label class="sim-stall-item"><input type="checkbox" id="sim-m8" data-motor="8"><span>M8</span></label>
+            </div>
+            <p class="card-hint">Un moteur coché « bloqué » fait circuler le courant du slider de
+                son banc tant qu'il n'est pas isolé ; une fois le coupable coupé par
+                l'identification, le courant retombe à 0 A (comme un vrai moteur).</p>
+
+            <div class="sim-status" id="sim-status">Simulation inactive — capteurs réels</div>
+        </div>
+    </aside>
+
     <!-- Pied de page global : version Git réelle du firmware (renseignée par app.js
          depuis /api/system/status) + mentions auteur / licence -->
     <footer class="app-footer">
-        <span>BOB-CONTROL <span id="app-version">v1.0.1</span></span>
+        <span>BOB-CONTROL <span id="app-version">v1.5.0</span></span>
         <span aria-hidden="true"> | </span>
         <span>Auteur : Dero Didier</span>
         <span aria-hidden="true"> | </span>

@@ -3,12 +3,13 @@
  * @brief Implémentation du contrôleur de vol BOB-CONTROL (PID + mixage + priorité).
  *
  * Boucle de contrôle exécutée depuis vTaskControl à 100 Hz sur Core 1.
- * Applique les corrections PID selon le mode actif sur les 8 moteurs
- * de propulsion (M1-M8), avec clamp 1000-2000 µs après somme totale.
+ * Les assistances (masque MODE_BIT_*, superposables) appliquent leurs
+ * corrections PID sur les 8 moteurs de propulsion (M1-M8), avec clamp
+ * 1000-2000 µs après somme totale. Le retour surface est prioritaire.
  *
  * @author Didier Dero
- * @version 1.0.0
- * @date Août 2026
+ * @version 1.1.0
+ * @date Septembre 2026
  */
 
 #include "flight_controller.h"
@@ -30,6 +31,9 @@ FlightController::FlightController()
     , _rpiMaster(false)
     , _lastRPi5FrameTime(0)
     , _altTarget(0.0f)
+    , _depthHoldValid(false)
+    , _yawSetpoint(0.0f)
+    , _yawSetpointValid(false)
 {
 }
 
@@ -44,6 +48,9 @@ void FlightController::begin(AutopilotConfig* cfg, SemaphoreHandle_t mutex) {
     _rpiMaster  = false;
     _lastRPi5FrameTime = 0;
     _altTarget = 0.0f;
+    _depthHoldValid = false;
+    _yawSetpoint = 0.0f;
+    _yawSetpointValid = false;
 
     resetPID();
     Serial.println("[FLIGHT] Contrôleur de vol initialisé — mode PASSIF");
@@ -54,24 +61,52 @@ void FlightController::begin(AutopilotConfig* cfg, SemaphoreHandle_t mutex) {
  * ========================================================================= */
 
 void FlightController::setMode(uint8_t mode) {
-    if (mode > MODE_AUTO_FULL) mode = MODE_PASSIF;
+    /* Masque de bits : ignorer les bits inconnus (4-7) */
+    mode &= MODE_MASK_ALL;
 
     if (mode != _activeMode) {
         resetPID();
         _activeMode = mode;
 
-        const char* label;
-        switch (mode) {
-            case MODE_AUTO_ROULIS: label = "AUTO_ROULIS+TANGAGE"; break;
-            case MODE_AUTO_FULL:   label = "AUTO_FULL";   break;
-            default:               label = "PASSIF";       break;
+        /* Libellé construit à partir des bits actifs (assistances superposables) */
+        String label;
+        if (mode == MODE_PASSIF) {
+            label = "PASSIF";
+        } else {
+            if (mode & MODE_BIT_RT)      label += "R/T ";
+            if (mode & MODE_BIT_DEPTH)   label += "PROFONDEUR ";
+            if (mode & MODE_BIT_CAP)     label += "CAP ";
+            if (mode & MODE_BIT_SURFACE) label += "SURFACE ";
+            label.trim();
         }
-        Serial.println("[FLIGHT] Mode changé → " + String(label));
+        Serial.println("[FLIGHT] Mode changé → 0x" + String(mode, HEX) + " (" + label + ")");
     }
 }
 
 uint8_t FlightController::getActiveMode() const {
     return _activeMode;
+}
+
+/* =========================================================================
+ * ÉTAT RÉEL DES ASSERVISSEMENTS (bits status de la télémétrie)
+ * ========================================================================= */
+
+bool FlightController::isRollPitchActive() const {
+    /* Suspendu tant que le retour surface est actif */
+    return (_activeMode & MODE_BIT_RT) != 0 && (_activeMode & MODE_BIT_SURFACE) == 0;
+}
+
+bool FlightController::isDepthHoldActive() const {
+    /* Suspendu tant que le retour surface est actif */
+    return (_activeMode & MODE_BIT_DEPTH) != 0 && (_activeMode & MODE_BIT_SURFACE) == 0;
+}
+
+bool FlightController::isCapHoldActive() const {
+    return (_activeMode & MODE_BIT_CAP) != 0;
+}
+
+bool FlightController::isSurfaceReturnActive() const {
+    return (_activeMode & MODE_BIT_SURFACE) != 0;
 }
 
 /* =========================================================================
@@ -91,10 +126,8 @@ void FlightController::updateFromRPi5(uint8_t rpiMode) {
         Serial.println("[FLIGHT] Maître → RPi 5");
     }
 
-    /* Appliquer le mode dicté par le RPi 5 */
-    if (rpiMode <= MODE_AUTO_FULL) {
-        setMode(rpiMode);
-    }
+    /* Appliquer le masque d'assistances dicté par le RPi 5 (bits 4-7 ignorés) */
+    setMode(rpiMode);
 }
 
 bool FlightController::setModeFromWeb(uint8_t mode) {
@@ -124,6 +157,11 @@ void FlightController::_checkRPi5Timeout() {
  * ========================================================================= */
 
 void FlightController::resetPID() {
+    /* Invalider les captures d'activation : la prochaine itération de update()
+     * recapturera la profondeur / le cap alors courants. */
+    _depthHoldValid = false;
+    _yawSetpointValid = false;
+
     if (!_config) return;
 
     if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -141,12 +179,16 @@ void FlightController::resetPID() {
  * ========================================================================= */
 
 /**
- * @brief Applique les corrections PID sur le buffer PWM selon le mode actif.
+ * @brief Applique les corrections PID des assistances actives (superposables).
  *
  * IMPORTANT : le clamp 1000-2000 µs est appliqué UNE SEULE FOIS à la fin,
  * après la somme de TOUTES les corrections (Roll + Pitch + Yaw + Altitude).
  * Cela évite la saturation prématurée d'un axe qui empêcherait les autres
  * corrections de s'exprimer.
+ *
+ * Priorité : le retour surface (MODE_BIT_SURFACE) suspend Roll/Pitch et la
+ * tenue de profondeur, et force les verticaux M5-M8 vers la surface ;
+ * l'Auto Cap reste indépendant (voie horizontale M1-M4).
  *
  * Convention des moteurs :
  *   M1 (idx 0) = Av-D horizontal    M5 (idx 4) = Av-D vertical
@@ -173,36 +215,41 @@ void FlightController::update(const IMUData& imu, const PressureData& press,
         out[i] = (float)pwm[i];
     }
 
-    /* ---- PID Roll (cible = 0° → roulis à plat) ---- */
-    float rollError = 0.0f - imu.euler[0];
-    float pidRoll = pidCompute(_config->roll, rollError, dt);
+    /* ---- Décomposition du masque d'assistances superposables ---- */
+    const uint8_t mode = _activeMode;
+    const bool surfaceReturn = (mode & MODE_BIT_SURFACE) != 0;
 
-    /* Mixage Roll sur moteurs verticaux M5-M8 :
-     * Roll positif (penche à droite) → augmenter côté droit, diminuer côté gauche */
-    out[4] += pidRoll;   /* M5 Av-D + */
-    out[5] += pidRoll;   /* M6 Ar-D + */
-    out[6] -= pidRoll;   /* M7 Ar-G - */
-    out[7] -= pidRoll;   /* M8 Av-G - */
+    /* ---- PID Roll + Pitch (bit MODE_BIT_RT — suspendu par le retour surface) ---- */
+    if (!surfaceReturn && (mode & MODE_BIT_RT)) {
+        /* PID Roll (cible = 0° → roulis à plat) */
+        float rollError = 0.0f - imu.euler[0];
+        float pidRoll = pidCompute(_config->roll, rollError, dt);
 
-    /* ---- PID Pitch (cible = 0° → assiette horizontale) ----
-     * Actif dans AUTO_ROULIS (roulis + tangage) ET AUTO_FULL. */
-    float pitchError = 0.0f - imu.euler[1];
-    float pidPitch = pidCompute(_config->pitch, pitchError, dt);
+        /* Mixage Roll sur moteurs verticaux M5-M8 :
+         * Roll positif (penche à droite) → augmenter côté droit, diminuer côté gauche */
+        out[4] += pidRoll;   /* M5 Av-D + */
+        out[5] += pidRoll;   /* M6 Ar-D + */
+        out[6] -= pidRoll;   /* M7 Ar-G - */
+        out[7] -= pidRoll;   /* M8 Av-G - */
 
-    /* Mixage Pitch sur moteurs verticaux :
-     * Pitch positif (nez en haut) → pousser arrière vers le bas, avant vers le haut */
-    out[4] -= pidPitch;   /* M5 Av-D : nez monte → moins de poussée avant */
-    out[5] += pidPitch;   /* M6 Ar-D : arrière descend */
-    out[6] += pidPitch;   /* M7 Ar-G : arrière descend */
-    out[7] -= pidPitch;   /* M8 Av-G : nez monte */
+        /* PID Pitch (cible = 0° → assiette horizontale) */
+        float pitchError = 0.0f - imu.euler[1];
+        float pidPitch = pidCompute(_config->pitch, pitchError, dt);
 
-    if (_activeMode == MODE_AUTO_FULL) {
-        /* ---- PID Yaw (cible = Yaw actuel → maintien du cap) ---- */
-        static float _yawSetpoint = 0.0f;
-        static bool _yawSetpointInit = false;
-        if (!_yawSetpointInit) {
+        /* Mixage Pitch sur moteurs verticaux :
+         * Pitch positif (nez en haut) → pousser arrière vers le bas, avant vers le haut */
+        out[4] -= pidPitch;   /* M5 Av-D : nez monte → moins de poussée avant */
+        out[5] += pidPitch;   /* M6 Ar-D : arrière descend */
+        out[6] += pidPitch;   /* M7 Ar-G : arrière descend */
+        out[7] -= pidPitch;   /* M8 Av-G : nez monte */
+    }
+
+    /* ---- PID Yaw / Auto Cap (bit MODE_BIT_CAP — indépendant du retour surface) ---- */
+    if (mode & MODE_BIT_CAP) {
+        /* Capture du cap de consigne à l'activation de la boucle (invalidée par resetPID) */
+        if (!_yawSetpointValid) {
             _yawSetpoint = imu.euler[2];
-            _yawSetpointInit = true;
+            _yawSetpointValid = true;
         }
         float yawError = _yawSetpoint - imu.euler[2];
         /* Gérer le wrap-around ±180° */
@@ -221,9 +268,17 @@ void FlightController::update(const IMUData& imu, const PressureData& press,
         out[1] -= pidYaw;   /* M2 Ar-D */
         out[2] += pidYaw;   /* M3 Ar-G */
         out[3] += pidYaw;   /* M4 Av-G */
+    }
 
-        /* ---- PID Altitude (maintien de l'altitude cible) ----
-         * Erreur > 0 (sous la cible) → poussée verticale vers le haut. */
+    /* ---- PID Altitude / Tenue de profondeur (bit MODE_BIT_DEPTH — suspendu si surface) ---- */
+    if (!surfaceReturn && (mode & MODE_BIT_DEPTH)) {
+        /* Capture de la profondeur COURANTE à l'activation (invalidée par resetPID) */
+        if (!_depthHoldValid) {
+            _altTarget = press.altitude_m;
+            _depthHoldValid = true;
+        }
+
+        /* Erreur > 0 (sous la cible) → poussée verticale vers le haut. */
         float altError = _altTarget - press.altitude_m;
         float pidAlt = pidCompute(_config->alt, altError, dt);
 
@@ -232,6 +287,15 @@ void FlightController::update(const IMUData& imu, const PressureData& press,
         out[5] += pidAlt;   /* M6 */
         out[6] += pidAlt;   /* M7 */
         out[7] += pidAlt;   /* M8 */
+    }
+
+    /* ---- Retour surface PRIORITAIRE (bit MODE_BIT_SURFACE) ----
+     * Les verticaux sont forcés à leur position de remontée d'urgence ;
+     * un éventuel Auto Cap conserve la voie horizontale M1-M4. */
+    if (surfaceReturn) {
+        for (uint8_t i = VERTICAL_MOTOR_OFFSET; i < NUM_MOTORS; i++) {
+            out[i] = (float)MOTOR_EMERGENCY_SURFACE_US;
+        }
     }
 
     /* ---- CLAMP FINAL après somme de toutes les corrections ---- */

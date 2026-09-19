@@ -2,20 +2,30 @@
  * @file sensor_driver.h
  * @brief Pilote I2C multi-capteurs avec abstraction HAL.
  *
- * Capteurs supportés :
+ * Capteurs supportés (adresses PAR DÉFAUT — chacune est routable en NVS,
+ * v1.3.0 : bus ET adresse, voir i2c_router.h) :
  *   - IMU : BNO085 (0x4A) via bibliothèque Adafruit BNO08x (protocole SH-2)
  *   - Baro : MS5803-30BA / MS5837 (0x76)
- *   - Wattmètres : 3× INA226 (0x41, 0x44, 0x45)
- *   - PWM : PCA9685 (0x40)
+ *   - Wattmètres : INA3221 triple canal (0x40 — V_BAT + 2× ACS770 40 mV/A)
+ *     et 2× INA226 résiduels (0x44, 0x45) — v1.1.0
+ *   - PWM : PCA9685 (0x40 — bus routé, partagé avec la tâche de contrôle)
  *
  * Scanner dynamique I2C au boot, forçage à zéro si capteur absent.
  *
  * Deux bus I2C matériels, broches NVS-configurables : n°1 (Wire, GPIO 10/11
- * par défaut — BNO085 + INA226) et n°2 (Wire1, GPIO 6/7 par défaut —
- * MS5837 + PCA9685, partagé avec la tâche de contrôle).
+ * par défaut) et n°2 (Wire1, GPIO 6/7 par défaut, partagé avec la tâche de
+ * contrôle quand le PCA9685 y est routé).
+ *
+ * ROUTAGE DYNAMIQUE PLUG & PLAY (v1.3.0) : quel module vit sur quel bus, à
+ * quelle adresse, n'est plus codé en dur — g_i2cRouter (i2c_router.h) charge
+ * la carte NVS au début de begin() et chaque initialisation/lecture reçoit
+ * le pointeur TwoWire de SON bus ET son adresse routée. Le verrou _inaBusLock
+ * suit le bus routé de l'INA3221 (partagé avec la routine « Check
+ * Propulseurs ») ; le bus du PCA9685 n'est JAMAIS bit-bangé ni reseté en vol
+ * (sorties PWM 100 Hz).
  *
  * @author Didier Dero
- * @version 2.1.0
+ * @version 2.3.0
  * @date Septembre 2026
  */
 
@@ -27,8 +37,9 @@
 #include <vector>
 #include "config.h"
 
-/* Forward declaration de la bibliothèque BNO08x */
+/* Forward declarations : bibliothèque BNO08x + bus I2C (routage dynamique) */
 class Adafruit_BNO08x;
+class TwoWire;
 
 /* =========================================================================
  * STRUCTURES DE DONNÉES CAPTEURS
@@ -47,10 +58,27 @@ struct IMUData {
     uint32_t grv_reports; ///< Diagnostic : rapports Game Rotation Vector reçus depuis l'init
 };
 
-/** @brief Données de puissance des 3 wattmètres INA226 */
+/**
+ * @brief Données de puissance : INA3221 (3 canaux) + 2× INA226 résiduels.
+ *
+ * Double alimentation : batterie 1 « propulsion » supervisée par l'INA3221,
+ * batterie 2 « électronique de commande & éclairage » par les 2 INA226.
+ *
+ * Compatibilité binaire trame RPi 5 : l'UplinkFrame_t sérialise
+ * [V1,I1, V2,I2, V3,I3] en mV/mA — voltage[0]/current[0] portent le canal 1
+ * de l'INA3221 (V_BAT), [1]/[2] les canaux 2/3 (courants ACS770 horizontaux /
+ * verticaux), et [3]/[4] les INA226 n°2 (électronique de commande) et n°3
+ * (projecteur LED) de la batterie 2.
+ *
+ * Le canal 1 de l'INA3221 mesure la tension batterie : shunt1_mA reste 0
+ * (aucun shunt câblé sur ce canal).
+ */
 struct PowerData {
-    uint16_t voltage[3];    ///< Tension en mV pour chaque wattmètre
-    uint16_t current[3];    ///< Courant en mA pour chaque wattmètre
+    uint16_t voltage[5];    ///< Tension en mV : [INA3221 ch1..3, INA226 #2, #3]
+    uint32_t current[5];    ///< Courant en mA : [INA3221 ch1 (= 0), ACS770 H, ACS770 V,
+                            ///< INA226 #2, #3] — 32 bits : la plage ACS770-100U
+                            ///< (100 A) et le seuil moteur (80 A) dépassent les
+                            ///< 65,5 A représentables en uint16
 };
 
 /** @brief Données de pression, profondeur et altitude (MS5803) */
@@ -70,7 +98,8 @@ struct PressureData {
 struct SensorBankStatus {
     SensorStatus bno085;        ///< IMU BNO085
     SensorStatus ms5803;        ///< Baromètre MS5803-30BA / MS5837
-    SensorStatus ina226[3];     ///< 3× Wattmètres INA226
+    SensorStatus ina3221;       ///< Triple wattmètre INA3221 (v1.1.0 — ex INA226 n°1)
+    SensorStatus ina226[2];     ///< INA226 n°2 (électronique de commande) et n°3 (projecteur LED) — batterie 2
     SensorStatus pca9685;       ///< Contrôleur PWM PCA9685
 };
 
@@ -102,10 +131,13 @@ public:
      * @brief Initialise le bus I2C, scanne les capteurs et lance la tâche.
      *
      * Séquence :
+     * 0. Chargement de la carte de routage I2C (g_i2cRouter.load(), NVS)
      * 1. Création du mutex FreeRTOS
-     * 2. Initialisation du bus I2C (SDA, SCL, 400 kHz)
-     * 3. Scanner I2C pour détecter les puces présentes
-     * 4. Initialisation BNO085 et MS5803
+     * 2. Initialisation des deux bus I2C (SDA/SCL NVS, 400 kHz)
+     * 3. Scan I2C complet des deux bus (résultat publié pour la carte
+     *    « Routage I2C Plug & Play » — GET /api/i2c/routing)
+     * 4. Initialisation des capteurs sur leurs bus ET adresses ROUTÉS
+     *    (BNO085, MS5803, INA3221, INA226 — &Wire/&Wire1 + adresse NVS)
      * 5. Lancement de la tâche FreeRTOS d'acquisition sur Core 1
      */
     void begin();
@@ -183,6 +215,28 @@ public:
      */
     bool isBNO085Stalled() const;
 
+    /**
+     * @brief Lecture directe d'un canal courant ACS770, hors cadence télémétrie.
+     *
+     * Utilisée par la routine « Check Propulseurs » du gestionnaire de
+     * sécurité moteurs (impulsion moteur pendant laquelle le courant doit
+     * être échantillonné immédiatement) : verrou _inaBusLock (bus routé de
+     * l'INA3221) partagé avec la tâche capteurs pour ne jamais croiser deux
+     * transactions I2C sur ce bus.
+     *
+     * Le signal ACS770 (tension absolue 0,5–4,5 V câblée sur IN−) est lu sur
+     * le registre de tension BUS du canal — jamais le registre shunt :
+     * I (A) = (V_bus_mV − 500) / 40.
+     *
+     * @param channel Indice PowerData du courant (config.h) :
+     *                MOTOR_CURRENT_CH_HORIZ (1) = horizontaux M1-M4 (canal 2
+     *                INA3221), MOTOR_CURRENT_CH_VERT (2) = verticaux M5-M8
+     *                (canal 3 INA3221).
+     * @return Courant ABSOLU en mA, ou une valeur négative si lecture
+     *         impossible (−4 : signal hors plage, capteur débranché).
+     */
+    int32_t readACS770CurrentmA(uint8_t channel);
+
     /* -----------------------------------------------------------------
      * DIAGNOSTIC I2C — SCAN & CONFIGURATION DYNAMIQUE DES BROCHES
      * ----------------------------------------------------------------- */
@@ -191,6 +245,15 @@ public:
      * @brief Scanne le bus I2C et retourne la liste des périphériques trouvés.
      */
     std::vector<I2CDeviceInfo> scanI2CBus();
+
+    /**
+     * @brief Dernier résultat de scan (copie sous mutex — ne relance AUCUN scan).
+     *
+     * Exposé par GET /api/i2c/routing (champ « scan ») : la table « Routage
+     * I2C Plug & Play » propose les adresses découvertes sans re-scanner à
+     * chaque chargement de page (v1.3.0).
+     */
+    std::vector<I2CDeviceInfo> getLastScan();
 
     /** @brief Retourne la broche SDA actuellement configurée */
     uint8_t getCurrentSDA() const { return _currentSDA; }
@@ -240,21 +303,20 @@ private:
     uint8_t _currentSCL;               ///< Broche SCL active (bus n°1)
     uint8_t _current2SDA;              ///< Broche SDA active (bus n°2 / Wire1)
     uint8_t _current2SCL;              ///< Broche SCL active (bus n°2 / Wire1)
-    void _i2cWrite(uint8_t addr, uint8_t reg, uint8_t val);
-    uint8_t _i2cRead8(uint8_t addr, uint8_t reg);
-    uint16_t _i2cRead16(uint8_t addr, uint8_t reg);
-    bool _i2cDevicePresent(uint8_t addr);
-
-    /* -- I2C n°2 bas niveau (Wire1 : MS5837 + PCA9685) -- */
-    void _i2c2Write(uint8_t addr, uint8_t b1, uint8_t b2);   ///< Écriture 2 octets (commande + valeur)
-    uint16_t _i2c2Read16(uint8_t addr, uint8_t reg);         ///< Lecture 16 bits (registre)
-    bool _i2c2DevicePresent(uint8_t addr);                   ///< Sonde de présence
+    /** @brief Broche SDA active d'un NUMÉRO de bus (1 ou 2) — bit-bang/reset */
+    uint8_t _sdaOf(uint8_t bus) const { return (bus == 2) ? _current2SDA : _currentSDA; }
+    /** @brief Broche SCL active d'un NUMÉRO de bus (1 ou 2) — bit-bang/reset */
+    uint8_t _sclOf(uint8_t bus) const { return (bus == 2) ? _current2SCL : _currentSCL; }
+    /* -- I2C bas niveau ROUTÉ (v1.2.0) : chaque appel désigne son bus par un
+     *    pointeur TwoWire* obtenu de g_i2cRouter.wireOf() — plus aucun port
+     *    codé en dur. Tous instrumentent le watchdog I2C global. -- */
+    void _i2cWrite(TwoWire* bus, uint8_t addr, uint8_t reg, uint8_t val);
+    uint16_t _i2cRead16(TwoWire* bus, uint8_t addr, uint8_t reg);
+    bool _i2cDevicePresent(TwoWire* bus, uint8_t addr);
+    void _i2cWrite2B(TwoWire* bus, uint8_t addr, uint8_t b1, uint8_t b2);  ///< Écriture 2 octets (commande + valeur — MS5803)
 
     /* -- BNO085 via bibliothèque Adafruit -- */
     Adafruit_BNO08x* _bno08x;          ///< Instance BNO08x (null si non initialisé)
-
-    /* -- Scanner I2C -- */
-    void _scanI2CBus();
 
     /* -- Requêtes bus de la tâche Web, exécutées par la tâche capteurs -- */
     void _processBusRequests();               ///< Exécute les requêtes scan en attente
@@ -263,6 +325,7 @@ private:
     /* -- Initialisation capteurs individuels -- */
     bool _initBNO085();
     bool _initMS5803();
+    bool _initINA3221();                      ///< Triple wattmètre (v1.1.0)
     bool _initINA226(uint8_t addr, uint8_t index);
 
     /* -- Lecture capteurs réels (HAL routage) -- */
@@ -271,11 +334,37 @@ private:
     void _readBNO085();
     bool _readMS5803(PressureData& out);   ///< Conversion ADC + compensation dans `out` ; true si lecture valide
     void _readINA226();
+    bool _readINA3221();                   ///< 3 canaux + conversion ACS770 (v1.1.0)
+
+    /**
+     * @brief Simulateur de test virtuel : courant injecté (mA) du banc ACS770.
+     *
+     * Applique la sémantique de simulator.h : courant du slider tant qu'un
+     * moteur « bloqué » coché du banc n'est pas isolé, 0 A sinon (l'isolement
+     * cumulatif de g_pwm pendant l'identification fait retomber le courant
+     * comme pour un vrai moteur bloqué). Aucun accès I2C.
+     *
+     * @param channel MOTOR_CURRENT_CH_HORIZ (1) ou MOTOR_CURRENT_CH_VERT (2).
+     */
+    int32_t _simBankCurrentMA(uint8_t channel);
 
     /* -- Supervision / auto-récupération BNO085 (sans broche INT) -- */
     void _recoverBNO085();              ///< Ré-init capteur puis bus I2C si nécessaire (hors mutex)
     void _bno085EmergencyRestart(const char* reason);  ///< Niveau 3 : neutre propulsion + esp_restart() (ne retourne pas)
-    void _resetI2CBus();                ///< Réinit logicielle propre du bus I2C (9 impulsions SCL)
+    /**
+     * @brief Réinit logicielle propre d'un bus I2C (9 impulsions SCL + STOP).
+     *
+     * @param bus Contrôleur à réarmer (Wire ou Wire1)
+     * @param sda Broche SDA active de CE bus (pour le bit-bang puis begin)
+     * @param scl Broche SCL active de CE bus
+     *
+     * INTERDIT en vol sur le bus du PCA9685 (sorties PWM 100 Hz de la tâche
+     * de contrôle) : les appelants runtime (_recoverI2CBus, _doScan) ne
+     * l'invoquent que sur le bus non-PWM ; au boot (boucle de tentatives
+     * BNO085), aucune tâche n'émet encore sur les bus — appel sûr même sur
+     * le bus routé du BNO085 s'il partage le contrôleur du PCA9685.
+     */
+    void _resetI2CBus(TwoWire& bus, uint8_t sda, uint8_t scl);
 
     /* -- Zéros en mode réel pour capteurs absents -- */
     void _zeroMissingSensors();
@@ -330,6 +419,12 @@ private:
     bool     _busHadSensors;            ///< Au moins un capteur vu au boot (arme le watchdog « bus mort »)
     bool _anySensorConnected() const;   ///< true si au moins un capteur est CONNECTED
     void _recoverI2CBus();              ///< Reset bus + réinitialisation de tous les capteurs présents
+
+    /* -- Verrou du bus ROUTÉ de l'INA3221 (lectures à la demande, hors
+     *    tâche capteurs) : série les lectures readACS770CurrentmA de la
+     *    routine « Check Propulseurs » avec les cycles de la tâche capteurs,
+     *    quel que soit le bus (Wire ou Wire1) où l'INA3221 est routé. -- */
+    SemaphoreHandle_t _inaBusLock;      ///< Verrou du bus de l'INA3221 (Check Propulseurs ↔ tâche capteurs)
 
     /* -- Tâche FreeRTOS -- */
     static void _taskEntry(void* param);

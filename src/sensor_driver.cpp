@@ -3,26 +3,40 @@
  * @brief Implémentation du pilote I2C multi-capteurs avec HAL.
  *
  * Capteurs supportés :
- *   - IMU : BNO085 (0x4A) via Adafruit BNO08x (protocole SH-2)
- *   - Baro : MS5803-30BA / MS5837 (0x76)
- *   - Wattmètres : 3× INA226 (0x41, 0x44, 0x45)
- *   - PWM : PCA9685 (0x40) — géré séparément
+ *   - IMU : BNO085 (déf. 0x4A) via Adafruit BNO08x (protocole SH-2)
+ *   - Baro : MS5803-30BA / MS5837 (déf. 0x76)
+ *   - Wattmètres : INA3221 triple canal (déf. 0x40 — V_BAT + 2× ACS770 40 mV/A)
+ *     et 2× INA226 résiduels (déf. 0x44, 0x45) — v1.1.0
+ *   - PWM : PCA9685 (déf. 0x40, bus n°2) — géré séparément
  *
- * Répartition sur les deux bus I2C matériels de l'ESP32-S3 :
- *   - Bus n°1 (Wire,  GPIO 10/11) : BNO085 + 3× INA226 — propriété
- *     exclusive de la tâche capteurs.
- *   - Bus n°2 (Wire1, GPIO 6/7)   : MS5837 + PCA9685 — partagé entre la
- *     tâche capteurs (pression 2 Hz) et la tâche de contrôle (PWM 100 Hz) ;
- *     transactions atomiques sérialisées par le verrou interne de Wire1.
- *     (Le MS5837 branché sur le bus n°1 perturbait les lectures SHTP du BNO085.)
+ * Répartition sur les deux bus I2C matériels de l'ESP32-S3 — ROUTAGE
+ * DYNAMIQUE PLUG & PLAY (v1.3.0) : chaque module est assigné à son BUS et à
+ * son ADRESSE par g_i2cRouter (NVS, page Paramètres) ; toutes les
+ * transactions du pilote utilisent ce couple routé et les valeurs ci-dessous
+ * ne sont que les DÉFAUTS de la topologie :
+ *   - Bus n°1 (Wire,  GPIO 10/11) : BNO085 + INA3221 + 2× INA226
+ *   - Bus n°2 (Wire1, GPIO 6/7)   : MS5837 + PCA9685
+ *
+ * Règles de sûreté appliquées au routage :
+ *   - Le bus du PCA9685 n'est JAMAIS bit-bangé ni reseté en vol (les sorties
+ *     PWM 100 Hz de la tâche de contrôle y vivent) — le watchdog et le scan
+ *     ne réinitialisent que le bus non-PWM.
+ *   - Le verrou _inaBusLock suit le bus ROUTÉ de l'INA3221 : la routine
+ *     « Check Propulseurs » ne croise jamais une transaction de la tâche
+ *     capteurs, quel que soit le bus.
+ *   - CONFLIT GÉNÉRALISÉ (v1.3.0) : deux modules routés sur le MÊME bus à la
+ *     MÊME adresse sont refusés par I2CRouter::save() et par l'API de
+ *     sauvegarde (historique : INA3221 0x40 / PCA9685 0x40 sur bus distincts).
  *
  * @author Didier Dero
- * @version 2.1.0
+ * @version 2.3.0
  */
 
 #include "sensor_driver.h"
 #include "config.h"
+#include "i2c_router.h"     /* g_i2cRouter : routage dynamique des bus (v1.2.0) */
 #include "pwm_controller.h"   /* g_pwm : neutralisation de sécurité (niveau 3) */
+#include "simulator.h"        /* g_sim : simulateur de test virtuel (établi) */
 #include <math.h>
 #include <Wire.h>
 #include <esp_system.h>       /* esp_restart() : redémarrage contrôlé (niveau 3) */
@@ -41,6 +55,7 @@ SensorDriver g_sensors;
 SensorDriver::SensorDriver()
     : _mutex(nullptr)
     , _bno08x(nullptr)
+    , _inaBusLock(nullptr)
 {
     memset(&_imu, 0, sizeof(_imu));
     memset(&_power, 0, sizeof(_power));
@@ -106,6 +121,12 @@ void SensorDriver::begin() {
     /* Créer le mutex */
     _mutex = xSemaphoreCreateMutex();
 
+    /* Carte de routage I2C Plug & Play (v1.2.0) : chargée AVANT toute sonde
+     * ou initialisation — chaque capteur sera attaché au bus routé
+     * (&Wire ou &Wire1). Premier démarrage / NVS vide → topologie par défaut
+     * (i2c_router.cpp), aucun démarrage impossible. */
+    g_i2cRouter.load();
+
     /* Charger les broches I2C des deux bus depuis NVS si disponibles
      * (bus n°1 : clés i2c_sda / i2c_scl — bus n°2 : clés i2c2_sda / i2c2_scl,
      * configurables depuis la page Paramètres de l'interface Web) */
@@ -123,7 +144,15 @@ void SensorDriver::begin() {
     Wire.setClock(I2C_FREQ_HZ);
     Wire.setTimeOut(I2C_TIMEOUT_MS);
 
-    /* Bus I2C n°2 (Wire1) : MS5837 + PCA9685, broches chargées depuis le NVS
+    /* Verrou du bus ROUTÉ de l'INA3221 (v1.1.0, généralisé v1.2.0) : la
+     * tâche capteurs reste propriétaire du bus, mais la routine « Check
+     * Propulseurs » (tâche dédiée, post-WiFi) doit lire les courants ACS770
+     * PENDANT les impulsions moteur — les deux se partagent CE bus par ce
+     * verrou, une transaction à la fois, jamais d'accès croisé (mémoire :
+     * bus effondré par concurrence). */
+    _inaBusLock = xSemaphoreCreateMutex();
+
+    /* Bus I2C n°2 (Wire1) : broches chargées depuis le NVS
      * ci-dessus (défauts GPIO 6/7). Configuré ICI, avant la création de la
      * tâche capteurs (fin de begin()) et celle de la tâche de contrôle
      * (main.cpp) : fréquence/timeout ne sont ensuite plus jamais modifiés
@@ -143,24 +172,33 @@ void SensorDriver::begin() {
                    + String(I2C_TIMEOUT_MS) + " ms)");
     Serial.println("[SENSORS] Bus I2C n°2 initialisé (SDA=" + String(_current2SDA)
                    + ", SCL=" + String(_current2SCL) + ", "
-                   + String(I2C_FREQ_HZ / 1000) + " kHz) — MS5837 + PCA9685");
+                   + String(I2C_FREQ_HZ / 1000) + " kHz) — modules selon la carte de routage ci-dessus");
 
-    /* Scanner le bus I2C pour détecter les puces présentes */
-    _scanI2CBus();
+    /* Scan complet des deux bus I2C (récupération + timeouts réduits) —
+     * remplace le scanner boot brut (v1.3.0) : _doScan publie son résultat
+     * (mutex) pour la carte « Routage I2C Plug & Play » (GET /api/i2c/routing). */
+    _doScan();
 
-    /* Mémoriser la présence du BNO085 : la tâche capteurs le supervisera en
-     * continu (auto-récupération) même après un effondrement du bus. */
-    _bno085Present = _i2cDevicePresent(BNO085_I2C_ADDR);
+    /* Mémoriser la présence du BNO085 (sondé sur SON bus ET son adresse
+     * ROUTÉS) : la tâche capteurs le supervisera en continu
+     * (auto-récupération) même après un effondrement du bus. */
+    _bno085Present = _i2cDevicePresent(g_i2cRouter.wireOf(I2C_DEV_BNO085),
+                                       g_i2cRouter.addrOf(I2C_DEV_BNO085));
+
+    /* Bus et broches du BNO085 (reset matériel des tentatives suivantes) */
+    const uint8_t imuBusNo = g_i2cRouter.busOf(I2C_DEV_BNO085);
 
     /* Initialisation IMU : BNO085 avec boucle de réessais. La 1re tentative est
      * DIRECTE (comme la version de référence qui fonctionnait : le scan I2C ne
      * perturbe pas le handshake SHTP de begin_I2C). Le reset matériel du bus
      * n'intervient qu'aux tentatives suivantes, si un essai a laissé le bus
-     * en erreur (NACK → ESP_ERR_INVALID_STATE). */
+     * en erreur (NACK → ESP_ERR_INVALID_STATE) — sur le bus ROUTÉ du capteur,
+     * opération sûre au boot (aucune tâche n'émet encore, même si ce bus
+     * héberge le PCA9685). */
     bool imu_ok = false;
     for (uint8_t attempt = 1; attempt <= BNO085_INIT_MAX_ATTEMPTS && !imu_ok; attempt++) {
         if (attempt > 1) {
-            _resetI2CBus();
+            _resetI2CBus(*g_i2cRouter.wireOfBus(imuBusNo), _sdaOf(imuBusNo), _sclOf(imuBusNo));
             delay(BNO085_INIT_RETRY_DELAY_MS);
         }
 
@@ -180,29 +218,41 @@ void SensorDriver::begin() {
         }
     }
     if (!imu_ok) {
-        Serial.println("[SENSORS] Aucune IMU détectée (BNO085 attendu à 0x4A) après "
+        Serial.println("[SENSORS] Aucune IMU détectée (BNO085 attendu à 0x"
+                       + String(g_i2cRouter.addrOf(I2C_DEV_BNO085), HEX) + ") après "
                        + String(BNO085_INIT_MAX_ATTEMPTS) + " tentatives");
     }
 
-    /* Initialisation baromètre : MS5837 sur le bus n°2 */
+    /* Initialisation baromètre : MS5837 sur son bus et son adresse routés */
     bool baro_ok = false;
-    if (_i2c2DevicePresent(MS5803_I2C_ADDR)) {
+    if (_i2cDevicePresent(g_i2cRouter.wireOf(I2C_DEV_MS5803),
+                          g_i2cRouter.addrOf(I2C_DEV_MS5803))) {
         if (_initMS5803()) baro_ok = true;
     }
     if (!baro_ok) {
-        Serial.println("[SENSORS] Aucun baromètre détecté (MS5803/MS5837 attendu à 0x76)");
+        Serial.println("[SENSORS] Aucun baromètre détecté (MS5803/MS5837 attendu à 0x"
+                       + String(g_i2cRouter.addrOf(I2C_DEV_MS5803), HEX) + ")");
     }
 
-    /* Initialisation INA226 */
-    const uint8_t ina_addrs[3] = {INA226_1_I2C_ADDR, INA226_2_I2C_ADDR, INA226_3_I2C_ADDR};
-    for (uint8_t i = 0; i < 3; i++) {
+    /* Initialisation triple wattmètre INA3221 (v1.1.0 — ex INA226 n°1) :
+     * canal 1 = tension batterie 1, canaux 2/3 = courants ACS770 horizontaux /
+     * verticaux. Puis les deux INA226 de la batterie 2 (électronique de
+     * commande, projecteur LED) — chacun sur SON adresse routée (v1.3.0). */
+    _initINA3221();
+    const uint8_t ina_addrs[2] = {g_i2cRouter.addrOf(I2C_DEV_INA226_2),
+                                  g_i2cRouter.addrOf(I2C_DEV_INA226_3)};
+    for (uint8_t i = 0; i < 2; i++) {
         _initINA226(ina_addrs[i], i);
     }
 
-    /* PCA9685 (bus n°2, partagé avec la tâche de contrôle) */
-    if (_i2c2DevicePresent(PCA9685_I2C_ADDR)) {
+    /* PCA9685 : sondé sur son bus ET son adresse routés — PWMController::begin()
+     * l'initialise juste après sur le MÊME bus (main.cpp : g_sensors.begin()
+     * précède g_pwm.begin(), les deux bus sont déjà configurés ici). */
+    if (_i2cDevicePresent(g_i2cRouter.wireOf(I2C_DEV_PCA9685),
+                          g_i2cRouter.addrOf(I2C_DEV_PCA9685))) {
         _status.pca9685 = SENSOR_CONNECTED;
-        Serial.println("[SENSORS] PCA9685 détecté (0x40, bus n°2)");
+        Serial.println("[SENSORS] PCA9685 détecté (0x" + String(g_i2cRouter.addrOf(I2C_DEV_PCA9685), HEX)
+                       + ", bus n°" + String(g_i2cRouter.busOf(I2C_DEV_PCA9685)) + ")");
     } else {
         _status.pca9685 = SENSOR_DISCONNECTED;
     }
@@ -211,9 +261,9 @@ void SensorDriver::begin() {
      * « bus mort » (tentative de réinit complète périodique si TOUT est perdu
      * ultérieurement — évite l'état silencieusement mort sans issue). */
     _busHadSensors = (imu_ok || baro_ok ||
+                      _status.ina3221 == SENSOR_CONNECTED ||
                       _status.ina226[0] == SENSOR_CONNECTED ||
-                      _status.ina226[1] == SENSOR_CONNECTED ||
-                      _status.ina226[2] == SENSOR_CONNECTED);
+                      _status.ina226[1] == SENSOR_CONNECTED);
 
     Serial.println("[SENSORS] Résumé : BNO085=" + String(imu_ok ? "OK" : "ABSENT")
                    + ", MS5803=" + String(baro_ok ? "OK" : "ABSENT"));
@@ -226,46 +276,60 @@ void SensorDriver::begin() {
 }
 
 /* =========================================================================
- * SCANNER I2C
+ * SCANNER I2C — identification par routage (voir _doScan / _scanOneBus)
  * ========================================================================= */
 
-void SensorDriver::_scanI2CBus() {
-    Serial.println("[SENSORS] === Scan I2C (bus n°1 + bus n°2) ===");
-    uint8_t count = 0;
-    for (uint8_t addr = 0x03; addr < 0x78; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            Serial.print("[SENSORS]   0x");
-            Serial.print(addr, HEX);
-            Serial.println(" trouvé (bus n°1)");
-            count++;
-        }
-    }
-    for (uint8_t addr = 0x03; addr < 0x78; addr++) {
-        Wire1.beginTransmission(addr);
-        if (Wire1.endTransmission() == 0) {
-            Serial.print("[SENSORS]   0x");
-            Serial.print(addr, HEX);
-            Serial.println(" trouvé (bus n°2)");
-            count++;
-        }
-    }
-    Serial.println("[SENSORS] " + String(count) + " périphérique(s) détecté(s)");
-}
-
 /**
- * @brief Identifie le composant probable à partir d'une adresse I2C.
+ * @brief Identifie le composant probable à partir d'une adresse I2C et du bus.
+ *
+ * La CARTE DE ROUTAGE arbitre (v1.3.0) : un module est reconnu quand
+ * l'adresse détectée est SON adresse routée sur SON bus routé — les six
+ * modules ayant des adresses librement assignables (choisies parmi celles
+ * découvertes par le scan), c'est le seul étiquetage fiable. Une adresse
+ * qui ne correspond à aucun routage retombe sur des heuristiques de plage
+ * (« non routé ») : un module fraîchement câblé apparaît ainsi dans le scan
+ * AVANT d'être assigné dans la table « Routage I2C Plug & Play ».
+ * Deux modules routés au même endroit (refusé par l'API de sauvegarde, mais
+ * possible via NVS éditée à la main) sont signalés tels quels.
  */
-static const char* _identifyI2CDevice(uint8_t addr) {
-    switch (addr) {
-        case 0x40: return "PCA9685 (Driver PWM 16 Ch)";
-        case 0x41: return "INA226 #1 (Wattmètre RPi)";
-        case 0x44: return "INA226 #2 (Wattmètre Aux)";
-        case 0x45: return "INA226 #3 (Wattmètre Moteurs)";
-        case 0x4A: return "BNO085 (IMU 9-DOF)";
-        case 0x76: return "MS5803-30BA / MS5837 (Pression)";
-        default:   return "Périphérique inconnu";
+static const char* _identifyI2CDevice(uint8_t addr, uint8_t bus) {
+    /* Buffer statique : les appelants (scan) recopient le nom immédiatement
+     * dans I2CDeviceInfo.name. */
+    static char conflictBuf[48];
+
+    uint8_t matches = 0;
+    I2CDeviceId last = I2C_DEV_COUNT;
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        const I2CDeviceId dev = (I2CDeviceId)d;
+        if (g_i2cRouter.addrOf(dev) == addr && g_i2cRouter.busOf(dev) == bus) {
+            matches++;
+            last = dev;
+        }
     }
+    if (matches == 1) {
+        return I2CRouter::nameOf(last);   /* module routé à cette adresse */
+    }
+    if (matches > 1) {
+        snprintf(conflictBuf, sizeof(conflictBuf),
+                 "Conflit routage : %u modules à 0x%02X (bus n°%u)",
+                 (unsigned)matches, addr, bus);
+        return conflictBuf;
+    }
+
+    /* Aucun module routé à cette adresse : heuristiques de diagnostic */
+    if (addr == 0x4A || addr == 0x4B) {
+        return "BNO085 (adresse non routée)";
+    }
+    if (addr >= 0x40 && addr <= 0x43) {
+        return "INA3221/PCA9685 (non routé)";
+    }
+    if (addr >= 0x44 && addr <= 0x4F) {
+        return "INA226 (non routé)";
+    }
+    if (addr == 0x76 || addr == 0x77) {
+        return "MS5803/MS5837 (non routé)";
+    }
+    return "Périphérique inconnu";
 }
 
 /**
@@ -281,7 +345,7 @@ static void _scanOneBus(TwoWire& bus, uint8_t busNo,
             info.address = addr;
             info.bus     = busNo;
             snprintf(info.hexStr, sizeof(info.hexStr), "0x%02X", addr);
-            const char* name = _identifyI2CDevice(addr);
+            const char* name = _identifyI2CDevice(addr, busNo);
             strncpy(info.name, name, sizeof(info.name) - 1);
             info.name[sizeof(info.name) - 1] = '\0';
             devices.push_back(info);
@@ -310,32 +374,49 @@ std::vector<I2CDeviceInfo> SensorDriver::scanI2CBus() {
     return _scanResult;
 }
 
+std::vector<I2CDeviceInfo> SensorDriver::getLastScan() {
+    /* Copie sous mutex : _doScan publie le résultat sous le même verrou —
+     * jamais de lecture d'un vector en cours d'assignation. */
+    std::vector<I2CDeviceInfo> out;
+    if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        out = _scanResult;
+        xSemaphoreGive(_mutex);
+    }
+    return out;
+}
+
 void SensorDriver::_doScan() {
-    /* Récupération de bus I2C n°1 bloqué : 9 impulsions SCL pour libérer SDA.
-     * Possible uniquement parce que ce bus appartient en exclusivité à cette
-     * tâche — JAMAIS sur le bus n°2, partagé avec les écritures PCA9685 de la
-     * tâche de contrôle. */
-    pinMode(_currentSCL, OUTPUT);
+    /* Récupération du bus NON-PWM bloqué : 9 impulsions SCL pour libérer SDA.
+     * Le bit-bang ne touche JAMAIS le bus routé du PCA9685 — partagé avec
+     * les écritures PWM 100 Hz de la tâche de contrôle, un reset en vol
+     * couperait la propulsion. Le bus récupéré est donc celui qui n'héberge
+     * PAS le PCA9685 (par défaut le bus n°1 des capteurs). */
+    const uint8_t recoveryBus = I2CRouter::otherBus(g_i2cRouter.pwmBus());
+    const uint8_t recSda = _sdaOf(recoveryBus);
+    const uint8_t recScl = _sclOf(recoveryBus);
+
+    pinMode(recScl, OUTPUT);
     for (uint8_t i = 0; i < 9; i++) {
-        digitalWrite(_currentSCL, LOW);
+        digitalWrite(recScl, LOW);
         delayMicroseconds(50);
-        digitalWrite(_currentSCL, HIGH);
+        digitalWrite(recScl, HIGH);
         delayMicroseconds(50);
     }
     /* Condition STOP pour libérer le bus */
-    pinMode(_currentSDA, OUTPUT);
-    digitalWrite(_currentSDA, LOW);
+    pinMode(recSda, OUTPUT);
+    digitalWrite(recSda, LOW);
     delayMicroseconds(50);
-    digitalWrite(_currentSCL, HIGH);
+    digitalWrite(recScl, HIGH);
     delayMicroseconds(50);
-    digitalWrite(_currentSDA, HIGH);
+    digitalWrite(recSda, HIGH);
     delayMicroseconds(50);
 
-    /* Réinitialiser Wire (bus n°1) après la récupération */
-    Wire.end();
+    /* Réinitialiser le contrôleur du bus récupéré après le bit-bang */
+    TwoWire& recWire = *g_i2cRouter.wireOfBus(recoveryBus);
+    recWire.end();
     delay(10);
-    Wire.begin(_currentSDA, _currentSCL);
-    Wire.setClock(I2C_FREQ_HZ);
+    recWire.begin(recSda, recScl);
+    recWire.setClock(I2C_FREQ_HZ);
     delay(10);
 
     /* Réduire le timeout I2C des deux bus pour accélérer le scan */
@@ -345,26 +426,42 @@ void SensorDriver::_doScan() {
     Wire1.setTimeOut(10);
 
     std::vector<I2CDeviceInfo> devices;
-    _scanOneBus(Wire,  1, devices);   /* bus n°1 : BNO085 + INA226 */
-    _scanOneBus(Wire1, 2, devices);   /* bus n°2 : MS5837 + PCA9685 */
+    _scanOneBus(Wire,  1, devices);   /* bus n°1 — modules selon routage */
+    _scanOneBus(Wire1, 2, devices);   /* bus n°2 — modules selon routage */
 
     /* Restaurer les timeouts d'origine ; le bit-bang ci-dessus étant déjà une
      * récupération de bus, réarmer aussi le compteur du watchdog I2C global. */
     Wire.setTimeOut(prevTimeout);
     Wire1.setTimeOut(prevTimeout1);
     _i2cConsecFails = 0;
-    _scanResult = devices;
+
+    /* Journaliser les périphériques trouvés (diagnostic moniteur série) */
+    for (const auto& d : devices) {
+        Serial.println("[SENSORS]   " + String(d.hexStr) + " trouvé (bus n°"
+                       + String(d.bus) + ") — " + String(d.name));
+    }
+    Serial.println("[SENSORS] " + String((unsigned)devices.size()) + " périphérique(s) détecté(s)");
+
+    /* Publier le résultat sous mutex : lisible par getLastScan() (tâche Web,
+     * carte « Routage I2C Plug & Play » — GET /api/i2c/routing) et par
+     * scanI2CBus() après _scanDone. */
+    if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _scanResult = devices;
+        xSemaphoreGive(_mutex);
+    } else {
+        _scanResult = devices;   /* mutex indisponible (improbable) : publication directe */
+    }
 }
 
 /* -------------------------------------------------------------------------
  * BROCHES I2C (bus n°1 ou n°2) — persistance NVS
  *
  * Les nouvelles broches sont enregistrées en NVS puis appliquées au prochain
- * démarrage : le bus n°2 est partagé avec la tâche de contrôle (PCA9685 à
- * 100 Hz — un Wire1.end()/begin() en vol couperait les sorties PWM), et le
- * bus n°1 suit la même procédure pour une interface uniforme. L'écriture est
- * vérifiée par RELECTURE : si le NVS refuse, la valeur n'est pas confirmée et
- * l'appelant ne programme pas le redémarrage.
+ * démarrage : chaque bus peut héberger le PCA9685 selon le routage (un
+ * Wire.end()/begin() en vol couperait les sorties PWM 100 Hz de la tâche de
+ * contrôle), les deux bus suivent donc la même procédure uniforme. L'écriture
+ * est vérifiée par RELECTURE : si le NVS refuse, la valeur n'est pas
+ * confirmée et l'appelant ne programme pas le redémarrage.
  * ------------------------------------------------------------------------- */
 bool SensorDriver::saveBusPins(uint8_t bus, uint8_t sda, uint8_t scl) {
     const char* keySda = (bus == 2) ? "i2c2_sda" : "i2c_sda";
@@ -504,73 +601,49 @@ String SensorDriver::getLastBNO085Error() {
 }
 
 /* =========================================================================
- * I2C BAS NIVEAU
+ * I2C BAS NIVEAU ROUTÉ
  *
- * Toutes les fonctions instrumentent le compteur d'échecs consécutifs du
- * watchdog I2C global : un échec l'incrémente, un succès le remet à zéro.
- * Au-delà de I2C_WATCHDOG_FAIL_THRESHOLD échecs d'affilée, la tâche capteurs
- * déclenche _recoverI2CBus() (reset bus + réinit de tous les capteurs).
+ * Une seule famille de wrappers, paramétrée par le bus : chaque appel désigne
+ * son contrôleur par un pointeur TwoWire* issu de g_i2cRouter.wireOf()
+ * (&Wire ou &Wire1 selon le routage du périphérique concerné). Toutes les
+ * fonctions instrumentent le compteur d'échecs consécutifs du watchdog I2C
+ * global : un échec l'incrémente, un succès le remet à zéro. Au-delà de
+ * I2C_WATCHDOG_FAIL_THRESHOLD échecs d'affilée, la tâche capteurs déclenche
+ * _recoverI2CBus() (reset bus non-PWM + réinit de tous les capteurs).
  * ========================================================================= */
 
-void SensorDriver::_i2cWrite(uint8_t addr, uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(addr);
-    Wire.write(reg);
-    Wire.write(val);
-    if (Wire.endTransmission() != 0) _i2cConsecFails++;
+void SensorDriver::_i2cWrite(TwoWire* bus, uint8_t addr, uint8_t reg, uint8_t val) {
+    bus->beginTransmission(addr);
+    bus->write(reg);
+    bus->write(val);
+    if (bus->endTransmission() != 0) _i2cConsecFails++;
 }
 
-uint8_t SensorDriver::_i2cRead8(uint8_t addr, uint8_t reg) {
-    Wire.beginTransmission(addr);
-    Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) { _i2cConsecFails++; return 0; }
-    Wire.requestFrom((uint8_t)addr, (uint8_t)1);
-    if (!Wire.available()) { _i2cConsecFails++; return 0; }
-    _i2cConsecFails = 0;
-    return Wire.read();
-}
-
-uint16_t SensorDriver::_i2cRead16(uint8_t addr, uint8_t reg) {
-    Wire.beginTransmission(addr);
-    Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) { _i2cConsecFails++; return 0; }
-    Wire.requestFrom((uint8_t)addr, (uint8_t)2);
-    if (Wire.available() < 2) { _i2cConsecFails++; return 0; }
-    uint16_t val = (uint16_t)Wire.read() << 8;
-    val |= Wire.read();
+uint16_t SensorDriver::_i2cRead16(TwoWire* bus, uint8_t addr, uint8_t reg) {
+    bus->beginTransmission(addr);
+    bus->write(reg);
+    if (bus->endTransmission(false) != 0) { _i2cConsecFails++; return 0; }
+    bus->requestFrom((uint8_t)addr, (uint8_t)2);
+    if (bus->available() < 2) { _i2cConsecFails++; return 0; }
+    uint16_t val = (uint16_t)bus->read() << 8;
+    val |= bus->read();
     _i2cConsecFails = 0;
     return val;
 }
 
-bool SensorDriver::_i2cDevicePresent(uint8_t addr) {
-    Wire.beginTransmission(addr);
-    return (Wire.endTransmission() == 0);
+bool SensorDriver::_i2cDevicePresent(TwoWire* bus, uint8_t addr) {
+    bus->beginTransmission(addr);
+    return (bus->endTransmission() == 0);
 }
 
-/* -- I2C n°2 (Wire1 : MS5837 + PCA9685) : mêmes wrappers pour le second
- *    contrôleur matériel. Les échecs alimentent le même compteur global —
- *    les lectures INA226 réussies du bus n°1 le remettent à zéro en continu. */
-void SensorDriver::_i2c2Write(uint8_t addr, uint8_t b1, uint8_t b2) {
-    Wire1.beginTransmission(addr);
-    Wire1.write(b1);
-    Wire1.write(b2);
-    if (Wire1.endTransmission() != 0) _i2cConsecFails++;
-}
-
-uint16_t SensorDriver::_i2c2Read16(uint8_t addr, uint8_t reg) {
-    Wire1.beginTransmission(addr);
-    Wire1.write(reg);
-    if (Wire1.endTransmission(false) != 0) { _i2cConsecFails++; return 0; }
-    Wire1.requestFrom((uint8_t)addr, (uint8_t)2);
-    if (Wire1.available() < 2) { _i2cConsecFails++; return 0; }
-    uint16_t val = (uint16_t)Wire1.read() << 8;
-    val |= Wire1.read();
-    _i2cConsecFails = 0;
-    return val;
-}
-
-bool SensorDriver::_i2c2DevicePresent(uint8_t addr) {
-    Wire1.beginTransmission(addr);
-    return (Wire1.endTransmission() == 0);
+/* -- Écriture 2 octets (commande + valeur — conversions ADC du MS5803).
+ *    Les échecs alimentent le même compteur global ; les lectures réussies
+ *    des wattmètres (INA3221 + INA226, bus routé) le remettent à zéro. -- */
+void SensorDriver::_i2cWrite2B(TwoWire* bus, uint8_t addr, uint8_t b1, uint8_t b2) {
+    bus->beginTransmission(addr);
+    bus->write(b1);
+    bus->write(b2);
+    if (bus->endTransmission() != 0) _i2cConsecFails++;
 }
 
 /* =========================================================================
@@ -586,13 +659,15 @@ bool SensorDriver::_initBNO085() {
 
     _bno08x = new Adafruit_BNO08x();
 
-    /* Tenter l'initialisation I2C à l'adresse 0x4A.
+    /* Tenter l'initialisation I2C à l'adresse ROUTÉE SUR LE BUS ROUTÉ du
+     * capteur (v1.3.0 : bus &Wire/&Wire1 ET adresse selon la carte NVS).
      * NOTE : le message d'échec est mémorisé dans _bno085Err pour être lu
      * depuis l'interface Web (diagnostic sans câble USB). */
-    if (!_bno08x->begin_I2C(BNO085_I2C_ADDR)) {
+    const uint8_t addr = g_i2cRouter.addrOf(I2C_DEV_BNO085);
+    if (!_bno08x->begin_I2C(addr, g_i2cRouter.wireOf(I2C_DEV_BNO085))) {
         _status.bno085 = SENSOR_DISCONNECTED;
-        _setBNO085Err("begin_I2C(0x4A) echoue");
-        Serial.println("[SENSORS] BNO085 : échec begin_I2C(0x4A)");
+        _setBNO085Err((String("begin_I2C(0x") + String(addr, HEX) + ") echoue").c_str());
+        Serial.println("[SENSORS] BNO085 : échec begin_I2C(0x" + String(addr, HEX) + ")");
         delete _bno08x;
         _bno08x = nullptr;
         return false;
@@ -644,22 +719,27 @@ bool SensorDriver::_initBNO085() {
     _status.bno085 = SENSOR_CONNECTED;
     _setBNO085Err("");
     _lastBNO085Event = millis();   /* délai de grâce post-init pour la supervision */
-    Serial.println("[SENSORS] BNO085 détecté et initialisé (0x4A) — Rotation Vector (magnétique) "
+    Serial.println("[SENSORS] BNO085 détecté et initialisé (0x" + String(addr, HEX) + ") — Rotation Vector (magnétique) "
                    + String(_rvCfgOk ? "ON" : "OFF") + " + Game RV (secours) " + String(grvOk ? "ON" : "OFF")
                    + " + Gyroscope @ 50 Hz");
     return true;
 }
 
 bool SensorDriver::_initMS5803() {
-    if (!_i2c2DevicePresent(MS5803_I2C_ADDR)) {
+    /* Bus et adresse routés du baromètre (v1.3.0) */
+    TwoWire* bus = g_i2cRouter.wireOf(I2C_DEV_MS5803);
+    const uint8_t addr = g_i2cRouter.addrOf(I2C_DEV_MS5803);
+
+    if (!_i2cDevicePresent(bus, addr)) {
         _status.ms5803 = SENSOR_DISCONNECTED;
-        Serial.println("[SENSORS] MS5803 NON détecté (0x76 absent du bus n°2)");
+        Serial.println("[SENSORS] MS5803 NON détecté (0x" + String(addr, HEX)
+                       + " absent du bus n°" + String(g_i2cRouter.busOf(I2C_DEV_MS5803)) + ")");
         return false;
     }
 
-    Wire1.beginTransmission(MS5803_I2C_ADDR);
-    Wire1.write(0x1E);  /* RESET command */
-    uint8_t err = Wire1.endTransmission();
+    bus->beginTransmission(addr);
+    bus->write(0x1E);  /* RESET command */
+    uint8_t err = bus->endTransmission();
     if (err != 0) {
         _status.ms5803 = SENSOR_DISCONNECTED;
         Serial.println("[SENSORS] MS5803 NON détecté (RESET err=" + String(err) + ")");
@@ -670,7 +750,7 @@ bool SensorDriver::_initMS5803() {
     /* Lecture des 6 coefficients de calibration (C1 à C6) */
     bool valid_cal = false;
     for (uint8_t i = 0; i < 6; i++) {
-        _ms5803_cal[i] = _i2c2Read16(MS5803_I2C_ADDR, 0xA2 + (i * 2));
+        _ms5803_cal[i] = _i2cRead16(bus, addr, 0xA2 + (i * 2));
         if (_ms5803_cal[i] != 0 && _ms5803_cal[i] != 0xFFFF) valid_cal = true;
     }
 
@@ -682,12 +762,15 @@ bool SensorDriver::_initMS5803() {
 
     _status.ms5803 = SENSOR_CONNECTED;
     _ms5803ConsecFails = 0;
-    Serial.println("[SENSORS] MS5803-30BA / MS5837 initialisé (0x76, bus n°2)");
+    Serial.println("[SENSORS] MS5803-30BA / MS5837 initialisé (0x" + String(addr, HEX) + ", bus n°"
+                   + String(g_i2cRouter.busOf(I2C_DEV_MS5803)) + ")");
     return true;
 }
 
 bool SensorDriver::_initINA226(uint8_t addr, uint8_t index) {
-    uint16_t mfr_id = _i2cRead16(addr, 0xFE);
+    /* Bus routé du wattmètre : index 0 → INA226 n°2, index 1 → INA226 n°3 */
+    TwoWire* bus = g_i2cRouter.wireOf(index == 0 ? I2C_DEV_INA226_2 : I2C_DEV_INA226_3);
+    uint16_t mfr_id = _i2cRead16(bus, addr, 0xFE);
     if (mfr_id != 0x5449) {
         _status.ina226[index] = SENSOR_DISCONNECTED;
         Serial.println("[SENSORS] INA226[" + String(index) + "] @ 0x" + String(addr, HEX) + " NON détecté");
@@ -695,11 +778,45 @@ bool SensorDriver::_initINA226(uint8_t addr, uint8_t index) {
     }
 
     /* Registre calibration (0x05) : shunt 0.01Ω, max 8A */
-    _i2cWrite(addr, 0x05, (uint8_t)(2098 >> 8));
-    _i2cWrite(addr, 0x05, (uint8_t)(2098 & 0xFF));
+    _i2cWrite(bus, addr, 0x05, (uint8_t)(2098 >> 8));
+    _i2cWrite(bus, addr, 0x05, (uint8_t)(2098 & 0xFF));
 
     _status.ina226[index] = SENSOR_CONNECTED;
     Serial.println("[SENSORS] INA226[" + String(index) + "] @ 0x" + String(addr, HEX) + " initialisé");
+    return true;
+}
+
+/* -------------------------------------------------------------------------
+ * INA3221 (v1.1.0) — triple wattmètre, pilote maison (registres TI SBVS197).
+ * Canal 1 : tension batterie V_BAT (bus). Canaux 2/3 : signal absolu des
+ * ACS770-100U (0,5 V à 0 A → 4,5 V à 100 A) lu sur le REGISTRE DE TENSION
+ * BUS — le registre shunt (±163,84 mV) plafonnait la mesure à ±4,09 A.
+ * ------------------------------------------------------------------------- */
+
+bool SensorDriver::_initINA3221() {
+    /* Bus et adresse routés du triple wattmètre (v1.3.0) — LE bus protégé
+     * par _inaBusLock pour la routine « Check Propulseurs ». */
+    TwoWire* bus = g_i2cRouter.wireOf(I2C_DEV_INA3221);
+    const uint8_t addr = g_i2cRouter.addrOf(I2C_DEV_INA3221);
+    uint16_t mfr_id = _i2cRead16(bus, addr, INA3221_REG_MFR_ID);
+    if (mfr_id != INA3221_MFR_ID) {
+        _status.ina3221 = SENSOR_DISCONNECTED;
+        Serial.println("[SENSORS] INA3221 @ 0x" + String(addr, HEX) + " NON détecté (ID fabricant 0x"
+                       + String(mfr_id, HEX) + ")");
+        return false;
+    }
+
+    /* Configuration : 3 canaux shunt+bus en continu, 588 µs, moyennage ×16
+     * (INA3221_CONFIG_VALUE) — stabilise les mesures ACS770 (bruit Hall). */
+    uint8_t cfg_msb = (uint8_t)(INA3221_CONFIG_VALUE >> 8);
+    uint8_t cfg_lsb = (uint8_t)(INA3221_CONFIG_VALUE & 0xFF);
+    _i2cWrite(bus, addr, INA3221_REG_CONFIG, cfg_msb);
+    _i2cWrite(bus, addr, INA3221_REG_CONFIG, cfg_lsb);
+
+    _status.ina3221 = SENSOR_CONNECTED;
+    Serial.println("[SENSORS] INA3221 @ 0x" + String(addr, HEX)
+                   + " initialisé (3 canaux — V_BAT + 2× ACS770 40 mV/A, bus n°"
+                   + String(g_i2cRouter.busOf(I2C_DEV_INA3221)) + ")");
     return true;
 }
 
@@ -732,22 +849,179 @@ void SensorDriver::_readIMU() {
 }
 
 void SensorDriver::_readPower() {
-    const uint8_t addrs[3] = {INA226_1_I2C_ADDR, INA226_2_I2C_ADDR, INA226_3_I2C_ADDR};
-    for (uint8_t i = 0; i < 3; i++) {
+    /* SIMULATEUR DE TEST VIRTUEL (établi) : quand la simulation est active,
+     * AUCUNE transaction I2C n'est émise pour la puissance — les canaux 0-2
+     * sont injectés par _readINA3221 (branche simulation ci-dessous) et les
+     * canaux 3-4 (INA226 #2/#3) reçoivent la tension « batterie 2 » simulée,
+     * courant nul. Les capteurs réels reprennent la main dès la désactivation
+     * (état RAM volatile, jamais persisté). */
+    const SimValues sim = g_sim.get();
+    if (sim.active) {
+        _readINA3221();
+        _powerWork.voltage[3] = _powerWork.voltage[4] = (uint16_t)(sim.vbat2V * 1000.0f);
+        _powerWork.current[3] = _powerWork.current[4] = 0;
+        return;
+    }
+
+    /* INA3221 (v1.1.0) : canaux 0-2 du buffer de puissance. */
+    _readINA3221();
+
+    /* Deux INA226 résiduels : canaux 3-4 du buffer (adresses routées v1.3.0). */
+    const uint8_t addrs[2] = {g_i2cRouter.addrOf(I2C_DEV_INA226_2),
+                              g_i2cRouter.addrOf(I2C_DEV_INA226_3)};
+    for (uint8_t i = 0; i < 2; i++) {
+        const uint8_t outIdx = 3 + i;
         if (_status.ina226[i] == SENSOR_CONNECTED) {
+            TwoWire* bus = g_i2cRouter.wireOf(i == 0 ? I2C_DEV_INA226_2 : I2C_DEV_INA226_3);
             /* Lecture tension bus (registre 0x04) : LSB = 1.25 mV */
-            uint16_t bus_raw = _i2cRead16(addrs[i], 0x04);
-            _powerWork.voltage[i] = (uint16_t)((float)bus_raw * 1.25f);
+            uint16_t bus_raw = _i2cRead16(bus, addrs[i], 0x04);
+            _powerWork.voltage[outIdx] = (uint16_t)((float)bus_raw * 1.25f);
             /* Lecture courant via shunt (registre 0x01) */
-            uint16_t shunt_raw = _i2cRead16(addrs[i], 0x01);
+            uint16_t shunt_raw = _i2cRead16(bus, addrs[i], 0x01);
             int16_t shunt_signed = (int16_t)shunt_raw;
             float current_a = ((float)shunt_signed * 2.5e-6f) / 0.01f;
-            _powerWork.current[i] = (uint16_t)(fabsf(current_a) * 1000.0f);
+            _powerWork.current[outIdx] = (uint32_t)(fabsf(current_a) * 1000.0f);
         } else {
-            _powerWork.voltage[i] = 0;
-            _powerWork.current[i] = 0;
+            _powerWork.voltage[outIdx] = 0;
+            _powerWork.current[outIdx] = 0;
         }
     }
+}
+
+bool SensorDriver::_readINA3221() {
+    /* SIMULATEUR DE TEST VIRTUEL (établi) : valeurs injectées AVANT tout
+     * contrôle d'état — le test fonctionne même INA3221 absent de l'établi et
+     * AUCUNE transaction I2C n'est émise. Canaux 2/3 : le courant simulé
+     * (banc H/V, voir _simBankCurrentMA et simulator.h) est reconverti en
+     * signal ACS770 équivalent (500 mV à 0 A puis 40 mV/A) comme le capteur
+     * réel, pour une télémétrie homogène entre modes réel et simulé. */
+    const SimValues sim = g_sim.get();
+    if (sim.active) {
+        _powerWork.voltage[0] = (uint16_t)(sim.vbat1V * 1000.0f);
+        _powerWork.current[0] = 0;
+        const uint8_t simCh[2] = {MOTOR_CURRENT_CH_HORIZ, MOTOR_CURRENT_CH_VERT};
+        for (uint8_t ch = 0; ch < 2; ch++) {
+            const int32_t ma = _simBankCurrentMA(simCh[ch]);
+            _powerWork.voltage[1 + ch] = (uint16_t)(ACS770_ZERO_A_MV
+                + ((float)ma / 1000.0f) * (ACS770_SENSITIVITY_V_PER_A * 1000.0f));
+            _powerWork.current[1 + ch] = (uint32_t)ma;
+        }
+        return true;
+    }
+
+    if (_status.ina3221 != SENSOR_CONNECTED) {
+        _powerWork.voltage[0] = 0; _powerWork.current[0] = 0;
+        _powerWork.voltage[1] = 0; _powerWork.current[1] = 0;
+        _powerWork.voltage[2] = 0; _powerWork.current[2] = 0;
+        return false;
+    }
+
+    /* Bus et adresse routés du triple wattmètre (v1.3.0) */
+    TwoWire* bus = g_i2cRouter.wireOf(I2C_DEV_INA3221);
+    const uint8_t addr = g_i2cRouter.addrOf(I2C_DEV_INA3221);
+
+    /* Canal 1 : tension batterie V_BAT (registre bus — bits 14:3, LSB 8 mV). */
+    uint16_t bus_raw = _i2cRead16(bus, addr, INA3221_REG_BUS1);
+    _powerWork.voltage[0] = (uint16_t)((float)(bus_raw >> 3) * INA3221_BUS_LSB_MV);
+
+    /* Canaux 2/3 : signal ACS770-100U (tension absolue 0,5–4,5 V câblée sur
+     * IN−) → courant. Lecture sur le REGISTRE DE TENSION BUS (bits 14:3,
+     * LSB 8 mV, plage 26 V) : le registre shunt (±163,84 mV) saturait toute
+     * la mesure à ±4,09 A. Formule constructeur : I (A) = (V_bus_mV − 500)/40. */
+    const uint8_t busRegs[2] = {INA3221_REG_BUS2, INA3221_REG_BUS3};
+    for (uint8_t ch = 0; ch < 2; ch++) {
+        uint16_t bus_raw = _i2cRead16(bus, addr, busRegs[ch]);
+        const float bus_mV = (float)(bus_raw >> 3) * INA3221_BUS_LSB_MV;
+        if (bus_mV < ACS770_VALID_MIN_MV) {
+            /* Signal hors plage (capteur débranché / lecture I2C à 0) : la
+             * formule donnerait −12,5 A → fausse surintensité. */
+            _powerWork.voltage[1 + ch] = 0;
+            _powerWork.current[1 + ch] = 0;
+            continue;
+        }
+        const float current_a = (bus_mV - ACS770_ZERO_A_MV)
+                              / (ACS770_SENSITIVITY_V_PER_A * 1000.0f);
+        _powerWork.voltage[1 + ch] = (uint16_t)bus_mV;       /* signal ACS770 brut (mV) */
+        _powerWork.current[1 + ch] = (uint32_t)(fabsf(current_a) * 1000.0f);
+    }
+
+    _powerWork.current[0] = 0;   /* canal 1 : tension seule (pas de shunt) */
+    return true;
+}
+
+int32_t SensorDriver::readACS770CurrentmA(uint8_t channel) {
+    /* channel = indice PowerData du courant (config.h) : 1 = horizontaux
+     * (INA3221 canal 2), 2 = verticaux (INA3221 canal 3) — même sémantique
+     * que PowerData::current[], pour un seul jeu de constantes côté appelant. */
+    if (channel != MOTOR_CURRENT_CH_HORIZ && channel != MOTOR_CURRENT_CH_VERT) return -1;
+
+    /* SIMULATEUR DE TEST VIRTUEL (établi) : court-circuit AVANT le contrôle
+     * d'état et le verrou I2C — la mesure injectée est disponible même sans
+     * INA3221 (établi sans matériel) et n'émet AUCUNE transaction vers le bus
+     * partagé avec la tâche capteurs. */
+    if (g_sim.get().active) return _simBankCurrentMA(channel);
+
+    if (_status.ina3221 != SENSOR_CONNECTED) return -2;
+
+    /* Verrou du bus ROUTÉ de l'INA3221 : la tâche capteurs (propriétaire du
+     * bus) et la routine « Check Propulseurs » (tâche dédiée) doivent se
+     * succéder SANS jamais croiser deux transactions I2C — même discipline
+     * que la file de requêtes scan/réinit broches (mémoire : bus effondré
+     * par accès concurrents). */
+    if (_inaBusLock == nullptr ||
+        xSemaphoreTake(_inaBusLock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return -3;
+    }
+
+    /* Signal ACS770-100U lu sur le registre de tension BUS du canal (tension
+     * absolue 0,5–4,5 V, voir _readINA3221) — jamais le registre shunt. */
+    const uint8_t reg = (channel == MOTOR_CURRENT_CH_HORIZ)
+                      ? INA3221_REG_BUS2 : INA3221_REG_BUS3;
+    uint16_t bus_raw = _i2cRead16(g_i2cRouter.wireOf(I2C_DEV_INA3221),
+                                   g_i2cRouter.addrOf(I2C_DEV_INA3221), reg);
+    const float bus_mV = (float)(bus_raw >> 3) * INA3221_BUS_LSB_MV;
+
+    xSemaphoreGive(_inaBusLock);
+
+    if (bus_mV < ACS770_VALID_MIN_MV) {
+        /* Signal hors plage (capteur débranché / lecture I2C à 0) : lecture
+         * impossible pour l'appelant (la formule donnerait faussement 12,5 A). */
+        return -4;
+    }
+
+    const float current_a = (bus_mV - ACS770_ZERO_A_MV)
+                          / (ACS770_SENSITIVITY_V_PER_A * 1000.0f);
+    return (int32_t)(fabsf(current_a) * 1000.0f);
+}
+
+/* =========================================================================
+ * SIMULATEUR DE TEST VIRTUEL — COURANT DE BANC (voir simulator.h)
+ * ========================================================================= */
+
+int32_t SensorDriver::_simBankCurrentMA(uint8_t channel) {
+    const SimValues sim = g_sim.get();
+    const bool horiz = (channel == MOTOR_CURRENT_CH_HORIZ);
+
+    /* Masque des moteurs du banc : M1-M4 (bits 0-3) ou M5-M8 (bits 4-7). */
+    const uint8_t bankMask = horiz
+        ? (uint8_t)((1u << MOTOR_HORIZ_COUNT) - 1u)
+        : (uint8_t)(((1u << MOTOR_VERT_COUNT) - 1u) << MOTOR_VERT_FIRST);
+
+    /* Sémantique (simulator.h) : le courant du banc circule tant qu'au moins
+     * un moteur bloqué coché du banc n'est pas isolé ; quand l'identification
+     * cumulative (g_pwm.isolateMotor) a coupé tous les bloqués du banc, il
+     * retombe à 0 — la chaîne de sécurité y voit un vrai moteur bloqué dont
+     * l'isolement vient de faire chuter le courant. */
+    const uint8_t stalled = sim.stallMask & bankMask;
+    if (stalled != 0 && (stalled & (uint8_t)~g_pwm.getIsolatedMask()) == 0) {
+        return 0;
+    }
+
+    /* Bornage défensif (l'API /api/simulator borne déjà) : 0..SIM_CURRENT_MAX_A. */
+    float amps = horiz ? sim.curH_A : sim.curV_A;
+    if (amps < 0.0f) amps = 0.0f;
+    if (amps > SIM_CURRENT_MAX_A) amps = SIM_CURRENT_MAX_A;
+    return (int32_t)(amps * 1000.0f);
 }
 
 /* =========================================================================
@@ -1075,8 +1349,8 @@ bool SensorDriver::isBNO085Stalled() const {
  * Quand le bus I2C s'effondre (NACK → ESP_ERR_INVALID_STATE dans le driver
  * i2c-ng), TOUTES les transactions suivantes échouent en boucle : les lectures
  * INA226 (600/s) font alors grimper _i2cConsecFails très vite. Au-delà du seuil
- * I2C_WATCHDOG_FAIL_THRESHOLD, on reset le bus et on réinitialise TOUS les
- * capteurs présents — y compris le cas où le BNO085 n'a pas été vu au boot
+ * I2C_WATCHDOG_FAIL_THRESHOLD, on reset le bus NON-PWM et on réinitialise
+ * TOUS les capteurs présents — y compris le cas où le BNO085 n'a pas été vu au boot
  * (la supervision BNO085 seule ne déclencherait jamais : NACK infinis,
  * badge rouge permanent, télémétrie figée).
  * Exécuté HORS mutex par la tâche capteurs (unique propriétaire du bus) ;
@@ -1084,7 +1358,15 @@ bool SensorDriver::isBNO085Stalled() const {
  * ========================================================================= */
 
 void SensorDriver::_recoverI2CBus() {
-    Serial.println("[SENSORS] Récupération bus I2C : " + String(_i2cConsecFails)
+    /* Reset UNIQUEMENT le bus NON-PWM (v1.2.0) : celui qui héberge le PCA9685
+     * ne doit jamais être bit-bangé/reseté en vol (sorties PWM 100 Hz de la
+     * tâche de contrôle). Les capteurs routés sur le bus PWM sont réinitialisés
+     * (ré-écriture de leurs registres) mais leur bus ne peut pas être réparé
+     * matériellement à chaud — limitation documentée du routage. */
+    const uint8_t recoveryBus = I2CRouter::otherBus(g_i2cRouter.pwmBus());
+
+    Serial.println("[SENSORS] Récupération bus I2C (non-PWM n°" + String(recoveryBus)
+                   + ") : " + String(_i2cConsecFails)
                    + " échecs consécutifs → reset bus + réinit de tous les capteurs");
 
     /* Détruire l'instance BNO08x AVANT le reset bus (état I2C interne obsolète) */
@@ -1093,12 +1375,14 @@ void SensorDriver::_recoverI2CBus() {
         _bno08x = nullptr;
     }
 
-    _resetI2CBus();
+    _resetI2CBus(*g_i2cRouter.wireOfBus(recoveryBus),
+                 _sdaOf(recoveryBus), _sclOf(recoveryBus));
     delay(300);   /* Laisse le firmware SH-2 du BNO085 redémarrer après le reset du bus */
 
     /* Réinitialiser TOUS les capteurs — chacun vérifie lui-même sa présence
-     * sur le bus, donc un capteur raté au boot peut réapparaître ici. */
-    if (_bno085Present || _i2cDevicePresent(BNO085_I2C_ADDR)) {
+     * sur SON bus routé, donc un capteur raté au boot peut réapparaître ici. */
+    if (_bno085Present ||
+        _i2cDevicePresent(g_i2cRouter.wireOf(I2C_DEV_BNO085), g_i2cRouter.addrOf(I2C_DEV_BNO085))) {
         _bno085Present = true;
         if (_initBNO085()) {
             Serial.println("[SENSORS] Récupération bus I2C : BNO085 réinitialisé avec succès");
@@ -1109,9 +1393,12 @@ void SensorDriver::_recoverI2CBus() {
 
     _initMS5803();   /* RESET + relecture PROM (vérifie seul sa présence) */
 
-    /* INA226 : réinitialiser les trois wattmètres */
-    const uint8_t ina_addrs[3] = {INA226_1_I2C_ADDR, INA226_2_I2C_ADDR, INA226_3_I2C_ADDR};
-    for (uint8_t i = 0; i < 3; i++) {
+    /* INA3221 puis INA226 résiduels : réinitialiser les wattmètres,
+     * chacun sur SON adresse routée (v1.3.0) */
+    _initINA3221();
+    const uint8_t ina_addrs[2] = {g_i2cRouter.addrOf(I2C_DEV_INA226_2),
+                                  g_i2cRouter.addrOf(I2C_DEV_INA226_3)};
+    for (uint8_t i = 0; i < 2; i++) {
         _initINA226(ina_addrs[i], i);
     }
 
@@ -1122,45 +1409,45 @@ void SensorDriver::_recoverI2CBus() {
 bool SensorDriver::_anySensorConnected() const {
     return (_status.bno085    == SENSOR_CONNECTED ||
             _status.ms5803    == SENSOR_CONNECTED ||
+            _status.ina3221   == SENSOR_CONNECTED ||
             _status.ina226[0] == SENSOR_CONNECTED ||
-            _status.ina226[1] == SENSOR_CONNECTED ||
-            _status.ina226[2] == SENSOR_CONNECTED);
+            _status.ina226[1] == SENSOR_CONNECTED);
 }
 
-void SensorDriver::_resetI2CBus() {
+void SensorDriver::_resetI2CBus(TwoWire& bus, uint8_t sda, uint8_t scl) {
     /* 1. Libérer le contrôleur I2C matériel */
-    Wire.end();
+    bus.end();
     delay(20);
 
     /* 2. Bit-bang : 9 impulsions d'horloge sur SCL pour débloquer un esclave
      *    qui retiendrait SDA au niveau bas (cas classique après un NACK). */
-    pinMode(_currentSCL, OUTPUT);
-    digitalWrite(_currentSCL, HIGH);
+    pinMode(scl, OUTPUT);
+    digitalWrite(scl, HIGH);
     for (uint8_t i = 0; i < 9; i++) {
-        digitalWrite(_currentSCL, LOW);
+        digitalWrite(scl, LOW);
         delayMicroseconds(5);
-        digitalWrite(_currentSCL, HIGH);
+        digitalWrite(scl, HIGH);
         delayMicroseconds(5);
     }
     /* Condition de STOP : SDA passe au haut pendant que SCL est haut */
-    pinMode(_currentSDA, OUTPUT);
-    digitalWrite(_currentSDA, LOW);
+    pinMode(sda, OUTPUT);
+    digitalWrite(sda, LOW);
     delayMicroseconds(5);
-    digitalWrite(_currentSCL, HIGH);
+    digitalWrite(scl, HIGH);
     delayMicroseconds(5);
-    digitalWrite(_currentSDA, HIGH);
+    digitalWrite(sda, HIGH);
     delayMicroseconds(5);
 
     /* 3. Rendre les broches au contrôleur I2C et le réarmer (400 kHz + timeout) */
-    pinMode(_currentSDA, INPUT);
-    pinMode(_currentSCL, INPUT);
-    Wire.begin(_currentSDA, _currentSCL);
-    Wire.setClock(I2C_FREQ_HZ);
-    Wire.setTimeOut(I2C_TIMEOUT_MS);
+    pinMode(sda, INPUT);
+    pinMode(scl, INPUT);
+    bus.begin(sda, scl);
+    bus.setClock(I2C_FREQ_HZ);
+    bus.setTimeOut(I2C_TIMEOUT_MS);
     delay(20);
 
     Serial.println("[SENSORS] Bus I2C réinitialisé (9 impulsions SCL, SDA="
-                   + String(_currentSDA) + ", SCL=" + String(_currentSCL) + ")");
+                   + String(sda) + ", SCL=" + String(scl) + ")");
 }
 
 /* =========================================================================
@@ -1168,27 +1455,31 @@ void SensorDriver::_resetI2CBus() {
  * ========================================================================= */
 
 bool SensorDriver::_readMS5803(PressureData& out) {
-    /* ---- Conversion D1 (pression), OSR 4096 : ~9 ms — bus n°2 (Wire1) ---- */
-    _i2c2Write(MS5803_I2C_ADDR, 0x48, 0x00);
-    delay(10);
-    Wire1.beginTransmission(MS5803_I2C_ADDR);
-    Wire1.write(0x00);
-    if (Wire1.endTransmission(false) != 0) { _i2cConsecFails++; return false; }
-    Wire1.requestFrom((uint8_t)MS5803_I2C_ADDR, (uint8_t)3);
-    if (Wire1.available() < 3) { _i2cConsecFails++; return false; }
-    uint32_t D1 = ((uint32_t)Wire1.read() << 16)
-                | ((uint32_t)Wire1.read() << 8) | Wire1.read();
+    /* Bus et adresse routés du baromètre (v1.3.0) — conversions ADC lentes (~9 ms chacune) */
+    TwoWire* bus = g_i2cRouter.wireOf(I2C_DEV_MS5803);
+    const uint8_t addr = g_i2cRouter.addrOf(I2C_DEV_MS5803);
 
-    /* ---- Conversion D2 (température), OSR 4096 : ~9 ms — bus n°2 (Wire1) ---- */
-    _i2c2Write(MS5803_I2C_ADDR, 0x58, 0x00);
+    /* ---- Conversion D1 (pression), OSR 4096 : ~9 ms ---- */
+    _i2cWrite2B(bus, addr, 0x48, 0x00);
     delay(10);
-    Wire1.beginTransmission(MS5803_I2C_ADDR);
-    Wire1.write(0x00);
-    if (Wire1.endTransmission(false) != 0) { _i2cConsecFails++; return false; }
-    Wire1.requestFrom((uint8_t)MS5803_I2C_ADDR, (uint8_t)3);
-    if (Wire1.available() < 3) { _i2cConsecFails++; return false; }
-    uint32_t D2 = ((uint32_t)Wire1.read() << 16)
-                | ((uint32_t)Wire1.read() << 8) | Wire1.read();
+    bus->beginTransmission(addr);
+    bus->write(0x00);
+    if (bus->endTransmission(false) != 0) { _i2cConsecFails++; return false; }
+    bus->requestFrom((uint8_t)addr, (uint8_t)3);
+    if (bus->available() < 3) { _i2cConsecFails++; return false; }
+    uint32_t D1 = ((uint32_t)bus->read() << 16)
+                | ((uint32_t)bus->read() << 8) | bus->read();
+
+    /* ---- Conversion D2 (température), OSR 4096 : ~9 ms ---- */
+    _i2cWrite2B(bus, addr, 0x58, 0x00);
+    delay(10);
+    bus->beginTransmission(addr);
+    bus->write(0x00);
+    if (bus->endTransmission(false) != 0) { _i2cConsecFails++; return false; }
+    bus->requestFrom((uint8_t)addr, (uint8_t)3);
+    if (bus->available() < 3) { _i2cConsecFails++; return false; }
+    uint32_t D2 = ((uint32_t)bus->read() << 16)
+                | ((uint32_t)bus->read() << 8) | bus->read();
     _i2cConsecFails = 0;   /* transaction complète réussie */
 
     /* ---- Compensation 24 bits (coefficients C1-C6) ---- */
@@ -1262,9 +1553,19 @@ void SensorDriver::_taskEntry(void* param) {
 void SensorDriver::_taskLoop() {
     TickType_t lastWake = xTaskGetTickCount();
     for (;;) {
+        /* Verrou du bus ROUTÉ de l'INA3221, partagé avec la routine « Check
+         * Propulseurs » (v1.1.0, généralisé v1.2.0) : toute l'itération
+         * ci-dessous (requêtes bus, récupérations, lectures) reste
+         * propriétaire exclusive du bus. En cas d'échec d'acquisition
+         * (impulsion de check en cours — une lecture I2C au pire ~50 ms de
+         * timeout), on SAUTE les accès I2C de CE cycle : la publication et le
+         * cadencement 100 Hz continuent, jamais de blocage indéfini. */
+        const bool inaBusOwned = (_inaBusLock != nullptr) &&
+            (xSemaphoreTake(_inaBusLock, pdMS_TO_TICKS(100)) == pdTRUE);
+
         /* Requêtes bus de la tâche Web (scan / réinit broches) : exécutées par
          * cette tâche, seule propriétaire du bus — jamais d'accès concurrent. */
-        _processBusRequests();
+        if (inaBusOwned) _processBusRequests();
 
         uint32_t now = millis();
 
@@ -1331,19 +1632,26 @@ void SensorDriver::_taskLoop() {
             }
         } else if (_status.ms5803 == SENSOR_DISCONNECTED &&
                    (now - _lastMS5803Read >= MS5803_REPROBE_MS)) {
-            /* Une sonde = une transaction vers 0x76 sur le bus n°2 (NACK immédiat si absent) */
+            /* Une sonde = une transaction vers l'adresse routée, sur le bus routé
+             * (NACK immédiat si absent) */
             _lastMS5803Read = now;
-            if (_i2c2DevicePresent(MS5803_I2C_ADDR)) {
-                Serial.println("[SENSORS] MS5803 réapparu sur le bus n°2 → réinitialisation");
+            if (_i2cDevicePresent(g_i2cRouter.wireOf(I2C_DEV_MS5803),
+                                  g_i2cRouter.addrOf(I2C_DEV_MS5803))) {
+                Serial.println("[SENSORS] MS5803 réapparu sur son bus routé → réinitialisation");
                 _initMS5803();   /* réinit complète (PROM) ; reconnecté si OK */
             }
         }
 
         /* ---- IMU + puissance : lectures I2C exécutées HORS mutex dans les
          *      buffers de travail. getSensorEvent() peut bloquer jusqu'au timeout
-         *      I2C (50 ms) sans INT ; hors mutex, cela ne gèle plus les lecteurs. ---- */
-        _readIMU();
-        _readPower();
+         *      I2C (50 ms) sans INT ; hors mutex, cela ne gèle plus les lecteurs.
+         *      Bus de l'INA3221 occupé par le check propulseurs : valeurs du
+         *      cycle précédent republiées (stables) — la reprise suit au prochain
+         *      cycle. ---- */
+        if (inaBusOwned) {
+            _readIMU();
+            _readPower();
+        }
 
         /* ---- PUBLICATION : courte copie atomique des buffers SOUS mutex ---- */
         xSemaphoreTake(_mutex, portMAX_DELAY);
@@ -1361,6 +1669,8 @@ void SensorDriver::_taskLoop() {
             _pressure.immersed      = false;
         }
         xSemaphoreGive(_mutex);
+
+        if (inaBusOwned) xSemaphoreGive(_inaBusLock);
 
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(TASK_SENSORS_PERIOD_MS));
     }

@@ -5,9 +5,9 @@
  * Gère le point d'accès Wi-Fi, le portail captif DNS, les endpoints REST
  * (/api/wifi/scan, /api/wifi/connect, /api/settings/save, /api/comm/config,
  * /api/pwm/output-enable, /api/pwm/config, /api/gpio/config, /api/gpio/test,
- * /api/names, /api/i2c/scan, /api/i2c/config, /api/ota/firmware,
+ * /api/names, /api/i2c/scan, /api/i2c/config, /api/i2c/routing, /api/ota/firmware,
  * /api/ota/filesystem, /api/system/status, /api/qnh/config, /api/qnh/refresh,
- * /api/calibrate_qnh)
+ * /api/calibrate_qnh, /api/motors/config, /api/motors/check)
  * et le serveur WebSocket diffusant la télémétrie temps réel en JSON.
  *
  * @author Didier Dero
@@ -22,6 +22,9 @@
 #include "config.h"
 #include "protocol.h"
 #include "flight_controller.h"
+#include "motor_manager.h"      /* g_motors : config NVS + check + télémétrie (v1.1.0) */
+#include "simulator.h"          /* g_sim : simulateur de test virtuel (établi) */
+#include "i2c_router.h"         /* g_i2cRouter : carte de routage Plug & Play (v1.2.0) */
 
 #include <WiFi.h>
 #include <LittleFS.h>
@@ -320,6 +323,24 @@ void BobWebServer::_setupRoutes() {
     _server.on("/api/calibrate_qnh", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handleQnhRefreshPost(request); });
 
+    /* REST : Gestion de sécurité moteurs (v1.1.0) — GET/POST config = 5
+     * paramètres NVS (check démarrage, détection surintensité, remontée
+     * d'urgence, seuil I, seuil V_BAT) ; POST check = relance manuelle. */
+    _server.on("/api/motors/config", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleMotorsConfigGet(request); });
+    _server.on("/api/motors/config", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleMotorsConfigPost(request); });
+    _server.on("/api/motors/check", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleMotorsCheckPost(request); });
+
+    /* REST : Simulateur de test virtuel (établi) — GET = valeurs courantes +
+     * bornes des sliders ; POST = injection (toggle, tensions B1/B2, courants
+     * H/V, blocages M1-M8). État RAM uniquement, jamais NVS. */
+    _server.on("/api/simulator", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleSimulatorGet(request); });
+    _server.on("/api/simulator", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleSimulatorPost(request); });
+
     /* REST : Scan I2C (GET) */
     _server.on("/api/i2c/scan", HTTP_GET,
         [this](AsyncWebServerRequest* request) { _handleI2CScan(request); });
@@ -329,6 +350,15 @@ void BobWebServer::_setupRoutes() {
         [this](AsyncWebServerRequest* request) { _handleI2CConfigGet(request); });
     _server.on("/api/i2c/config", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handleI2CConfigPost(request); });
+
+    /* REST : Routage I2C Plug & Play (v1.2.0) — GET = carte courante, POST =
+     * nouvelle carte (une clé par module, 1 = Wire / 2 = Wire1) → NVS +
+     * redémarrage différé 3 s : le routage ne s'applique qu'au boot (le bus
+     * du PCA9685 porte les sorties PWM 100 Hz — jamais de re-routage à chaud). */
+    _server.on("/api/i2c/routing", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleI2CRoutingGet(request); });
+    _server.on("/api/i2c/routing", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleI2CRoutingPost(request); });
 
     /* REST : Mise à jour OTA — corps brut d'un .bin vers la partition
      * applicative inactive (firmware) ou LittleFS (fichiers Web). On utilise
@@ -684,11 +714,13 @@ void BobWebServer::_handleI2CScan(AsyncWebServerRequest* request) {
         JsonObject obj = arr.add<JsonObject>();
         obj["address"] = String(d.hexStr);
         obj["dec"]     = d.address;
-        obj["bus"]     = d.bus;    /* 1 = capteurs (Wire) | 2 = MS5837 + PCA9685 (Wire1) */
+        obj["bus"]     = d.bus;    /* 1 = Wire | 2 = Wire1 — modules répartis par le routage Plug & Play */
         obj["name"]    = String(d.name);
     }
-    doc["sda"] = g_sensors.getCurrentSDA();
-    doc["scl"] = g_sensors.getCurrentSCL();
+    doc["sda"]  = g_sensors.getCurrentSDA();
+    doc["scl"]  = g_sensors.getCurrentSCL();
+    doc["sda2"] = g_sensors.getCurrent2SDA();
+    doc["scl2"] = g_sensors.getCurrent2SCL();
     serializeJson(doc, response);
     request->send(200, "application/json", response);
 }
@@ -803,6 +835,233 @@ void BobWebServer::_handleI2CConfigPost(AsyncWebServerRequest* request) {
     resp["sda"]        = sda;
     resp["scl"]        = scl;
     resp["restart_ms"] = 3000;
+    serializeJson(resp, response);
+    request->send(200, "application/json", response);
+}
+
+/* -------------------------------------------------------------------------
+ * Routage I2C Plug & Play (v1.3.0) — clés API de l'endpoint /api/i2c/routing.
+ *
+ * L'ORDRE suit exactement l'enum I2CDeviceId (i2c_router.h) : ne jamais
+ * réordonner, la compatibilité frontend/firmware en dépend.
+ * Chaque module porte DEUX paramètres : la clé ci-dessous (bus) et la même
+ * clé suffixée « _addr » (adresse I2C, décimale ou 0x hexadécimale).
+ * ------------------------------------------------------------------------- */
+static const char* const kRoutingKeys[I2C_DEV_COUNT] = {
+    "bno085", "ina3221", "ina226_2", "ina226_3", "ms5803", "pca9685"
+};
+
+/* Parse une adresse I2C (0x01–0x7F) depuis une valeur API : décimale
+ * (ex. « 74 ») ou hexadécimale (ex. « 0x4A »). Retourne 0 si invalide. */
+static uint8_t _parseI2CAddr(const String& value) {
+    const char* s = value.c_str();
+    long v;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        v = strtol(s + 2, nullptr, 16);
+    } else {
+        v = strtol(s, nullptr, 10);
+    }
+    if (v < 0x01 || v > 0x7F) return 0;
+    return (uint8_t)v;
+}
+
+/* -------------------------------------------------------------------------
+ * Handler GET /api/i2c/routing — Carte de routage courante (v1.3.0).
+ *
+ * Retourne le couple (bus, adresse) assigné de chaque module (avec nom et
+ * adresse pour le rendu de la table « Routage I2C Plug & Play »), les
+ * broches actuelles des deux bus, le bus protégé du PCA9685 (pwm_bus),
+ * l'état de conflit généralisé (deux modules même bus + même adresse —
+ * possible seulement via une NVS éditée à la main, l'API de sauvegarde
+ * refuse ce cas) ET le dernier scan I2C mémorisé (champ « scan ») : les
+ * selects d'adresses de l'interface proposent ces adresses découvertes
+ * sans relancer de scan à chaque chargement de page.
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handleI2CRoutingGet(AsyncWebServerRequest* request) {
+    String response;
+    JsonDocument doc;
+    doc["pwm_bus"] = g_i2cRouter.pwmBus();
+    doc["conflict"] = g_i2cRouter.hasAddressConflict();
+    doc["sda"]  = g_sensors.getCurrentSDA();
+    doc["scl"]  = g_sensors.getCurrentSCL();
+    doc["sda2"] = g_sensors.getCurrent2SDA();
+    doc["scl2"] = g_sensors.getCurrent2SCL();
+
+    JsonArray arr = doc["devices"].to<JsonArray>();
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        const I2CDeviceId dev = (I2CDeviceId)d;
+        const uint8_t addr = g_i2cRouter.addrOf(dev);
+        JsonObject obj = arr.add<JsonObject>();
+        char hex[6];
+        snprintf(hex, sizeof(hex), "0x%02X", addr);
+        obj["key"]      = kRoutingKeys[d];
+        obj["name"]     = I2CRouter::nameOf(dev);
+        obj["addr"]     = hex;
+        obj["addr_dec"] = addr;
+        obj["bus"]      = g_i2cRouter.busOf(dev);
+    }
+
+    /* Dernier scan I2C (boot ou scan manuel) — même format que /api/i2c/scan */
+    JsonArray scanArr = doc["scan"].to<JsonArray>();
+    const std::vector<I2CDeviceInfo> lastScan = g_sensors.getLastScan();
+    for (const I2CDeviceInfo& dev : lastScan) {
+        JsonObject so = scanArr.add<JsonObject>();
+        so["address"] = String(dev.hexStr);
+        so["dec"]     = dev.address;
+        so["bus"]     = dev.bus;
+        so["name"]    = String(dev.name);
+    }
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* -------------------------------------------------------------------------
+ * Handler POST /api/i2c/routing — Enregistre la carte de routage complète.
+ *
+ * Les DOUZE clés sont requises (bus ET adresse des six modules, v1.3.0) :
+ *   Form : bno085=1&bno085_addr=74&ina3221=1&ina3221_addr=64&...
+ *   JSON : {"bno085":1,"bno085_addr":74,...}
+ *   - bus : 1 = Wire ou 2 = Wire1 ;
+ *   - adresse : 0x01–0x7F, décimale (74) ou hexadécimale (0x4A).
+ *
+ * Refus 400 si deux modules aboutissent sur le MÊME bus à la MÊME adresse
+ * (conflit généralisé v1.3.0 — cas historique INA3221/PCA9685 à 0x40 ;
+ * save() refuse aussi structurellement ce cas). La carte en mémoire est
+ * restaurée si la NVS refuse l'écriture : pwmBus() dirige les récupérations
+ * watchdog, il doit refléter la topologie RÉELLEMENT active jusqu'au
+ * redémarrage. Application au boot suivant uniquement — le re-routage à
+ * chaud est interdit (le bus du PCA9685 porte les PWM 100 Hz de la tâche
+ * de contrôle) : sauvegarde NVS vérifiée par relecture puis redémarrage
+ * différé de 3 s, même discipline que les broches SDA/SCL.
+ * ------------------------------------------------------------------------- */
+void BobWebServer::_handleI2CRoutingPost(AsyncWebServerRequest* request) {
+    uint8_t wantedBus[I2C_DEV_COUNT];
+    uint8_t wantedAddr[I2C_DEV_COUNT];
+    bool got[I2C_DEV_COUNT] = {false};
+
+    /* Accepte form-urlencoded / query params : une paire de clés par module */
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        const char* keyBus = kRoutingKeys[d];
+        const String keyAddr = String(keyBus) + "_addr";
+        const AsyncWebParameter* pBus = nullptr;
+        const AsyncWebParameter* pAddr = nullptr;
+        if (request->hasParam(keyBus, true)) pBus = request->getParam(keyBus, true);
+        else if (request->hasParam(keyBus)) pBus = request->getParam(keyBus);
+        if (request->hasParam(keyAddr.c_str(), true)) pAddr = request->getParam(keyAddr.c_str(), true);
+        else if (request->hasParam(keyAddr.c_str())) pAddr = request->getParam(keyAddr.c_str());
+        if (pBus != nullptr && pAddr != nullptr) {
+            wantedBus[d]  = (uint8_t)pBus->value().toInt();
+            wantedAddr[d] = _parseI2CAddr(pAddr->value());
+            got[d] = true;
+        }
+    }
+
+    /* Fallback JSON body : {"bno085":1,"bno085_addr":74,...} */
+    bool any = false;
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        if (got[d]) any = true;
+    }
+    if (!any && request->hasParam("plain", true)) {
+        const AsyncWebParameter* body = request->getParam("plain", true);
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, body->value());
+        if (!err) {
+            for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+                const String keyAddr = String(kRoutingKeys[d]) + "_addr";
+                if (doc[kRoutingKeys[d]].is<uint8_t>() && doc[keyAddr].is<uint8_t>()) {
+                    wantedBus[d]  = doc[kRoutingKeys[d]].as<uint8_t>();
+                    wantedAddr[d] = doc[keyAddr].as<uint8_t>();
+                    got[d] = true;
+                }
+            }
+        }
+    }
+
+    /* Les six modules doivent être assignés (bus ET adresse) : un POST
+     * partiel ne doit jamais pouvoir replier silencieusement les modules
+     * omis sur leurs défauts. */
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        if (!got[d]) {
+            request->send(400, "application/json",
+                          "{\"error\":\"Parametres requis : bus ET adresse des 6 modules "
+                          "(<module> et <module>_addr)\"}");
+            return;
+        }
+    }
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        if (wantedBus[d] != 1 && wantedBus[d] != 2) {
+            request->send(400, "application/json", "{\"error\":\"Bus invalide (1 ou 2)\"}");
+            return;
+        }
+        if (wantedAddr[d] < 0x01 || wantedAddr[d] > 0x7F) {
+            request->send(400, "application/json",
+                          "{\"error\":\"Adresse invalide (0x01-0x7F)\"}");
+            return;
+        }
+    }
+
+    /* Appliquer la nouvelle carte en mémoire, en gardant une copie de
+     * secours de la carte active (restaurée sur tout échec en aval). */
+    uint8_t backupBus[I2C_DEV_COUNT];
+    uint8_t backupAddr[I2C_DEV_COUNT];
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        const I2CDeviceId dev = (I2CDeviceId)d;
+        backupBus[d]  = g_i2cRouter.busOf(dev);
+        backupAddr[d] = g_i2cRouter.addrOf(dev);
+        g_i2cRouter.setBusOf(dev, wantedBus[d]);
+        g_i2cRouter.setAddrOf(dev, wantedAddr[d]);
+    }
+
+    /* Garde-fou structurel : deux modules jamais sur le même bus à la même
+     * adresse (historique : INA3221 et PCA9685, tous deux 0x40). */
+    I2CDeviceId ca, cb;
+    if (g_i2cRouter.firstConflict(ca, cb)) {
+        const uint8_t confBus  = g_i2cRouter.busOf(ca);
+        const uint8_t confAddr = g_i2cRouter.addrOf(ca);
+        for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+            g_i2cRouter.setBusOf((I2CDeviceId)d, backupBus[d]);
+            g_i2cRouter.setAddrOf((I2CDeviceId)d, backupAddr[d]);
+        }
+        char errMsg[192];
+        snprintf(errMsg, sizeof(errMsg),
+                 "{\"error\":\"Conflit adresse : %s et %s sur le bus %u a la meme adresse 0x%02X\"}",
+                 I2CRouter::shortNameOf(ca), I2CRouter::shortNameOf(cb),
+                 (unsigned)confBus, (unsigned)confAddr);
+        request->send(400, "application/json", errMsg);
+        return;
+    }
+
+    /* Sauvegarde NVS (vérifiée par relecture côté routeur). En cas d'échec,
+     * restaurer la carte en mémoire — pwmBus() dirige les récupérations
+     * watchdog et ne doit pas dévier de la topologie réellement active. */
+    if (!g_i2cRouter.save()) {
+        for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+            g_i2cRouter.setBusOf((I2CDeviceId)d, backupBus[d]);
+            g_i2cRouter.setAddrOf((I2CDeviceId)d, backupAddr[d]);
+        }
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (routage non enregistre)\"}");
+        return;
+    }
+
+    Serial.println("[WEB] Routage I2C Plug & Play enregistré (NVS, bus + adresses) — redémarrage dans 3 s");
+    _scheduleRestart(3000);
+
+    String response;
+    JsonDocument resp;
+    resp["status"]     = "ok";
+    resp["restart_ms"] = 3000;
+    JsonArray arr = resp["devices"].to<JsonArray>();
+    for (uint8_t d = 0; d < I2C_DEV_COUNT; d++) {
+        const I2CDeviceId dev = (I2CDeviceId)d;
+        JsonObject obj = arr.add<JsonObject>();
+        char hex[6];
+        snprintf(hex, sizeof(hex), "0x%02X", g_i2cRouter.addrOf(dev));
+        obj["key"]      = kRoutingKeys[d];
+        obj["bus"]      = g_i2cRouter.busOf(dev);
+        obj["addr"]     = hex;
+        obj["addr_dec"] = g_i2cRouter.addrOf(dev);
+    }
     serializeJson(resp, response);
     request->send(200, "application/json", response);
 }
@@ -1409,6 +1668,198 @@ void BobWebServer::_handleQnhRefreshPost(AsyncWebServerRequest* request) {
 }
 
 /* =========================================================================
+ * GESTION DE SÉCURITÉ MOTEURS (v1.1.0) — CHECK, SURVEILLANCE, ISOLEMENT
+ * ========================================================================= */
+
+/* Handler GET /api/motors/config — 5 paramètres NVS + état courant du
+ * gestionnaire (voyant, check, défaut, isolements). L'onglet Paramètres
+ * s'y réfère à l'ouverture ; la carte Moteurs y lit les bornes de validité. */
+void BobWebServer::_handleMotorsConfigGet(AsyncWebServerRequest* request) {
+    MotorConfig cfg;
+    g_motors.getConfig(cfg);
+
+    JsonDocument doc;
+    doc["check_enable"]     = cfg.checkEnable;
+    doc["detect_enable"]    = cfg.detectEnable;
+    doc["emergency_enable"] = cfg.emergencyEnable;
+    doc["cur_thresh"]       = roundf(cfg.currentThresholdA * 10.0f) / 10.0f;
+    doc["vbat_low"]         = roundf(cfg.vbatLowV * 10.0f) / 10.0f;
+    doc["cur_thresh_min"]   = MOTOR_CURRENT_THRESH_MIN_A;
+    doc["cur_thresh_max"]   = MOTOR_CURRENT_THRESH_MAX_A;
+    doc["vbat_low_min"]     = MOTOR_VBAT_LOW_MIN_V;
+    doc["vbat_low_max"]     = MOTOR_VBAT_LOW_MAX_V;
+    doc["health"]           = (uint8_t)g_motors.getStatus();
+    doc["status_text"]      = g_motors.getLastStatusText();
+    doc["check_done"]       = g_motors.isCheckDone();
+    doc["check_passed"]     = g_motors.isCheckPassed();
+    doc["check_pending"]    = g_motors.isCheckPending();
+    doc["fault"]            = g_motors.isFaultActive();
+    doc["emergency"]        = g_motors.isEmergencySurfaceActive();
+    doc["isolated_mask"]    = g_motors.getIsolatedMask();
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* Handler POST /api/motors/config — enregistre les 5 paramètres en NVS
+ * (écriture vérifiée par relecture dans MotorManager::setConfig).
+ * Corps form-urlencoded : check_enable, detect_enable, emergency_enable,
+ * cur_thresh (A), vbat_low (V) — champs de corps, d'URL ou JSON ; les champs
+ * absents conservent la valeur courante. */
+void BobWebServer::_handleMotorsConfigPost(AsyncWebServerRequest* request) {
+    MotorConfig cfg;
+    g_motors.getConfig(cfg);   /* valeurs courantes par défaut (champs absents) */
+
+    auto readBool = [&request](const char* name, bool& out) {
+        if (request->hasParam(name, true)) {
+            out = request->getParam(name, true)->value().equalsIgnoreCase("true");
+        } else if (request->hasParam(name)) {
+            out = request->getParam(name)->value().equalsIgnoreCase("true");
+        }
+    };
+    auto readFloat = [&request](const char* name, float& out) {
+        if (request->hasParam(name, true)) {
+            out = request->getParam(name, true)->value().toFloat();
+        } else if (request->hasParam(name)) {
+            out = request->getParam(name)->value().toFloat();
+        }
+    };
+    readBool("check_enable",     cfg.checkEnable);
+    readBool("detect_enable",    cfg.detectEnable);
+    readBool("emergency_enable", cfg.emergencyEnable);
+    readFloat("cur_thresh",      cfg.currentThresholdA);
+    readFloat("vbat_low",        cfg.vbatLowV);
+
+    if (!g_motors.setConfig(cfg)) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (configuration non enregistree)\"}");
+        return;
+    }
+    request->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+/* Handler POST /api/motors/check — relance manuelle de la séquence de check
+ * propulseurs. Non bloquant : la tâche de gestion moteurs exécute les
+ * impulsions séquentielles ; l'interface suit le résultat via GET
+ * /api/motors/config et l'objet « motors » de la télémétrie WebSocket. */
+void BobWebServer::_handleMotorsCheckPost(AsyncWebServerRequest* request) {
+    if (!g_motors.requestManualCheck()) {
+        request->send(409, "application/json",
+                      "{\"error\":\"Check impossible : sequence en cours ou defaut actif (isolation)\"}");
+        return;
+    }
+    request->send(200, "application/json", "{\"status\":\"started\"}");
+}
+
+/* =========================================================================
+ * SIMULATEUR DE TEST VIRTUEL (établi) — INJECTION CAPTEURS
+ * =========================================================================
+ *
+ * Routes /api/simulator (état RAM uniquement, jamais NVS) : le panneau
+ * « Simulateur de Test Virtuel » (Paramètres, grands écrans) pilote le bypass
+ * des lectures INA3221/INA226 (voir SensorDriver et simulator.h). Dès que la
+ * simulation repasse inactive, la machine à états de sécurité est réalimentée
+ * par les capteurs réels au cycle capteurs suivant (10 ms) et un réarmement
+ * « établi » est demandé à la tâche Motors : isolements, défaut et check
+ * échoué induits par la simulation sont levés au cycle de surveillance
+ * suivant (100 ms).
+ */
+
+/* Handler GET /api/simulator — valeurs courantes + bornes de bornage. */
+void BobWebServer::_handleSimulatorGet(AsyncWebServerRequest* request) {
+    const SimValues sim = g_sim.get();
+    JsonDocument doc;
+    doc["active"]        = sim.active;
+    doc["vbat1"]         = roundf(sim.vbat1V * 100.0f) / 100.0f;
+    doc["vbat2"]         = roundf(sim.vbat2V * 100.0f) / 100.0f;
+    doc["curh"]          = roundf(sim.curH_A * 100.0f) / 100.0f;
+    doc["curv"]          = roundf(sim.curV_A * 100.0f) / 100.0f;
+    doc["stall_mask"]    = sim.stallMask;
+    doc["vbat1_default"] = SIM_VBAT1_DEFAULT_V;
+    doc["vbat1_max"]     = SIM_VBAT1_MAX_V;
+    doc["vbat2_default"] = SIM_VBAT2_DEFAULT_V;
+    doc["vbat2_max"]     = SIM_VBAT2_MAX_V;
+    doc["cur_max"]       = SIM_CURRENT_MAX_A;
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* Handler POST /api/simulator — remplace les valeurs injectées.
+ * Corps form-urlencoded : active, vbat1, vbat2, curh, curv, stall_mask —
+ * champs de corps ou d'URL ; les champs absents conservent la valeur
+ * courante ; toutes les valeurs sont bornées défensivement (config.h SIM_*). */
+void BobWebServer::_handleSimulatorPost(AsyncWebServerRequest* request) {
+    const SimValues prev = g_sim.get();   /* base : valeurs courantes (champs absents) */
+    SimValues sim = prev;
+
+    auto readBool = [&request](const char* name, bool& out) {
+        if (request->hasParam(name, true)) {
+            out = request->getParam(name, true)->value().equalsIgnoreCase("true");
+        } else if (request->hasParam(name)) {
+            out = request->getParam(name)->value().equalsIgnoreCase("true");
+        }
+    };
+    auto readFloat = [&request](const char* name, float& out) {
+        if (request->hasParam(name, true)) {
+            out = request->getParam(name, true)->value().toFloat();
+        } else if (request->hasParam(name)) {
+            out = request->getParam(name)->value().toFloat();
+        }
+    };
+    auto readStallMask = [&request](uint8_t& out) {
+        const AsyncWebParameter* p = request->hasParam("stall_mask", true)
+            ? request->getParam("stall_mask", true)
+            : (request->hasParam("stall_mask") ? request->getParam("stall_mask") : nullptr);
+        if (p == nullptr) return;   /* champ absent : masque courant conservé */
+        long v = p->value().toInt();
+        if (v < 0) v = 0;
+        if (v > 0xFF) v = 0xFF;     /* 8 moteurs simulables : bits 0-7 */
+        out = (uint8_t)v;
+    };
+
+    readBool("active", sim.active);
+    readFloat("vbat1", sim.vbat1V);
+    readFloat("vbat2", sim.vbat2V);
+    readFloat("curh", sim.curH_A);
+    readFloat("curv", sim.curV_A);
+    readStallMask(sim.stallMask);
+
+    /* Bornage défensif (config.h) — l'API ne peut pas injecter hors plage. */
+    if (sim.vbat1V < 0.0f) sim.vbat1V = 0.0f;
+    if (sim.vbat1V > SIM_VBAT1_MAX_V) sim.vbat1V = SIM_VBAT1_MAX_V;
+    if (sim.vbat2V < 0.0f) sim.vbat2V = 0.0f;
+    if (sim.vbat2V > SIM_VBAT2_MAX_V) sim.vbat2V = SIM_VBAT2_MAX_V;
+    if (sim.curH_A < 0.0f) sim.curH_A = 0.0f;
+    if (sim.curH_A > SIM_CURRENT_MAX_A) sim.curH_A = SIM_CURRENT_MAX_A;
+    if (sim.curV_A < 0.0f) sim.curV_A = 0.0f;
+    if (sim.curV_A > SIM_CURRENT_MAX_A) sim.curV_A = SIM_CURRENT_MAX_A;
+
+    g_sim.set(sim);
+
+    /* Arrêt du simulateur (actif → inactif) : les défauts observés sous
+     * valeurs simulées (surintensité, moteurs isolés, check échoué, remontée
+     * d'urgence) ne sont plus justifiés par aucune mesure réelle — réarmement
+     * établi demandé à la tâche Motors (appliqué au cycle suivant, 100 ms ;
+     * sans effet si l'état était déjà propre). */
+    if (prev.active && !sim.active) {
+        g_motors.requestSimulatorReset();
+    }
+
+    /* Trace série sur transition uniquement (pas de spam à chaque slider). */
+    if (sim.active != prev.active) {
+        Serial.println(sim.active
+            ? "[SIM] Simulation capteurs ACTIVE — lectures INA3221/INA226 bypassées, valeurs injectées"
+            : "[SIM] Simulation capteurs INACTIVE — retour aux capteurs réels, réarmement moteurs demandé");
+    }
+    if (sim.active && sim.stallMask != prev.stallMask) {
+        Serial.println("[SIM] Blocages moteurs simulés : masque 0x" + String(sim.stallMask, HEX));
+    }
+
+    request->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+/* =========================================================================
  * MISE À JOUR OTA — TÉLÉVERSEMENT FIRMWARE & FICHIERS WEB (LittleFS)
  * =========================================================================
  *
@@ -1465,7 +1916,10 @@ void BobWebServer::_handleOtaBody(AsyncWebServerRequest* request, uint8_t* data,
         Serial.println(String("[WEB] OTA : réception du corps (") + String(total)
                        + " octets — " + String(_otaWasFS ? "fichiers Web" : "firmware") + ")");
 
-        /* Neutraliser la propulsion et les sorties ON/OFF AVANT de toucher la flash */
+        /* Neutraliser la propulsion et les sorties ON/OFF AVANT de toucher la flash.
+         * La remontée d'urgence est d'abord coupée : une mise à jour volontaire
+         * est une décision humaine qui prime sur la survie automatique. */
+        g_motors.abortEmergencySurface();
         g_pwm.setPhysicalOutputsEnabled(false);
         g_pwm.setAllNeutral();
         g_gpio.allOff();
@@ -1771,6 +2225,7 @@ void BobWebServer::_taskLoop() {
                 doc["physical_outputs_enabled"] = g_pwm.isPhysicalOutputsEnabled();
                 doc["pwm_type_mask"] = g_pwm.getChannelTypeMask();  /* typage canaux 10-15 (bit=1 bidir) */
                 doc["gpio_state"]    = g_gpio.getState();           /* état réel des 4 sorties ON/OFF */
+                doc["sim_active"]    = g_sim.get().active;          /* simulateur établi (badge topbar) */
 
                 /* Informations de connexion Wi-Fi (STA + AP) */
                 {
@@ -1833,11 +2288,11 @@ void BobWebServer::_taskLoop() {
                 pressObj["immersed"] = press.immersed;                                 /* statut immersion */
                 pressObj["alt"]      = roundf(press.altitude_m * 100.0f) / 100.0f;     /* repère PID (compat) */
 
-                /* Puissance (3 wattmètres) */
+                /* Puissance (5 canaux : 3 canaux INA3221 + 2 INA226 résiduels) */
                 PowerData pwr;
                 g_sensors.getPowerData(pwr);
                 JsonArray pwrArr = doc["power"].to<JsonArray>();
-                for (uint8_t i = 0; i < 3; i++) {
+                for (uint8_t i = 0; i < 5; i++) {
                     JsonObject ch = pwrArr.add<JsonObject>();
                     ch["v"] = pwr.voltage[i];
                     ch["i"] = pwr.current[i];
@@ -1850,10 +2305,24 @@ void BobWebServer::_taskLoop() {
                 sens["bno085"]  = (uint8_t)st.bno085;
                 sens["bno085_err"] = g_sensors.getLastBNO085Error();   /* diagnostic sans câble USB */
                 sens["ms5803"]  = (uint8_t)st.ms5803;
-                sens["ina0"] = (uint8_t)st.ina226[0];
-                sens["ina1"] = (uint8_t)st.ina226[1];
-                sens["ina2"] = (uint8_t)st.ina226[2];
-                sens["pca"]  = (uint8_t)st.pca9685;
+                sens["ina3221"] = (uint8_t)st.ina3221;   /* triple wattmètre V_BAT + 2× ACS770 (v1.1.0) */
+                sens["ina1"]    = (uint8_t)st.ina226[0]; /* INA226 n°2 (électronique de commande) */
+                sens["ina2"]    = (uint8_t)st.ina226[1]; /* INA226 n°3 (projecteur LED) */
+                sens["pca"]     = (uint8_t)st.pca9685;
+
+                /* Gestion moteurs (v1.1.0) : voyant « Statut Moteurs », état du
+                 * check, défaut/isolation en cours et remontée d'urgence. */
+                {
+                    JsonObject motors = doc["motors"].to<JsonObject>();
+                    motors["health"]        = (uint8_t)g_motors.getStatus();
+                    motors["status"]        = g_motors.getLastStatusText();
+                    motors["check_done"]    = g_motors.isCheckDone();
+                    motors["check_passed"]  = g_motors.isCheckPassed();
+                    motors["check_pending"] = g_motors.isCheckPending();
+                    motors["fault"]         = g_motors.isFaultActive();
+                    motors["emergency"]     = g_motors.isEmergencySurfaceActive();
+                    motors["isolated_mask"] = g_motors.getIsolatedMask();
+                }
 
                 /* Statut liaison série RPi5 (interface active + heartbeat) */
                 JsonObject rpi = doc["rpi_link"].to<JsonObject>();

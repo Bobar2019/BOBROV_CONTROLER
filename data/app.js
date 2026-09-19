@@ -405,6 +405,245 @@ function initQnhCard() {
 }
 
 /* =========================================================================
+ * GESTION DE SÉCURITÉ MOTEURS (Télémétrie + Paramètres — v1.1.0)
+ * ========================================================================= */
+
+/**
+ * Met à jour le voyant « Statut Moteurs » depuis l'objet motors (WebSocket
+ * ou REST). health : 0 = inconnu (gris), 1 = OK (vert), 2 = avertissement
+ * batterie (orange), 3 = moteur bloqué/isolé (rouge). Le détail liste le
+ * check de démarrage, les isolements et la remontée d'urgence.
+ */
+function updateMotorsUI(m) {
+    const led = getEl('motors-led');
+    if (led) {
+        const cls = 'led ' + (m.health === 1 ? 'led-ok'
+                                  : m.health === 2 ? 'led-emu'
+                                  : m.health === 3 ? 'led-fail'
+                                  : 'led-off');
+        if (led.className !== cls) led.className = cls;
+    }
+    const txt = getEl('motors-status-text');
+    if (txt) {
+        const label = m.status || '—';
+        if (txt.textContent !== label) txt.textContent = label;
+        const color = m.health === 1 ? 'var(--success)'
+                    : m.health === 2 ? 'var(--warning)'
+                    : m.health === 3 ? 'var(--danger)'
+                    : '';
+        if (txt.style.color !== color) txt.style.color = color;
+    }
+    const detail = getEl('motors-detail');
+    if (detail) {
+        const parts = [];
+        if (m.check_pending) parts.push('Check propulseurs en cours…');
+        else if (m.check_done && m.check_passed === false) parts.push('Check de démarrage échoué');
+        if (m.emergency) parts.push('REMONTÉE D\'URGENCE ACTIVE');
+        const iso = m.isolated_mask || 0;
+        if (iso) {
+            const list = [];
+            for (let b = 0; b < 8; b++) if (iso & (1 << b)) list.push('M' + (b + 1));
+            parts.push('Moteurs isolés : ' + list.join(', '));
+        }
+        const newText = parts.length ? parts.join(' — ') : 'Aucun défaut signalé.';
+        if (detail.textContent !== newText) detail.textContent = newText;
+        const alert = !!m.emergency || m.health === 3;
+        detail.classList.toggle('motors-detail-alert', alert);
+    }
+}
+
+/**
+ * La case « Remontée d'urgence » n'est modifiable que si la détection
+ * surintensité est active (dépendance demandée par la spécification).
+ */
+function updateMotorsDependency() {
+    const detect = getEl('motors-detect-enable');
+    const row = getEl('motors-emergency-row');
+    const emergency = getEl('motors-emergency-enable');
+    if (!detect || !row || !emergency) return;
+    const on = detect.checked;
+    row.classList.toggle('motors-disabled', !on);
+    emergency.disabled = !on;
+    if (!on) emergency.checked = false;
+}
+
+/**
+ * Applique une réponse GET /api/motors/config aux champs de la carte
+ * Paramètres (sans écraser un champ en cours d'édition), resynchronise les
+ * bornes réelles du firmware et met à jour le voyant avec l'état courant.
+ */
+function updateMotorsConfigUI(data) {
+    const setChecked = (id, val) => {
+        const el = getEl(id);
+        if (el && document.activeElement !== el) el.checked = !!val;
+    };
+    setChecked('motors-check-enable',     data.check_enable);
+    setChecked('motors-detect-enable',    data.detect_enable);
+    setChecked('motors-emergency-enable', data.emergency_enable);
+
+    const setNum = (id, val) => {
+        const el = getEl(id);
+        if (el && document.activeElement !== el && typeof val === 'number') el.value = val;
+    };
+    setNum('motors-cur-thresh', data.cur_thresh);
+    setNum('motors-vbat-low',   data.vbat_low);
+
+    /* Bornes réelles du firmware — défense en profondeur si elles évoluent */
+    const clampAttrs = (id, min, max) => {
+        const el = getEl(id);
+        if (!el) return;
+        if (typeof min === 'number') el.min = min;
+        if (typeof max === 'number') el.max = max;
+    };
+    clampAttrs('motors-cur-thresh', data.cur_thresh_min, data.cur_thresh_max);
+    clampAttrs('motors-vbat-low',   data.vbat_low_min,   data.vbat_low_max);
+
+    updateMotorsDependency();
+    updateMotorsUI({
+        health: data.health, status: data.status_text,
+        check_done: data.check_done, check_passed: data.check_passed,
+        check_pending: data.check_pending, fault: data.fault,
+        emergency: data.emergency, isolated_mask: data.isolated_mask
+    });
+}
+
+/** Charge la configuration moteurs — silencieux si firmware antérieur. */
+async function loadMotorsConfig() {
+    try {
+        const res = await fetch('/api/motors/config', { cache: 'no-store' });
+        if (!res.ok) return;
+        updateMotorsConfigUI(await res.json());
+    } catch (_) { /* firmware ancien : carte muette */ }
+}
+
+/**
+ * Branche la carte « Gestion Moteurs » : sauvegarde des 5 paramètres NVS
+ * (POST form-urlencoded — les champs absents conservent leur valeur côté
+ * ESP32) et relance manuelle du check propulseurs (POST puis polling de la
+ * configuration : les impulsions tournent dans la tâche Motors, jamais dans
+ * le navigateur).
+ */
+function initMotorsCard() {
+    const status = getEl('motors-config-status');
+    const setStatus = (msg, color) => {
+        if (status) { status.textContent = msg; status.style.color = color || ''; }
+    };
+
+    /* Dépendance « Remontée d'urgence » ↔ « Détection surintensité » */
+    const detect = getEl('motors-detect-enable');
+    if (detect) detect.addEventListener('change', updateMotorsDependency);
+
+    const saveBtn = getEl('btn-save-motors');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', async () => {
+            const num = (id, fallback) => {
+                const el = getEl(id);
+                const v = el ? parseFloat(el.value) : NaN;
+                return isNaN(v) ? fallback : v;
+            };
+            const checked = (id) => {
+                const el = getEl(id);
+                return el && el.checked;
+            };
+            const curThresh = num('motors-cur-thresh', 3);
+            const vbatLow = num('motors-vbat-low', 14);
+            const emergencyOn = detect && detect.checked && checked('motors-emergency-enable');
+            saveBtn.disabled = true;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 6000);
+            try {
+                const body = 'check_enable=' + (checked('motors-check-enable') ? 'true' : 'false')
+                           + '&detect_enable=' + (checked('motors-detect-enable') ? 'true' : 'false')
+                           + '&emergency_enable=' + (emergencyOn ? 'true' : 'false')
+                           + '&cur_thresh=' + encodeURIComponent(curThresh)
+                           + '&vbat_low=' + encodeURIComponent(vbatLow);
+                const res = await fetch('/api/motors/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body,
+                    signal: ctrl.signal
+                });
+                const ct = res.headers.get('content-type') || '';
+                if (!res.ok || ct.indexOf('json') === -1) throw new Error('non-json');
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    setStatus('Paramètres enregistrés (NVS) — appliqués immédiatement.', 'var(--success)');
+                    loadMotorsConfig();   /* resynchronise champs + voyant */
+                } else {
+                    setStatus('Erreur : ' + (data.error || 'inconnue'), 'var(--danger)');
+                }
+            } catch (e) {
+                setStatus(e.name === 'AbortError'
+                    ? 'Contrôleur injoignable (pas de réponse en 6 s).'
+                    : 'Le contrôleur ne répond pas sur /api/motors/config — firmware ancien ?', 'var(--danger)');
+            } finally {
+                clearTimeout(timer);
+                saveBtn.disabled = false;
+            }
+        });
+    }
+
+    const checkBtn = getEl('btn-motors-check');
+    if (checkBtn) {
+        checkBtn.addEventListener('click', async () => {
+            const spinner = getEl('motors-check-spinner');
+            checkBtn.disabled = true;
+            if (spinner) spinner.hidden = false;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 6000);
+            try {
+                const res = await fetch('/api/motors/check', { method: 'POST', signal: ctrl.signal });
+                if (res.status === 409) {
+                    const errData = await res.json().catch(() => ({}));
+                    setStatus('Check refusé : ' + (errData.error
+                        || 'séquence en cours ou défaut actif (isolation).'), 'var(--warning)');
+                    return;
+                }
+                const ct = res.headers.get('content-type') || '';
+                if (!res.ok || ct.indexOf('json') === -1) throw new Error('non-json');
+                const data = await res.json();
+                if (data.status !== 'started') {
+                    setStatus('Erreur : ' + (data.error || 'inconnue'), 'var(--danger)');
+                    return;
+                }
+                /* Polling (500 ms, max 60 s) : la tâche Motors exécute les
+                 * impulsions séquentielles (~0,7 s par moteur, identification
+                 * en cas d'échec) — le verdict arrive via check_done. */
+                setStatus('Check propulseurs en cours — moteurs pulsés un par un…');
+                const deadline = Date.now() + 60000;
+                while (Date.now() < deadline) {
+                    await new Promise(r => setTimeout(r, 500));
+                    try {
+                        const cfgRes = await fetch('/api/motors/config', { cache: 'no-store' });
+                        if (!cfgRes.ok) break;
+                        const cfg = await cfgRes.json();
+                        updateMotorsConfigUI(cfg);   /* voyant + champs suivent la séquence */
+                        if (cfg.check_done && !cfg.check_pending) {
+                            if (cfg.check_passed) {
+                                setStatus('Check propulseurs RÉUSSI — tous les moteurs répondent.', 'var(--success)');
+                            } else {
+                                setStatus('Check propulseurs ÉCHOUÉ — voir Statut Moteurs (Télémétrie) : '
+                                        + (cfg.status_text || 'défaut détecté'), 'var(--danger)');
+                            }
+                            return;
+                        }
+                    } catch (_) { /* nouveau tick de polling au tour suivant */ }
+                }
+                setStatus('Check toujours en cours — rechargez la carte dans un instant.');
+            } catch (e) {
+                setStatus(e.name === 'AbortError'
+                    ? 'Contrôleur injoignable (pas de réponse en 6 s).'
+                    : 'Le contrôleur ne répond pas sur /api/motors/check — firmware ancien ?', 'var(--danger)');
+            } finally {
+                clearTimeout(timer);
+                if (spinner) spinner.hidden = true;
+                checkBtn.disabled = false;
+            }
+        });
+    }
+}
+
+/* =========================================================================
  * NAVIGATION PAR TUILES
  * ========================================================================= */
 
@@ -880,6 +1119,13 @@ function processTelemetry(data) {
         }
     }
 
+    /* Badge simulateur de test virtuel (établi) : visible uniquement quand la
+     * simulation capteurs est active (source : état firmware via télémétrie). */
+    if (data.sim_active !== undefined) {
+        const el = getEl('badge-sim');
+        if (el) el.style.display = data.sim_active ? '' : 'none';
+    }
+
     /* Typage des canaux PWM 10-15 (synchronisation UI ← ESP32) */
     if (data.pwm_type_mask !== undefined) {
         applyPwmTypeMask(data.pwm_type_mask);
@@ -963,10 +1209,23 @@ function processTelemetry(data) {
         updateVSI(immersed ? depthM : 0);
     }
 
+    /* Puissance (v1.1.0) : canaux 0-2 = INA3221 (V_BAT + courants ACS770
+     * horizontaux/verticaux), canaux 3-4 = INA226 n°2/3 résiduels. Le
+     * fallback 3 canaux couvre un firmware antérieur (3 × INA226). */
     if (data.power && Array.isArray(data.power)) {
-        for (let i = 0; i < 3 && i < data.power.length; i++) {
-            setText('p' + i + '-v', data.power[i].v + ' mV');
-            setText('p' + i + '-i', data.power[i].i + ' mA');
+        if (data.power.length >= 5) {
+            setText('ina3221-vbat', (data.power[0].v / 1000).toFixed(2) + ' V');
+            setText('ina3221-ih',   (data.power[1].i / 1000).toFixed(2) + ' A');
+            setText('ina3221-iv',   (data.power[2].i / 1000).toFixed(2) + ' A');
+            setText('p1-v', data.power[3].v + ' mV');
+            setText('p1-i', data.power[3].i + ' mA');
+            setText('p2-v', data.power[4].v + ' mV');
+            setText('p2-i', data.power[4].i + ' mA');
+        } else {
+            for (let i = 0; i < 3 && i < data.power.length; i++) {
+                setText('p' + i + '-v', data.power[i].v + ' mV');
+                setText('p' + i + '-i', data.power[i].i + ' mA');
+            }
         }
     }
 
@@ -974,7 +1233,8 @@ function processTelemetry(data) {
     if (data.sensors) {
         updateSensorBadge('sens-bno085',  data.sensors.bno085);
         updateSensorBadge('sens-ms5803',  data.sensors.ms5803);
-        updateSensorBadge('sens-ina0',    data.sensors.ina0);
+        updateSensorBadge('sens-ina3221',
+            data.sensors.ina3221 !== undefined ? data.sensors.ina3221 : data.sensors.ina0);
         updateSensorBadge('sens-ina1',    data.sensors.ina1);
         updateSensorBadge('sens-ina2',    data.sensors.ina2);
         updateSensorBadge('sens-pca',     data.sensors.pca);
@@ -988,6 +1248,10 @@ function processTelemetry(data) {
         }
         setText('sens-bno085-err', bnoErr ? ('BNO085 : ' + bnoErr) : '');
     }
+
+    /* Statut moteurs (v1.1.0) : voyant + texte + détails (check, isolements,
+     * remontée d'urgence) — objet absent sur un firmware antérieur. */
+    if (data.motors) updateMotorsUI(data.motors);
 
     /* Statut liaison RPi5 (badge header + page Câblage) */
     if (data.rpi_link) {
@@ -1541,11 +1805,14 @@ function updateDryRunUI(enabled) {
  * CONTRÔLEUR DE VOL — MODE ET MAÎTRE
  * ========================================================================= */
 
-const MODE_LABELS = ['PASSIF', 'AUTO ROULIS ET TANGAGE', 'AUTO FULL'];
+/* Masque d'assistances superposables (miroir protocol.h v1.4.0) :
+ * 0x00 = PASSIF, 0x01 = Auto R/T, 0x02 = Tenue de profondeur,
+ * 0x04 = Auto Cap, 0x08 = Retour surface (prioritaire). */
+const MODE_BIT_RT = 0x01, MODE_BIT_DEPTH = 0x02, MODE_BIT_CAP = 0x04, MODE_BIT_SURFACE = 0x08;
 
 /**
- * Met à jour les boutons de mode pour refléter le mode actif.
- * @param {number} activeMode — 0=PASSIF, 1=AUTO_ROULIS (roulis+tangage), 2=AUTO_FULL
+ * Met à jour les boutons de mode pour refléter le masque actif (valeur brute).
+ * @param {number} activeMode — masque MODE_BIT_* (boutons preset : 0, 1, 7)
  */
 let _modeBtns = null;
 let _lastFlightMode = null;
@@ -1852,6 +2119,9 @@ function initSettings() {
     /* Charger la config I2C actuelle depuis l'API */
     loadI2CConfig();
 
+    /* Charger la carte de routage Plug & Play (table Scanner + page Câblage) */
+    loadI2CRouting();
+
     /* Charger le typage PWM (canaux 10-15) et la config GPIO ON/OFF */
     loadPwmConfig();
     loadGpioConfig();
@@ -1927,6 +2197,77 @@ function initSettings() {
             } catch (e) {
                 alert('Erreur réseau : ' + e.message);
                 btnI2C2.disabled = false;
+            }
+        });
+    }
+
+    /* Bouton « Enregistrer le routage I2C » (v1.3.0) — diff (bus + adresse)
+     * avec le routage actif listé dans la confirmation, POST vers l'API
+     * (NVS) puis overlay de redémarrage : le routage ne s'applique qu'au
+     * boot, jamais à chaud (le bus du PCA9685 porte les sorties PWM 100 Hz). */
+    const btnRouting = document.getElementById('btn-save-i2c-routing');
+    if (btnRouting) {
+        btnRouting.addEventListener('click', async () => {
+            /* Collecter la sélection (bus ET adresse de chaque module) */
+            const wanted = {};
+            let missing = false;
+            I2C_ROUTING_KEYS.forEach(k => {
+                const selBus  = document.getElementById('i2c-route-' + k);
+                const selAddr = document.getElementById('i2c-route-addr-' + k);
+                if (selBus && selAddr) {
+                    wanted[k] = { bus: Number(selBus.value), addr: Number(selAddr.value) };
+                } else { missing = true; }
+            });
+            if (missing) {
+                alert('Table de routage non chargée — rechargez la page.');
+                return;
+            }
+
+            /* Aucun changement → pas de POST (donc pas de redémarrage inutile) */
+            const changes = I2C_ROUTING_KEYS
+                .filter(k => {
+                    const cur = _routingMap ? _routingMap[k] : null;
+                    if (!cur) return true;
+                    return cur.bus !== wanted[k].bus || cur.addr !== wanted[k].addr;
+                })
+                .map(k => {
+                    const cur = _routingMap ? _routingMap[k] : null;
+                    const avant = cur ? ('bus n°' + cur.bus + ' ' + hexOfAddr(cur.addr)) : '?';
+                    return k + ' : ' + avant + ' → bus n°' + wanted[k].bus
+                           + ' ' + hexOfAddr(wanted[k].addr);
+                });
+            if (changes.length === 0) {
+                alert('Aucune modification du routage — rien à enregistrer.');
+                return;
+            }
+            if (!confirm('Enregistrer le routage I2C et redémarrer le contrôleur ?\n\n'
+                       + changes.join('\n')
+                       + '\n\nLe nouveau routage est appliqué au redémarrage.')) {
+                return;
+            }
+
+            const spinner = document.getElementById('i2c-routing-spinner');
+            btnRouting.disabled = true;
+            if (spinner) spinner.style.display = 'inline-block';
+            try {
+                const res = await fetch('/api/i2c/routing', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: I2C_ROUTING_KEYS.map(k =>
+                        k + '=' + wanted[k].bus + '&' + k + '_addr=' + wanted[k].addr).join('&')
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    showRoutingRestartOverlay(3, wanted);
+                } else {
+                    alert('Erreur : ' + (data.error || 'inconnue'));
+                    btnRouting.disabled = false;
+                    if (spinner) spinner.style.display = 'none';
+                }
+            } catch (e) {
+                alert('Erreur réseau : ' + e.message);
+                btnRouting.disabled = false;
+                if (spinner) spinner.style.display = 'none';
             }
         });
     }
@@ -2203,25 +2544,34 @@ function buildI2CBusDiagram(sda, scl, modules) {
  * configurées des deux bus.
  */
 function updateWiringPins(sda, scl, sda2, scl2) {
+    /* Modules par bus selon le routage Plug & Play actif (_routingMap,
+     * chargé par loadI2CRouting — repli sur la topologie par défaut tant
+     * que la carte n'a pas été reçue). */
+    const list1 = WIRING_MODULES.filter(m => busOfMod(m) === 1);
+    const list2 = WIRING_MODULES.filter(m => busOfMod(m) === 2);
+    /* Schémas ASCII : nom court + adresse ROUTÉE (v1.3.0 — plus de 0xNN figé) */
+    const dia1 = list1.map(m => ({ name: m.name, addr: hexOfAddr(addrOfMod(m)) }));
+    const dia2 = list2.map(m => ({ name: m.name, addr: hexOfAddr(addrOfMod(m)) }));
+
     const bus1Title = document.getElementById('wiring-bus1-title');
     const bus2Title = document.getElementById('wiring-bus2-title');
     if (bus1Title) bus1Title.textContent =
-        'Bus n°1 — Wire (GPIO ' + sda + ' / GPIO ' + scl + ') : BNO085 + INA226 ×3';
+        'Bus n°1 — Wire (GPIO ' + sda + ' / GPIO ' + scl + ') : '
+        + (list1.map(m => m.name).join(' + ') || 'aucun module routé');
     if (bus2Title) bus2Title.textContent =
-        'Bus n°2 — Wire1 (GPIO ' + sda2 + ' / GPIO ' + scl2 + ') : MS5837 + PCA9685';
+        'Bus n°2 — Wire1 (GPIO ' + sda2 + ' / GPIO ' + scl2 + ') : '
+        + (list2.map(m => m.name).join(' + ') || 'aucun module routé');
 
+    /* buildI2CBusDiagram exige au moins un module (calcul d'alignement des
+     * boîtes) : un bus entièrement vidé affiche un message à la place. */
     const bus1 = document.getElementById('wiring-diagram-bus1');
-    if (bus1) bus1.textContent = buildI2CBusDiagram(sda, scl, [
-        { name: 'BNO085', addr: '0x4A' },
-        { name: 'INA226', addr: '0x41' },
-        { name: 'INA226', addr: '0x44' },
-        { name: 'INA226', addr: '0x45' }
-    ]);
+    if (bus1) bus1.textContent = (list1.length > 0)
+        ? buildI2CBusDiagram(sda, scl, dia1)
+        : 'Bus n°1 (GPIO ' + sda + '/' + scl + ') : aucun module routé — rail inutilisé.';
     const bus2 = document.getElementById('wiring-diagram-bus2');
-    if (bus2) bus2.textContent = buildI2CBusDiagram(sda2, scl2, [
-        { name: 'MS5837', addr: '0x76' },
-        { name: 'PCA9685', addr: '0x40' }
-    ]);
+    if (bus2) bus2.textContent = (list2.length > 0)
+        ? buildI2CBusDiagram(sda2, scl2, dia2)
+        : 'Bus n°2 (GPIO ' + sda2 + '/' + scl2 + ') : aucun module routé — rail inutilisé.';
 
     const setPin = (id, v) => {
         const el = document.getElementById(id);
@@ -2232,11 +2582,26 @@ function updateWiringPins(sda, scl, sda2, scl2) {
     setPin('pin-b2-sda', sda2);
     setPin('pin-b2-scl', scl2);
 
-    document.querySelectorAll('.mod-bus1').forEach(el => {
-        el.textContent = 'n°1 (GPIO ' + sda + '/' + scl + ')';
+    /* Descriptions du tableau de brochage : modules hébergés par chaque bus */
+    document.querySelectorAll('.bus-mods').forEach(el => {
+        const list = (el.getAttribute('data-bus') === '2') ? list2 : list1;
+        el.textContent = list.map(m => m.name).join(' + ') || 'aucun module routé';
     });
-    document.querySelectorAll('.mod-bus2').forEach(el => {
-        el.textContent = 'n°2 (GPIO ' + sda2 + '/' + scl2 + ')';
+
+    /* Badges « Bus I2C » de la table modules : chaque module suit SON bus
+     * routé (v1.2.0) — data-module = clé API du routage. */
+    document.querySelectorAll('.mod-bus').forEach(el => {
+        const m = WIRING_MODULES.find(x => x.key === el.getAttribute('data-module'));
+        if (!m) return;
+        const bus = busOfMod(m);
+        el.textContent = 'n°' + bus + ' (GPIO ' + (bus === 2 ? sda2 : sda)
+                       + '/' + (bus === 2 ? scl2 : scl) + ')';
+    });
+
+    /* Adresses I2C de la table modules : adresse ROUTÉE (v1.3.0). */
+    document.querySelectorAll('.mod-addr').forEach(el => {
+        const m = WIRING_MODULES.find(x => x.key === el.getAttribute('data-module'));
+        if (m) el.textContent = hexOfAddr(addrOfMod(m));
     });
 
     const empty = document.getElementById('i2c-scan-empty');
@@ -2355,6 +2720,241 @@ async function loadI2CConfig() {
     } catch (_) { /* silencieux si pas de connexion */ }
 }
 
+/* =========================================================================
+ * ROUTAGE I2C PLUG & PLAY (v1.3.0) — carte module → (bus, adresse), NVS
+ * ========================================================================= */
+
+/** Routage actif { clé API → { bus, addr } } — nourrit la page Câblage. */
+let _routingMap = null;
+
+/** Dernier scan I2C (adresses DÉCOUVERTES) — proposées par les selects d'adresses. */
+let _lastScan = null;
+
+/** Clés API du routage (l'ordre suit l'enum I2CDeviceId côté firmware). */
+const I2C_ROUTING_KEYS = ['bno085', 'ina3221', 'ina226_2', 'ina226_3', 'ms5803', 'pca9685'];
+
+/** Modules de la page Câblage : nom court, bus+adresse par défaut (config.h). */
+const WIRING_MODULES = [
+    { key: 'bno085',   name: 'BNO085',  addr: '0x4A', def: 1 },
+    { key: 'ina3221',  name: 'INA3221', addr: '0x40', def: 1 },
+    { key: 'ina226_2', name: 'INA226',  addr: '0x44', def: 1 },
+    { key: 'ina226_3', name: 'INA226',  addr: '0x45', def: 1 },
+    { key: 'ms5803',   name: 'MS5837',  addr: '0x76', def: 2 },
+    { key: 'pca9685',  name: 'PCA9685', addr: '0x40', def: 2 }
+];
+
+/** Adresse hexadécimale « 0xNN » majuscule d'une adresse décimale. */
+function hexOfAddr(n) {
+    return '0x' + Number(n).toString(16).toUpperCase().padStart(2, '0');
+}
+
+/** Adresse ROUTÉE (décimale) d'un module — repli sur le défaut (config.h). */
+function addrOfMod(m) {
+    return (_routingMap && _routingMap[m.key] !== undefined)
+        ? _routingMap[m.key].addr : parseInt(m.addr, 16);
+}
+
+/** Bus ROUTÉ d'un module — repli sur le défaut tant que la carte n'est pas reçue. */
+function busOfMod(m) {
+    return (_routingMap && _routingMap[m.key] !== undefined)
+        ? _routingMap[m.key].bus : m.def;
+}
+
+/**
+ * Remplit le select d'adresse d'un module avec les adresses DÉCOUVERTES par
+ * le dernier scan sur le bus sélectionné (flux Plug & Play : câbler →
+ * scanner → choisir). L'adresse routée actuelle est conservée en option
+ * « (actuelle) » si elle n'a pas été détectée (module débranché ou NVS hors
+ * topologie) : l'interface ne propose jamais d'adresse inventée.
+ */
+function rebuildAddrOptions(key) {
+    const selBus  = document.getElementById('i2c-route-' + key);
+    const selAddr = document.getElementById('i2c-route-addr-' + key);
+    if (!selBus || !selAddr) return;
+
+    const bus    = Number(selBus.value);
+    const prev   = Number(selAddr.value || 0);
+    const routed = (_routingMap && _routingMap[key]) ? _routingMap[key].addr : 0;
+
+    /* Options : adresses détectées sur CE bus + adresse routée si absente */
+    const opts = [];
+    const seen = {};
+    if (Array.isArray(_lastScan)) {
+        _lastScan.forEach(d => {
+            if (Number(d.bus) !== bus || seen[Number(d.dec)]) return;
+            seen[Number(d.dec)] = true;
+            opts.push({ dec: Number(d.dec),
+                        label: d.address + (d.name ? ' — ' + d.name : '') });
+        });
+    }
+    if (routed && !seen[routed]) {
+        opts.push({ dec: routed, label: hexOfAddr(routed) + ' (actuelle)' });
+    }
+
+    selAddr.innerHTML = opts.map(o =>
+        '<option value="' + o.dec + '">' + o.label + '</option>').join('');
+    if (seen[prev]) selAddr.value = String(prev);
+    else if (routed) selAddr.value = String(routed);
+    else if (opts.length > 0) selAddr.value = String(opts[0].dec);
+}
+
+/**
+ * Charge la carte de routage I2C (GET /api/i2c/routing) et construit la
+ * table « Routage I2C Plug & Play » de la carte Scanner : une ligne par
+ * module avec son sélecteur de bus (I2C_0 = Wire n°1, I2C_1 = Wire1 n°2,
+ * GPIO réels des deux bus dans les libellés) ET son sélecteur d'adresse
+ * (adresses découvertes par le dernier scan sur le bus choisi). La page
+ * Câblage est ensuite rafraîchie avec la topologie réellement active.
+ */
+async function loadI2CRouting() {
+    try {
+        const res = await fetch('/api/i2c/routing', { cache: 'no-store' });
+        const data = await res.json();
+        const devices = Array.isArray(data.devices) ? data.devices : [];
+
+        _routingMap = {};
+        devices.forEach(d => {
+            _routingMap[d.key] = {
+                bus:  Number(d.bus),
+                addr: Number(d.addr_dec !== undefined ? d.addr_dec : parseInt(d.addr, 16))
+            };
+        });
+        /* Dernier scan mémorisé côté firmware (champ « scan ») : les selects
+         * d'adresses proposent ces adresses détectées sans re-scanner. */
+        if (Array.isArray(data.scan)) _lastScan = data.scan;
+
+        const tbody = document.getElementById('i2c-routing-tbody');
+        if (tbody) {
+            tbody.innerHTML = '';
+            const g1 = (data.sda !== undefined) ? ' — GPIO ' + data.sda + '/' + data.scl : '';
+            const g2 = (data.sda2 !== undefined) ? ' — GPIO ' + data.sda2 + '/' + data.scl2 : '';
+            devices.forEach(d => {
+                const tr = document.createElement('tr');
+                const tdName = document.createElement('td');
+                tdName.textContent = d.name;
+                const tdAddr = document.createElement('td');
+                const selAddr = document.createElement('select');
+                selAddr.id = 'i2c-route-addr-' + d.key;
+                selAddr.className = 'i2c-route-select i2c-route-addr-select';
+                selAddr.addEventListener('change', updateI2CRoutingWarning);
+                tdAddr.appendChild(selAddr);
+                const tdBus = document.createElement('td');
+                const sel = document.createElement('select');
+                sel.id = 'i2c-route-' + d.key;
+                sel.className = 'i2c-route-select';
+                sel.innerHTML = '<option value="1">Bus n°1 — I2C_0 (Wire' + g1 + ')</option>'
+                              + '<option value="2">Bus n°2 — I2C_1 (Wire1' + g2 + ')</option>';
+                sel.value = String(Number(d.bus));
+                sel.addEventListener('change', () => {
+                    rebuildAddrOptions(d.key);   /* adresses détectées sur le nouveau bus */
+                    updateI2CRoutingWarning();
+                });
+                tdBus.appendChild(sel);
+                tr.appendChild(tdName);
+                tr.appendChild(tdAddr);
+                tr.appendChild(tdBus);
+                tbody.appendChild(tr);
+            });
+            /* Remplir les selects d'adresses (scan + adresse routée actuelle) */
+            devices.forEach(d => rebuildAddrOptions(d.key));
+        }
+
+        /* Conflit (même bus + même adresse) hérité d'une NVS à la main : avertir + bloquer */
+        updateI2CRoutingWarning();
+
+        /* Page Câblage : schémas et badges suivent le routage réel */
+        if (data.sda !== undefined) {
+            updateWiringPins(data.sda, data.scl, data.sda2, data.scl2);
+        }
+    } catch (_) { /* silencieux si pas de connexion */ }
+}
+
+/**
+ * Avertissement live de la table de routage : deux modules sur le MÊME bus
+ * à la MÊME adresse sont interdits (conflit généralisé v1.3.0 — le firmware
+ * refuse aussi la sauvegarde). Le bouton reste bloqué tant que le conflit
+ * n'est pas résolu.
+ */
+function updateI2CRoutingWarning() {
+    const warn = document.getElementById('i2c-routing-warning');
+    const btn = document.getElementById('btn-save-i2c-routing');
+    if (!warn || !btn) return;
+
+    /* Relever les couples (bus, adresse) sélectionnés de chaque module */
+    const seen = {};
+    let conflict = null;
+    I2C_ROUTING_KEYS.forEach(k => {
+        const selBus  = document.getElementById('i2c-route-' + k);
+        const selAddr = document.getElementById('i2c-route-addr-' + k);
+        if (!selBus || !selAddr) return;
+        const mod = WIRING_MODULES.find(m => m.key === k);
+        const name = mod ? mod.name : k;
+        const pair = selBus.value + ':' + selAddr.value;
+        if (seen[pair] === undefined) {
+            seen[pair] = name;
+        } else if (conflict === null) {
+            conflict = { a: seen[pair], b: name,
+                         bus: selBus.value, addr: Number(selAddr.value) };
+        }
+    });
+
+    if (conflict) {
+        warn.textContent = "Conflit d'adresse : " + conflict.a + ' et ' + conflict.b
+            + ' sur le bus n°' + conflict.bus + ' à la même adresse '
+            + hexOfAddr(conflict.addr) + ' — assignez-leur des couples (bus, adresse) distincts.';
+        warn.style.display = 'block';
+        btn.disabled = true;
+    } else {
+        warn.style.display = 'none';
+        btn.disabled = false;
+    }
+}
+
+/**
+ * Affiche un compte à rebours avant redémarrage du contrôleur (routage I2C),
+ * puis attend que l'API serve la NOUVELLE carte de routage avant de
+ * recharger l'interface — preuve que l'ESP32 a réellement redémarré et relu
+ * le NVS (même principe que les broches I2C et les sorties GPIO).
+ * @param {number} seconds Décompte avant redémarrage de l'ESP32
+ * @param {Object} wanted Carte attendue après redémarrage { clé → { bus, addr } }
+ */
+function showRoutingRestartOverlay(seconds, wanted) {
+    let s = seconds;
+    const overlay = document.createElement('div');
+    overlay.className = 'restart-overlay';
+    const render = () => {
+        overlay.innerHTML = '<div class="restart-box">'
+            + '<h3>Redémarrage du contrôleur</h3>'
+            + '<p>Routage I2C enregistré en NVS.<br>'
+            + 'L\'ESP32 redémarre dans <span class="restart-count">' + s + '</span> s…</p>'
+            + '</div>';
+    };
+    render();
+    document.body.appendChild(overlay);
+
+    const countdown = setInterval(() => {
+        if (s > 1) { s--; render(); return; }
+        clearInterval(countdown);
+        overlay.innerHTML = '<div class="restart-box">'
+            + '<h3>Reconnexion…</h3><p>Attente du retour du contrôleur.</p></div>';
+        const ping = setInterval(async () => {
+            try {
+                const res = await fetch('/api/i2c/routing', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (!Array.isArray(data.devices)) return;
+                const applied = data.devices.every(d => {
+                    const w = wanted[d.key];
+                    if (w === undefined) return true;
+                    return Number(d.bus) === w.bus
+                        && Number(d.addr_dec !== undefined ? d.addr_dec : parseInt(d.addr, 16)) === w.addr;
+                });
+                if (applied) { clearInterval(ping); location.reload(); }
+            } catch (_) { /* ESP32 pas encore prêt : nouvelle tentative */ }
+        }, 2000);
+    }, 1000);
+}
+
 /**
  * Charge le typage actuel des canaux PWM 10-15 depuis l'API, l'applique aux
  * sélecteurs de l'onglet Paramètres et au rendu du PWM Monitor.
@@ -2392,7 +2992,9 @@ async function loadGpioConfig() {
 
 /**
  * Lance le scan des deux bus I2C via l'API REST et affiche les résultats
- * dans un tableau (colonne Bus : n°1 = BNO085 + INA226, n°2 = MS5837 + PCA9685).
+ * dans un tableau (colonne Bus : n°1 = Wire, n°2 = Wire1, avec les GPIO
+ * réels de chaque bus — la répartition des modules suit le routage Plug &
+ * Play de la carte Scanner).
  * Gère le spinner de chargement et le message "aucun périphérique".
  */
 async function runI2CScan() {
@@ -2413,6 +3015,13 @@ async function runI2CScan() {
         const data = await res.json();
         const devices = data.devices || [];
 
+        /* Alimenter les selects d'adresses du routage (flux Plug & Play :
+         * câbler → scanner → choisir l'adresse découverte) puis ré-évaluer
+         * les conflits. */
+        _lastScan = devices;
+        I2C_ROUTING_KEYS.forEach(k => rebuildAddrOptions(k));
+        updateI2CRoutingWarning();
+
         if (tbody) tbody.innerHTML = '';
 
         if (devices.length === 0) {
@@ -2427,7 +3036,8 @@ async function runI2CScan() {
                 tdDec.textContent = d.dec;
                 var tdBus = document.createElement('td');
                 tdBus.textContent = (d.bus === 2)
-                    ? 'n°2 (GPIO 6/7)'
+                    ? 'n°2 (GPIO ' + (data.sda2 !== undefined ? data.sda2 : 6)
+                      + '/' + (data.scl2 !== undefined ? data.scl2 : 7) + ')'
                     : 'n°1 (GPIO ' + data.sda + '/' + data.scl + ')';
                 var tdStatus = document.createElement('td');
                 tdStatus.innerHTML = '<span class="i2c-ack-badge">ACK</span>';
@@ -2447,7 +3057,8 @@ async function runI2CScan() {
         if (data.sda !== undefined && data.scl !== undefined) {
             const infoEl = document.getElementById('i2c-current-pins');
             if (infoEl) infoEl.textContent = 'SDA=GPIO ' + data.sda + ', SCL=GPIO ' + data.scl
-                + ' — bus n°2 (fixe) : SDA=GPIO 6 / SCL=GPIO 7';
+                + ' — bus n°2 : SDA=GPIO ' + (data.sda2 !== undefined ? data.sda2 : 6)
+                + ' / SCL=GPIO ' + (data.scl2 !== undefined ? data.scl2 : 7);
         }
     } catch (e) {
         alert('Erreur scan I2C : ' + e.message);
@@ -2930,7 +3541,7 @@ function initTareButton() {
  * Initialise le bouton « Régler Nord » : envoie {tare_north:true} au firmware
  * pour remettre le cap à zéro sur le Nord réel. Procédure : ROV immobile, nez
  * pointé vers le Nord (boussole du téléphone ou repère connu), de préférence en
- * mode PASSIF — sinon le hold de cap de l'AUTO FULL rattraperait l'ancien cap.
+ * mode PASSIF — sinon l'Auto Cap (bit 0x04) rattraperait l'ancien cap.
  * L'offset s'applique à la source côté firmware : télémétrie, HSI, modèle 3D
  * et PID de cap partagent le même Nord.
  * Avec le magnétomètre actif (Rotation Vector 9-DOF du BNO085), la tare est un
@@ -3322,6 +3933,262 @@ function _rov3dLoop() {
 }
 
 /* =========================================================================
+ * SIMULATEUR DE TEST VIRTUEL (ÉTABLI) — PANNEAU LATÉRAL /api/simulator
+ * =========================================================================
+ *
+ * Panneau off-canvas d'injection de fausses valeurs capteurs (tensions
+ * batteries 1/2, courants ACS770 H/V, blocage moteurs M1-M8) pour tester les
+ * coupures de sécurité sur l'établi. Le <aside> est placé HORS des sections
+ * SPA dans index.html : son ouverture/fermeture persiste donc naturellement
+ * pendant la navigation entre onglets (aucun code de navigation n'y touche).
+ * Masqué sur natel/GSM via CSS (media query 768 px) — l'API reste néanmoins
+ * accessible à tout écran équipé d'un client HTTP.
+ */
+
+let _simPanelOpen = false;   /* état d'ouverture du panneau (survit à la navigation SPA) */
+let _simSendTimer = null;    /* debounce d'envoi des sliders (glissement continu) */
+
+/* Largeur du panneau : bornes + clé localStorage (mémorisée PAR NAVIGATEUR,
+ * comme le thème ou l'ordre des tuiles). */
+const SIM_PANEL_WIDTH_KEY = 'bobcontrol_simPanelWidth';
+const SIM_PANEL_MIN_W = 260;
+
+/* Ouvre/ferme le panneau latéral (classe .open + aria-hidden synchronisés).
+ * body.sim-open déclenche la poussée animée du bouton retour vers la gauche
+ * (backBtnPushed, voir fin de style.css) pour ne jamais le recouvrir. */
+function setSimPanel(open) {
+    const panel = getEl('sim-panel');
+    if (!panel) return;
+    _simPanelOpen = !!open;
+    panel.classList.toggle('open', _simPanelOpen);
+    panel.setAttribute('aria-hidden', _simPanelOpen ? 'false' : 'true');
+    document.body.classList.toggle('sim-open', _simPanelOpen);
+    /* Bouton retour : le simple retrait de body.sim-open ne peut pas animer
+     * un transform figé par une animation terminée (la transition CSS ne
+     * repart pas de cette valeur — vérifié en navigateur). On pose donc la
+     * classe .back-returning à la fermeture (animation inverse
+     * backBtnReturned) et on la retire à l'ouverture, où la poussée reprend
+     * la main via body.sim-open. */
+    const btnBack = getEl('btn-back');
+    if (btnBack) {
+        btnBack.classList.remove('back-returning');
+        if (!_simPanelOpen) btnBack.classList.add('back-returning');
+    }
+}
+
+/* Applique une largeur (px) au panneau, bornée à [SIM_PANEL_MIN_W, 92 vw]. */
+function applySimPanelWidth(px) {
+    const panel = getEl('sim-panel');
+    if (!panel) return;
+    const maxW = Math.min(1000, Math.round(window.innerWidth * 0.92));
+    const w = Math.max(SIM_PANEL_MIN_W, Math.min(maxW, Math.round(px)));
+    panel.style.width = w + 'px';
+}
+
+/* Restaure la largeur mémorisée par le navigateur (si valide). */
+function loadSimPanelWidth() {
+    try {
+        const saved = parseInt(localStorage.getItem(SIM_PANEL_WIDTH_KEY) || '', 10);
+        if (Number.isFinite(saved) && saved > 0) applySimPanelWidth(saved);
+    } catch (e) { /* localStorage indisponible : largeur CSS par défaut */ }
+}
+
+/* Mémorise la largeur courante (au relâchement du glissement). */
+function saveSimPanelWidth() {
+    const panel = getEl('sim-panel');
+    if (!panel) return;
+    try {
+        localStorage.setItem(SIM_PANEL_WIDTH_KEY,
+            String(parseInt(panel.style.width, 10) || 360));
+    } catch (e) { /* stockage plein/navigateur privé : largeur non mémorisée */ }
+}
+
+/* Libellés des 4 sliders (unités et précision par grandeur). */
+function updateSimSliderLabels() {
+    const pairs = [
+        ['sim-vbat1', 'sim-vbat1-val', ' V', 2],
+        ['sim-vbat2', 'sim-vbat2-val', ' V', 2],
+        ['sim-curh',  'sim-curh-val',  ' A', 1],
+        ['sim-curv',  'sim-curv-val',  ' A', 1]
+    ];
+    pairs.forEach(([idSl, idVal, unit, dec]) => {
+        const sl = getEl(idSl);
+        if (sl) setText(idVal, parseFloat(sl.value).toFixed(dec) + unit);
+    });
+}
+
+/* Bandeau d'état du panneau (reflète le toggle local). */
+function updateSimStatusUI() {
+    const st = getEl('sim-status');
+    if (!st) return;
+    const act = getEl('sim-active');
+    const on = !!(act && act.checked);
+    st.textContent = on
+        ? 'Simulation ACTIVE — capteurs INA3221/INA226 bypassés'
+        : 'Simulation inactive — capteurs réels';
+    st.classList.toggle('active', on);
+}
+
+/* Applique un état renvoyé par GET /api/simulator (sliders, bornes, cases). */
+function applySimState(data) {
+    const setVal = (id, v) => { const el = getEl(id); if (el && v !== undefined) el.value = v; };
+    const setMax = (id, v) => { const el = getEl(id); if (el && v !== undefined) el.max = v; };
+
+    const act = getEl('sim-active');
+    if (act) act.checked = !!data.active;
+    setVal('sim-vbat1', data.vbat1);
+    setVal('sim-vbat2', data.vbat2);
+    setVal('sim-curh',  data.curh);
+    setVal('sim-curv',  data.curv);
+
+    /* Bornes dynamiques : source unique config.h côté firmware (SIM_*). */
+    setMax('sim-vbat1', data.vbat1_max);
+    setMax('sim-vbat2', data.vbat2_max);
+    setMax('sim-curh',  data.cur_max);
+    setMax('sim-curv',  data.cur_max);
+
+    /* Masque de blocage : bit n = moteur Mn+1. */
+    const mask = data.stall_mask || 0;
+    for (let m = 1; m <= 8; m++) {
+        const cb = getEl('sim-m' + m);
+        if (cb) cb.checked = !!(mask & (1 << (m - 1)));
+    }
+    updateSimSliderLabels();
+    updateSimStatusUI();
+}
+
+/* Corps form-urlencoded complet de l'état du panneau (masque reconstruit). */
+function simRequestBody() {
+    const checked = (id) => { const el = getEl(id); return !!(el && el.checked); };
+    const val = (id) => { const el = getEl(id); return el ? parseFloat(el.value) : 0; };
+    let mask = 0;
+    for (let m = 1; m <= 8; m++) if (checked('sim-m' + m)) mask |= (1 << (m - 1));
+    return 'active=' + (checked('sim-active') ? 'true' : 'false')
+         + '&vbat1=' + encodeURIComponent(val('sim-vbat1'))
+         + '&vbat2=' + encodeURIComponent(val('sim-vbat2'))
+         + '&curh=' + encodeURIComponent(val('sim-curh'))
+         + '&curv=' + encodeURIComponent(val('sim-curv'))
+         + '&stall_mask=' + mask;
+}
+
+/* Envoie l'état complet au firmware (même pattern que la carte Moteurs). */
+async function sendSimState() {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    try {
+        const res = await fetch('/api/simulator', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: simRequestBody(),
+            signal: ctrl.signal
+        });
+        if (!res.ok) throw new Error('http ' + res.status);
+    } catch (e) {
+        /* Silencieux et non bloquant : le bandeau d'état signale l'échec, le
+         * badge topbar (télémétrie WS) reste la source officielle du firmware. */
+        const st = getEl('sim-status');
+        if (st) {
+            st.textContent = 'Contrôleur injoignable — valeurs locales non appliquées';
+            st.classList.add('active');
+        }
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/* Envoi débouncé pendant le glissement d'un slider (150 ms). */
+function scheduleSimSend() {
+    if (_simSendTimer) clearTimeout(_simSendTimer);
+    _simSendTimer = setTimeout(() => { _simSendTimer = null; sendSimState(); }, 150);
+}
+
+/* Chargement initial : l'état vit en RAM firmware (volatile — un reboot
+ * repart toujours simulation inactive). Firmware ancien : valeurs par défaut. */
+async function loadSimulator() {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    try {
+        const res = await fetch('/api/simulator', { signal: ctrl.signal });
+        const ct = res.headers.get('content-type') || '';
+        if (!res.ok || ct.indexOf('json') === -1) throw new Error('non-json');
+        applySimState(await res.json());
+    } catch (e) {
+        updateSimSliderLabels();
+        updateSimStatusUI();
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/* Branchements du panneau simulateur (lanceur, fermeture, contrôles). */
+function initSimulator() {
+    const panel = getEl('sim-panel');
+    if (!panel) return;   /* index.html sans panneau (firmware/FS ancien) */
+
+    const openBtn = getEl('btn-sim-open');
+    if (openBtn) openBtn.addEventListener('click', () => setSimPanel(true));
+    const closeBtn = getEl('btn-sim-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => setSimPanel(false));
+
+    /* Poignée de redimensionnement (bord gauche) : souris ou doigt — Pointer
+     * Events + capture, même approche que l'éditeur de tuiles. touch-action:
+     * none côté CSS empêche le défilement de la page pendant le glissement.
+     * Largeur mémorisée par le navigateur au relâchement. */
+    const handle = getEl('sim-resize-handle');
+    if (handle) {
+        let dragging = false;
+        const endResize = (e) => {
+            if (!dragging) return;
+            dragging = false;
+            handle.classList.remove('dragging');
+            document.body.classList.remove('sim-resizing');
+            saveSimPanelWidth();
+            if (e.pointerId !== undefined && handle.hasPointerCapture(e.pointerId)) {
+                handle.releasePointerCapture(e.pointerId);
+            }
+        };
+        handle.addEventListener('pointerdown', (e) => {
+            dragging = true;
+            handle.classList.add('dragging');
+            document.body.classList.add('sim-resizing');
+            handle.setPointerCapture(e.pointerId);
+            e.preventDefault();
+        });
+        handle.addEventListener('pointermove', (e) => {
+            if (dragging) applySimPanelWidth(window.innerWidth - e.clientX);
+        });
+        handle.addEventListener('pointerup', endResize);
+        handle.addEventListener('pointercancel', endResize);
+    }
+
+    /* Toggle général + blocages : actions ponctuelles → envoi immédiat. */
+    const act = getEl('sim-active');
+    if (act) act.addEventListener('change', () => { updateSimStatusUI(); sendSimState(); });
+    for (let m = 1; m <= 8; m++) {
+        const cb = getEl('sim-m' + m);
+        if (cb) cb.addEventListener('change', sendSimState);
+    }
+
+    /* Sliders : libellé + envoi débouncé pendant 'input', envoi immédiat à
+     * 'change' (relâchement) — le timer en attente est annulé pour éviter
+     * un double POST. */
+    ['sim-vbat1', 'sim-vbat2', 'sim-curh', 'sim-curv'].forEach((id) => {
+        const sl = getEl(id);
+        if (!sl) return;
+        sl.addEventListener('input', () => { updateSimSliderLabels(); scheduleSimSend(); });
+        sl.addEventListener('change', () => {
+            if (_simSendTimer) { clearTimeout(_simSendTimer); _simSendTimer = null; }
+            sendSimState();
+        });
+    });
+
+    loadSimPanelWidth();   /* largeur mémorisée restaurée avant l'affichage */
+    updateSimSliderLabels();
+    updateSimStatusUI();
+    loadSimulator();
+}
+
+/* =========================================================================
  * INITIALISATION
  * ========================================================================= */
 
@@ -3340,6 +4207,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAppVersion();
     initQnhCard();
     loadQnhConfig();
+    initMotorsCard();
+    loadMotorsConfig();
+    initSimulator();
     initWiFi();
     initSettings();
     initAviationInstruments();

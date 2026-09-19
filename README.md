@@ -1,5 +1,7 @@
 # BOB-CONTROL — Firmware ESP32-S3 pour ROV
 
+![Version](https://img.shields.io/badge/version-v1.5.0-00d9ff?style=for-the-badge)
+
 Firmware temps réel embarqué sur **ESP32-S3** pour le contrôle basse couche du sous-marin **BOB-ROV**.
 
 ## Matériel
@@ -14,10 +16,12 @@ Firmware temps réel embarqué sur **ESP32-S3** pour le contrôle basse couche d
 ## Fonctionnalités
 
 - **Protocole binaire** RPi 5 ↔ ESP32-S3 avec CRC16-CCITT et watchdog failsafe
-- **3 modes de pilotage** avec PID 4 axes et mixage différentiel :
-  - `PASSIF` — Manuel direct (consignes appliquées telles quelles)
-  - `AUTO ROULIS ET TANGAGE` — Stabilisation PID du roulis et du tangage sur M5-M8
-  - `AUTO FULL` — Stabilisation complète Roll + Pitch + Yaw + Profondeur
+- **Assistances superposables** (masque de bits, protocole v1.4.0) avec PID 4 axes et mixage différentiel :
+  - `0x01` **Auto R/T** — Stabilisation PID du roulis et du tangage sur M5-M8
+  - `0x02` **Tenue de Profondeur** — PID altitude (profondeur capturée à l'activation)
+  - `0x04` **Auto Cap** — PID lacet sur M1-M4 (cap capturé à l'activation)
+  - `0x08` **Retour Surface** — Prioritaire : verticaux vers la surface
+  - Combinaisons libres (ex. `0x03` = Auto R/T + profondeur ; `0x07` ≡ ancien AUTO FULL) ; le champ `status` de la télémétrie confirme les boucles réellement actives
 - **Interface Web embarquée** (LittleFS) avec portail captif automatique
 - **WebSocket temps réel** : télémétrie IMU, pression, PWM, puissance (20 Hz)
 - **API REST** : configuration Wi-Fi, I2C, PID, mode série

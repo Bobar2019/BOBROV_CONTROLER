@@ -13,7 +13,7 @@
  * et la tâche SerialTx (émission télémétrie) également.
  *
  * @author Didier Dero
- * @version 1.0.1
+ * @version 1.5.0
  * @date Septembre 2026
  */
 
@@ -30,6 +30,8 @@
 #include "serial_comm.h"
 #include "web_server.h"
 #include "flight_controller.h"
+#include "motor_manager.h"      /* g_motors : check/surveillance/isolation (v1.1.0) */
+#include "git_version.h"        /* GIT_VERSION : version Git injectée au build (scripts/git_version.py) */
 
 /* =========================================================================
  * VARIABLES GLOBALES PARTAGÉES
@@ -168,7 +170,10 @@ static void vTaskControl(void* param) {
 
             /* Vérification de l'état d'armement */
             if (dl.arm_state == ARM_ESTOP) {
-                /* Arrêt d'urgence : tous les canaux au neutre + sorties ON/OFF à OFF */
+                /* Arrêt d'urgence : tous les canaux au neutre + sorties ON/OFF à OFF.
+                 * La remontée d'urgence est d'abord coupée : l'E-Stop est une
+                 * décision humaine qui PRIME sur la survie automatique (v1.1.0). */
+                g_motors.abortEmergencySurface();
                 g_pwm.setAllNeutral();
                 g_gpio.allOff();
                 g_flightCtrl.resetPID();
@@ -239,11 +244,15 @@ static void vTaskControl(void* param) {
         ul.header2 = UL_HEADER_2;    /* 0xAA */
         ul.type    = UL_FRAME_TYPE;  /* 0x02 */
 
-        /* Bits de statut */
+        /* Bits de statut — supervision des boucles réellement actives (v1.4.0) */
         ul.status = 0;
-        if (g_serial.getLastFrameTime() > 0)     ul.status |= STATUS_BIT_ARMED;
-        if (g_serial.isWatchdogTriggered())      ul.status |= STATUS_BIT_WDG;
-        if (!g_pwm.isPhysicalOutputsEnabled())   ul.status |= STATUS_BIT_DRYRUN;
+        if (g_serial.getLastFrameTime() > 0)      ul.status |= STATUS_BIT_ARMED;
+        if (g_serial.isWatchdogTriggered())       ul.status |= STATUS_BIT_WDG;
+        if (!g_pwm.isPhysicalOutputsEnabled())    ul.status |= STATUS_BIT_DRYRUN;
+        if (g_flightCtrl.isRollPitchActive())     ul.status |= STATUS_BIT_RT;
+        if (g_flightCtrl.isDepthHoldActive())     ul.status |= STATUS_BIT_DEPTH;
+        if (g_flightCtrl.isCapHoldActive())       ul.status |= STATUS_BIT_CAP;
+        if (g_flightCtrl.isSurfaceReturnActive()) ul.status |= STATUS_BIT_SURFACE;
 
         /* Données IMU (quaternions et gyroscope) */
         IMUData imu;
@@ -257,12 +266,19 @@ static void vTaskControl(void* param) {
         ul.pressure    = press.pressure_mbar;
         ul.temperature = press.temperature;
 
-        /* Télémétrie puissance (3 wattmètres) */
+        /* Télémétrie puissance (3 canaux INA3221 — v1.1.0) : [V_BAT, 0],
+         * [signal ACS770 horizontaux mV, courant H mA], [signal ACS770
+         * verticaux mV, courant V mA]. Format binaire inchangé (6 slots
+         * mV/mA — compatibilité RPi 5) ; les INA226 #2/#3 restent visibles
+         * via la télémétrie WebSocket (power[5]). */
         PowerData pwr;
         g_sensors.getPowerData(pwr);
         for (uint8_t i = 0; i < 3; i++) {
             ul.power[i * 2]     = pwr.voltage[i];  /* Tension en mV */
-            ul.power[i * 2 + 1] = pwr.current[i];  /* Courant en mA */
+            /* Courant en mA — saturation au plafond du champ binaire 16 bits du
+             * protocole RPi 5 (65,5 A ; la plage ACS770-100U va jusqu'à 100 A). */
+            ul.power[i * 2 + 1] = (pwr.current[i] > 0xFFFFu)
+                                ? (uint16_t)0xFFFFu : (uint16_t)pwr.current[i];
         }
 
         /* PWM effectifs (valeurs réellement envoyées) */
@@ -306,7 +322,7 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n==============================================");
-    Serial.println("  BOB-CONTROL v1.0.1 - ROV Firmware");
+    Serial.println("  BOB-CONTROL " GIT_VERSION " - ROV Firmware");
     Serial.println("  ESP32-S3 PlatformIO / FreeRTOS");
     Serial.println("==============================================\n");
 
@@ -363,6 +379,13 @@ void setup() {
 
     /* ---- 7b. Initialisation du contrôleur de vol ---- */
     g_flightCtrl.begin(&g_apConfig, g_mutexConfig);
+
+    /* ---- 7c. Gestion de sécurité moteurs (v1.1.0) ----
+     * Tâche dédiée (Core 1) : attente NON BLOQUANTE de la connexion Wi-Fi
+     * puis check propulseurs (si l'option NVS est active), surveillance
+     * surintensité continue, identification/isolement et remontée d'urgence.
+     * Aucune attente dans setup() — le boot reste instantané. */
+    g_motors.begin();
 
     /* ---- 8. Lancement de la tâche de contrôle sur Core 1 ---- */
     xTaskCreatePinnedToCore(

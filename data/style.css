@@ -206,6 +206,7 @@ h3 {
 .badge-ok   { background: rgba(0, 230, 118, 0.12); color: var(--success); border: 1px solid rgba(0, 230, 118, 0.3); }
 .badge-off  { background: rgba(255, 59, 48, 0.12); color: var(--danger);  border: 1px solid rgba(255, 59, 48, 0.3); }
 .badge-real { background: rgba(0, 217, 255, 0.12); color: var(--accent-cyan); border: 1px solid rgba(0, 217, 255, 0.3); }
+.badge-sim  { background: rgba(255, 179, 0, 0.14); color: var(--warning); border: 1px solid rgba(255, 179, 0, 0.4); }
 
 /* ===== BASCULE DE THÈME ☀️ / 🌙 ===== */
 /* Bouton discret au coin supérieur droit de l'en-tête, séparé des badges de
@@ -446,6 +447,9 @@ html[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
 .nav-tile.drop-after  { box-shadow:  4px 0 0 0 var(--accent-cyan); }
 
 /* ===== BOUTON RETOUR (fixe haut-droite) ===== */
+/* Panneau simulateur : poussée animée vers la gauche à l'ouverture
+ * (backBtnPushed) et retour animé à la fermeture (backBtnReturned, classe
+ * .back-returning posée par setSimPanel) — voir fin de fichier. */
 .back-top-btn {
     position: fixed;
     top: 70px;
@@ -462,7 +466,12 @@ html[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
     align-items: center;
     text-decoration: none;
     color: var(--accent-cyan);
-    transition: all 0.3s ease;
+    /* États visuels (survol) ; le déplacement est piloté par les animations
+     * backBtnPushed/backBtnReturned — hors animation, le transform reste
+     * listé en filet de sécurité (ex. sauvé si le JS n'a pas posé la classe
+     * de retour). */
+    transition: border-color 0.28s ease, color 0.28s ease,
+                box-shadow 0.28s ease, transform 0.45s ease;
 }
 .back-top-btn:hover {
     border-color: var(--accent-cyan);
@@ -959,6 +968,65 @@ html[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
 .settings-grid input[type="number"]:focus { border-color: var(--accent-cyan); }
 .settings-actions { text-align: center; padding-top: 10px; }
 
+/* ===== ACCORDÉON DES PARAMÈTRES (details/summary natifs) ===== */
+/* Chaque grand bloc de la page Paramètres est repliable : <details class="card acc">
+   + titre dans <summary class="acc-sum">. Repli/dépli 100 % natif (aucun JS) et
+   l'état survit à la navigation SPA (les sections sont masquées, pas re-rendues). */
+.acc-sum {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    user-select: none;
+    list-style: none; /* masque le marqueur natif (Firefox) */
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+.acc-sum::-webkit-details-marker { display: none; } /* masque le marqueur natif (Chrome/Safari) */
+.acc-sum:hover { border-color: var(--accent-cyan); }
+.acc-sum:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 2px; }
+/* le titre cède sa marge au bandeau (c'est le padding qui aère) */
+.acc-sum h3 { margin-bottom: 0; }
+/* chevron dessiné en CSS : pointe à droite (replié) → pointe en bas (déplié),
+   soit une rotation fluide de 90° au clic */
+.acc-sum::after {
+    content: '';
+    flex: none;
+    width: 7px;
+    height: 7px;
+    margin-left: auto;
+    border-right: 2px solid var(--accent-cyan);
+    border-bottom: 2px solid var(--accent-cyan);
+    transform: rotate(-45deg);
+    transition: transform 0.3s ease;
+}
+.acc[open] > .acc-sum::after { transform: rotate(45deg); }
+/* espace bandeau ↔ contenu une fois déplié */
+.acc[open] > .acc-sum { margin-bottom: 14px; }
+/* hint d'intro collé au bandeau (même rôle que la compensation sous le h3 des cartes) */
+.acc > .acc-sum + .card-hint { margin-top: -0.5rem; }
+/* ouverture en douceur (tous navigateurs) : le contenu apparaît en fondu glissé */
+.acc[open] > *:not(.acc-sum) { animation: accReveal 0.35s ease; }
+@keyframes accReveal {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+/* hauteur animée à l'ouverture ET à la fermeture — navigateurs récents uniquement
+   (Chrome/Edge 131+) ; les autres navigateurs gardent le fondu ci-dessus */
+@supports selector(::details-content) and (interpolate-size: allow-keywords) {
+    .acc { interpolate-size: allow-keywords; }
+    .acc::details-content {
+        block-size: 0;
+        overflow: hidden;
+        transition: block-size 0.35s ease, content-visibility 0.35s;
+        transition-behavior: allow-discrete;
+    }
+    .acc[open]::details-content { block-size: auto; }
+}
+
 /* ===== FOOTER ===== */
 /* ===== PIED DE PAGE GLOBAL (version Git dynamique + mentions) ===== */
 /* Couleurs pilotées par variables : bascule automatique clair/sombre. */
@@ -1005,6 +1073,46 @@ footer #app-version { color: var(--text-secondary); font-weight: 600; }
 .qnh-spinner[hidden] { display: none; }
 @keyframes qnhSpin { to { transform: rotate(360deg); } }
 
+/* ===== GESTION MOTEURS / INA3221 (v1.1.0) ===== */
+/* Widget INA3221 (Télémétrie) : 3 canaux côte à côte */
+.ina3221-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 10px;
+    padding: 4px 0 2px;
+}
+.ina3221-ch {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 8px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    text-align: center;
+}
+.ina3221-ch-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+.ina3221-ch .power-val { padding: 2px 0; font-size: 1.05rem; }
+.ina3221-ch-sub { font-size: 0.68rem; color: var(--text-dim); }
+
+/* Voyant « Statut Moteurs » — même pastille que les badges capteurs, en plus grand */
+.motors-health-row { display: flex; align-items: center; gap: 10px; padding: 8px 0 2px; font-size: 0.95rem; }
+#motors-led { width: 14px; height: 14px; }
+#motors-status-text { font-weight: 600; }
+.motors-detail { min-height: 18px; font-size: 0.78rem; color: var(--text-secondary); }
+.motors-detail-alert { color: var(--danger); font-weight: 700; }
+
+/* Carte Paramètres : case dépendante « Remontée d'urgence » + boutons */
+.motors-sub-toggle { margin-left: 28px; }
+.motors-disabled { opacity: 0.45; pointer-events: none; }
+.motors-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 768px) {
     #topbar { padding: 10px 12px; flex-direction: column; gap: 6px; }
@@ -1019,6 +1127,15 @@ footer #app-version { color: var(--text-secondary); font-weight: 600; }
     .pwm-grid, .slider-grid { grid-template-columns: 1fr 1fr; }
     .settings-grid { grid-template-columns: 1fr; }
     .back-top-btn { top: 65px; right: 12px; width: 44px; height: 44px; }
+
+    /* Simulateur de test virtuel : inaccessible sur natel/GSM — panneau ET
+     * bouton d'ouverture totalement masqués (réservé aux grands écrans). */
+    .sim-panel, .sim-launch-card { display: none !important; }
+    /* Bouton retour : pas de panneau simulateur ⇒ aucun décalage. Sélecteurs
+     * plus spécifiques que les règles body.sim-open de fin de fichier (qui
+     * gagneraient sinon à specificité égale, étant plus bas dans le fichier). */
+    body.sim-open a#btn-back,
+    body a#btn-back.back-returning { transform: none; animation: none; }
 }
 
 @media (max-width: 480px) {
@@ -1603,6 +1720,43 @@ code {
     font-family: 'Source Code Pro', monospace;
 }
 
+/* Routage I2C Plug & Play (v1.3.0) — carte Scanner */
+.i2c-routing {
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--divider);
+}
+
+.i2c-routing h4 {
+    margin: 0 0 0.5rem;
+    font-size: 0.95rem;
+}
+
+.i2c-routing .i2c-scan-table { margin-top: 0.25rem; }
+
+.i2c-route-select {
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.3s;
+}
+.i2c-route-select:focus { border-color: var(--accent-cyan); }
+
+/* Sélecteur d'adresse (v1.3.0) : adresses détectées par le scan — largeur
+ * minimale pour lire « 0x4A — BNO085 (IMU 9-DOF) » sans tronquer. */
+.i2c-route-addr-select { min-width: 190px; max-width: 260px; }
+
+.i2c-routing-warning {
+    margin-top: 0.75rem;
+    color: var(--warning);
+}
+
 /* ===== MODE DE PILOTAGE (FLIGHT MODE SELECTOR) ===== */
 .mode-selector-row {
     display: grid;
@@ -1675,3 +1829,216 @@ code {
     color: var(--accent-cyan);
     box-shadow: 0 0 8px rgba(0, 217, 255, 0.2);
 }
+
+/* =========================================================================
+ * SIMULATEUR DE TEST VIRTUEL — PANNEAU LATÉRAL OFF-CANVAS (ÉTABLI)
+ * =========================================================================
+ * Surimpression fixe au-dessus de l'application (z-index 1600 > topbar 1000),
+ * ouverture/fermeture par translation + visibility. Le panneau est placé HORS
+ * des sections SPA (index.html) : l'état ouvert/fermé persiste donc pendant la
+ * navigation entre onglets. Masqué intégralement sur natel/GSM (media query
+ * 768 px ci-dessus). */
+
+.sim-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    max-width: 92vw;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-color);
+    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
+    z-index: 1600;
+    transform: translateX(105%);      /* fermé : entièrement hors écran */
+    visibility: hidden;
+    transition: transform 0.28s ease, visibility 0.28s ease;
+}
+
+.sim-panel.open {
+    transform: translateX(0);
+    visibility: visible;
+}
+
+.sim-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sim-panel-header h3 { margin: 0; font-size: 0.95rem; }
+
+.sim-close-btn {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.sim-close-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+/* Poignée de redimensionnement — bord gauche du panneau (souris ou doigt).
+ * Pointer Events + touch-action:none : le glissement ne défile jamais la page
+ * sur tablette ; largeur bornée et mémorisée par le navigateur (app.js). */
+.sim-resize-handle {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 10px;
+    cursor: ew-resize;
+    touch-action: none;
+    z-index: 2;
+}
+.sim-resize-handle::before {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: 44px;
+    border-radius: 2px;
+    background: var(--border-color);
+    transition: background 0.2s ease;
+}
+.sim-resize-handle:hover::before,
+.sim-resize-handle.dragging::before { background: var(--accent-cyan); }
+
+.sim-panel-body { flex: 1; overflow-y: auto; padding: 16px 18px 24px; }
+
+/* Ligne du toggle général « Activer la simulation capteurs » */
+.sim-master-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    margin-bottom: 4px;
+}
+.sim-master-label { font-size: 0.85rem; font-weight: 600; }
+
+/* Intitulés de groupes (Tensions, Courants, Blocages) */
+.sim-group-title {
+    margin: 18px 0 6px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+}
+
+/* Une ligne libellé + valeur puis son slider pleine largeur */
+.sim-sl-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; font-size: 0.8rem; }
+.sim-sl-label { color: var(--text-secondary); }
+.sim-sl-value { color: var(--accent-magenta); font-weight: 600; font-family: 'Source Code Pro', monospace; font-size: 0.82rem; }
+.sim-slider { width: 100%; margin-top: 4px; accent-color: var(--accent-cyan); cursor: pointer; }
+
+/* Grille des blocages moteurs simulés (M1-M8) */
+.sim-stall-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.sim-stall-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.2s ease;
+}
+.sim-stall-item input { accent-color: var(--accent-magenta); cursor: pointer; }
+.sim-stall-item input:checked + span { color: var(--accent-magenta); font-weight: 700; }
+
+/* Bandeau d'état en bas du panneau */
+.sim-status {
+    margin-top: 18px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    text-align: center;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    transition: all 0.2s ease;
+}
+.sim-status.active {
+    border-color: rgba(255, 179, 0, 0.5);
+    background: rgba(255, 179, 0, 0.08);
+    color: var(--warning);
+}
+
+/* Carte lanceur en bas de la page Paramètres */
+.sim-launch-card { margin-top: 22px; }
+
+/* Bouton retour : à l'ouverture du panneau simulateur, une animation le
+ * « pousse » doucement vers la gauche (0.65s) comme si le panneau le
+ * déplaçait, avec un dépassement puis un rebond appuyé avant stabilisation à
+ * sa position symétrique (marge droite 20px + largeur 50px + marge gauche
+ * 20px → constante 90px vue depuis right:20px). La fermeture est animée par
+ * backBtnReturned (classe .back-returning posée par setSimPanel). Neutralisé
+ * ≤768px où le panneau n'existe pas. */
+body.sim-open #btn-back {
+    transform: translateX(calc(90px - 100vw));
+    animation: backBtnPushed 0.65s both;
+}
+
+/* Poussée du bouton retour : départ en douceur (contact avec le panneau),
+ * arrivée ~12px au-delà de la cible (le bouton frôle le bord gauche, pour
+ * attirer l'œil sur sa nouvelle place), rebond appuyé ~24px en deçà puis
+ * stabilisation. Amplitudes fixes en px : un easing à dépassement
+ * proportionnel ferait sortir le bouton de l'écran sur une aussi grande
+ * distance. */
+@keyframes backBtnPushed {
+    0% {
+        transform: translateX(0);
+        animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
+    }
+    58% {
+        transform: translateX(calc(78px - 100vw));   /* 12px au-delà de la cible */
+        animation-timing-function: ease-out;
+    }
+    80% {
+        transform: translateX(calc(114px - 100vw));  /* rebond : 24px en deçà de la cible */
+        animation-timing-function: ease-in-out;
+    }
+    100% {
+        transform: translateX(calc(90px - 100vw));   /* position finale stable */
+    }
+}
+
+/* Retour du bouton à la fermeture : animation INVERSE déclenchée par la
+ * classe temporaire .back-returning (posée par setSimPanel). Nécessaire car
+ * une transition CSS ne démarre pas depuis la valeur figée d'une animation
+ * supprimée : le simple retrait de body.sim-open provoquait un saut —
+ * vérifié en navigateur. */
+#btn-back.back-returning {
+    animation: backBtnReturned 0.45s cubic-bezier(0.45, 0.05, 0.55, 0.95) both;
+}
+@keyframes backBtnReturned {
+    0%   { transform: translateX(calc(90px - 100vw)); }
+    100% { transform: translateX(0); }
+}
+
+/* Pendant le glissement de redimensionnement : pas de sélection de texte */
+body.sim-resizing { user-select: none; }

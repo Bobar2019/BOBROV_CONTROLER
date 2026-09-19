@@ -20,8 +20,12 @@
 /* =========================================================================
  * SECTION 1 : CONFIGURATION I2C — DEUX BUS MATÉRIELS
  *
- * Bus n°1 (Wire,  GPIO 10/11) : BNO085 + 3× INA226 — propriété exclusive
- *                              de la tâche capteurs (Core 1).
+ * Répartition PAR DÉFAUT des modules (v1.2.0 : routage dynamique Plug & Play,
+ * chaque module est réassignable aux deux bus depuis l'interface Web — voir
+ * i2c_router.h/.cpp, clés NVS « route_* ») :
+ *
+ * Bus n°1 (Wire,  GPIO 10/11) : BNO085 + INA3221 + 2× INA226 — propriété
+ *                              exclusive de la tâche capteurs (Core 1).
  * Bus n°2 (Wire1, GPIO 6/7)   : MS5837 + PCA9685 — broches par défaut,
  *                              configurables en NVS (page Paramètres) ;
  *                              partagé entre la tâche capteurs (pression
@@ -201,14 +205,89 @@ constexpr uint8_t  BNO085_I2C_ADDR      = 0x4A;
 /** @brief Adresse I2C du capteur de pression MS5803-30BA / MS5837 */
 constexpr uint8_t  MS5803_I2C_ADDR      = 0x76;
 
-/** @brief Adresse I2C du wattmètre INA226 n°1 (alimentation RPi 5) */
-constexpr uint8_t  INA226_1_I2C_ADDR    = 0x41;
+/**
+ * @brief Adresse I2C du triple wattmètre INA3221 (v1.1.0) — bus n°1.
+ *
+ * Remplace l'INA226 n°1 (0x41, alimentation RPi 5) :
+ *  - Canal 1 : tension batterie propulsion (V_BAT) via IN+ / IN− ;
+ *  - Canal 2 : signal du capteur à effet Hall ACS770-100U des propulseurs
+ *    HORIZONTAUX (M1-M4), câblé sur la broche IN− et lu sur le registre de
+ *    tension bus (0,5 V à 0 A → 4,5 V à 100 A — la plage shunt est inadaptée) ;
+ *  - Canal 3 : signal ACS770 des propulseurs VERTICAUX (M5-M8), idem.
+ *
+ * Aucune collision d'adresse : le PCA9685 (0x40) vit sur le bus n°2 (Wire1),
+ * l'INA3221 vit sur le bus n°1 (Wire) — deux contrôleurs I2C indépendants.
+ */
+constexpr uint8_t  INA3221_I2C_ADDR     = 0x40;
 
 /** @brief Adresse I2C du wattmètre INA226 n°2 (auxiliaire / LEDs) */
 constexpr uint8_t  INA226_2_I2C_ADDR    = 0x44;
 
 /** @brief Adresse I2C du wattmètre INA226 n°3 (propulsion moteur) */
 constexpr uint8_t  INA226_3_I2C_ADDR    = 0x45;
+
+/* =========================================================================
+ * SECTION 2b : REGISTRES DU INA3221 (TI SBVS197) — pilote maison
+ *
+ * Triple canal 13 bits : tension bus (LSB 8 mV, bits 14:3 du registre) et
+ * tension shunt différentielle IN+ − IN− (LSB 40 µV, 14 bits signés,
+ * bits 14:3 — les 3 bits de poids faible sont réservés, d'où le décalage >>3).
+ * Les ACS770 des canaux 2/3 sont lus sur le registre BUS (voir
+ * ACS770_SENSITIVITY_V_PER_A) : le registre shunt saturerait à ±4,09 A.
+ * ========================================================================= */
+
+/** @brief Registres INA3221 : configuration, tensions shunt/bus par canal */
+constexpr uint8_t  INA3221_REG_CONFIG   = 0x00;   ///< Configuration (défaut 0x7127)
+constexpr uint8_t  INA3221_REG_SHUNT1   = 0x01;   ///< Tension shunt canal 1
+constexpr uint8_t  INA3221_REG_BUS1     = 0x02;   ///< Tension bus canal 1 (V_BAT)
+constexpr uint8_t  INA3221_REG_SHUNT2   = 0x03;   ///< Tension shunt canal 2
+constexpr uint8_t  INA3221_REG_BUS2     = 0x04;   ///< Tension bus canal 2 (signal ACS770 horizontaux)
+constexpr uint8_t  INA3221_REG_SHUNT3   = 0x05;   ///< Tension shunt canal 3
+constexpr uint8_t  INA3221_REG_BUS3     = 0x06;   ///< Tension bus canal 3 (signal ACS770 verticaux)
+constexpr uint8_t  INA3221_REG_MFR_ID   = 0xFE;   ///< Manufacturer ID (TI = 0x5449)
+
+/**
+ * @brief Valeur d'identification du fabricant (TI) lue à l'adresse 0xFE.
+ */
+constexpr uint16_t INA3221_MFR_ID       = 0x5449;
+
+/**
+ * @brief Configuration INA3221 : 3 canaux shunt+bus en continu, conversion
+ *        588 µs, MOYENNAGE ×16 (bits 11:9 = 100).
+ *
+ * Base 0x7127 (défaut usine) | 0x0800 → stabilise les mesures ACS770 (bruit
+ * Hall) au prix d'un rafraîchissement ~35 Hz par canal — largement suffisant
+ * pour la surveillance de surintensité (un moteur bloqué dure des secondes).
+ */
+constexpr uint16_t INA3221_CONFIG_VALUE = 0x7927;
+
+/** @brief LSB de la tension bus INA3221 (mV) — bits 14:3 du registre 16 bits */
+constexpr float    INA3221_BUS_LSB_MV   = 8.0f;
+
+/** @brief LSB de la tension shunt INA3221 (µV) — 14 bits signés, bits 14:3
+ *         (inutilisé pour les ACS770, lus sur le registre de tension bus) */
+constexpr float    INA3221_SHUNT_LSB_UV = 40.0f;
+
+/**
+ * @brief Sensibilité des capteurs de courant ACS770-100U (V/A).
+ *
+ * Sortie unipolaire : 0,5 V à 0 A, 4,5 V à +100 A (40 mV/A). Le signal est
+ * câblé sur la broche IN− de l'INA3221 et lu sur le REGISTRE DE TENSION BUS
+ * du canal (bits 14:3, LSB 8 mV, plage 26 V) : la tension shunt différentielle
+ * (±163,84 mV, soit ±4,09 A à 40 mV/A) saturait toute la plage utile.
+ *
+ * Formule constructeur : I (A) = (V_bus_mV − ACS770_ZERO_A_MV) / 40.
+ * La valeur absolue est utilisée (le signe dépend du câblage IN+/IN−).
+ */
+constexpr float    ACS770_SENSITIVITY_V_PER_A = 0.040f;
+
+/** @brief Tension de sortie ACS770 à 0 A (mV) — zéro de la formule courant */
+constexpr float    ACS770_ZERO_A_MV           = 500.0f;
+
+/** @brief Plancher de validité du signal ACS770 (mV) : en dessous, capteur
+ *         débranché ou lecture I2C invalide (registre à 0) — la formule
+ *         produirait une fausse surintensité de 12,5 A */
+constexpr float    ACS770_VALID_MIN_MV        = 100.0f;
 
 /* =========================================================================
  * SECTION 3 : ÉNUMÉRATIONS CAPTEURS & PROFILS HAL
@@ -302,6 +381,125 @@ constexpr uint8_t  GPIO_NUM_OUTPUTS         = 4;
 
 /** @brief Broches GPIO par défaut des 4 sorties ON/OFF (clés NVS gpio_p1..p4) */
 constexpr uint8_t  GPIO_OUTPUT_PINS_DEFAULT[GPIO_NUM_OUTPUTS] = { 15, 16, 17, 18 };
+
+/* =========================================================================
+ * SECTION 4d : GESTION MOTEURS — INA3221/ACS770, CHECK DÉMARRAGE, ISOLEMENT
+ *
+ * M1-M4 = canaux PCA9685 0-3 (propulseurs horizontaux — courant mesuré sur
+ * le canal 2 de l'INA3221) ; M5-M8 = canaux 4-7 (verticaux — canal 3).
+ * Tous les paramètres utilisateur de cette section sont persistés en NVS
+ * (namespace « motors ») et modifiables depuis l'onglet Paramètres.
+ * ========================================================================= */
+
+/** @brief Nombre de canaux propulseurs (M1-M8 → canaux PCA9685 0-7) */
+constexpr uint8_t  MOTOR_NUM_CHANNELS     = 8;
+
+/** @brief Nombre de propulseurs horizontaux M1-M4 (canaux 0-3) */
+constexpr uint8_t  MOTOR_HORIZ_COUNT      = 4;
+
+/** @brief Index du premier propulseur vertical M5 (canal 4) */
+constexpr uint8_t  MOTOR_VERT_FIRST       = 4;
+
+/** @brief Nombre de propulseurs verticaux M5-M8 (canaux 4-7) */
+constexpr uint8_t  MOTOR_VERT_COUNT       = 4;
+
+/**
+ * @brief Indice PowerData du courant des propulseurs horizontaux (canal 2
+ *        INA3221) — accepté aussi par SensorDriver::readACS770CurrentmA().
+ */
+constexpr uint8_t  MOTOR_CURRENT_CH_HORIZ = 1;
+
+/**
+ * @brief Indice PowerData du courant des propulseurs verticaux (canal 3
+ *        INA3221) — accepté aussi par SensorDriver::readACS770CurrentmA().
+ */
+constexpr uint8_t  MOTOR_CURRENT_CH_VERT  = 2;
+
+/** @brief Impulsion du check propulseurs en µs (≈20 % de poussée) */
+constexpr uint16_t MOTOR_CHECK_PULSE_US   = 1600;
+
+/** @brief Durée de l'impulsion de check en ms (fenêtre de mesure du courant) */
+constexpr uint32_t MOTOR_CHECK_PULSE_MS   = 400;
+
+/** @brief Délai de stabilisation avant lecture courant (ms, après impulsion) */
+constexpr uint32_t MOTOR_CHECK_SETTLE_MS  = 150;
+
+/** @brief Pause entre deux moteurs du check (ms — retour neutre garanti) */
+constexpr uint32_t MOTOR_CHECK_PAUSE_MS   = 250;
+
+/** @brief Délai post-connexion Wi-Fi avant le check propulseurs (ms) */
+constexpr uint32_t MOTOR_CHECK_POST_WIFI_DELAY_MS = 3000;
+
+/**
+ * @brief Consigne des verticaux en remontée d'urgence (µs).
+ *
+ * ≈40 % de poussée vers la surface : assez pour remonter avec 3 verticaux
+ * sur 4, sans déstabiliser le ROV ni surcharger les ESC restants.
+ */
+constexpr uint16_t MOTOR_EMERGENCY_SURFACE_US = 1700;
+
+/**
+ * @brief Surveillance surintensité : nombre de lectures consécutives
+ *        au-dessus du seuil avant déclenchement.
+ *
+ * La tâche de surveillance échantillonne à la période
+ * MOTOR_SURVEIL_PERIOD_MS (données ACS770 déjà moyennées ×16 côté INA3221) :
+ * 3 confirmations ≈ 300 ms — filtre les transitoires de commande (inversion
+ * brutale de poussée) tout en restant bien plus rapide qu'un échauffement
+ * destructif.
+ */
+constexpr uint8_t  MOTOR_OVERCURRENT_CONFIRM = 3;
+
+/** @brief Période de la tâche de surveillance moteurs en ms */
+constexpr uint32_t MOTOR_SURVEIL_PERIOD_MS   = 100;
+
+/** @brief Délai de stabilisation (ms) entre l'isolement d'un moteur suspect
+ *         et la lecture du courant pour identifier le coupable */
+constexpr uint32_t MOTOR_IDENTIFY_SETTLE_MS  = 150;
+
+/* -- Bornes et défauts des paramètres NVS (namespace « motors ») -- */
+
+/** @brief Seuil d'intensité max (moteur bloqué) par défaut en Ampères */
+constexpr float    MOTOR_CURRENT_THRESH_DEFAULT_A = 3.0f;
+
+/** @brief Borne basse du seuil d'intensité paramétrable (A) */
+constexpr float    MOTOR_CURRENT_THRESH_MIN_A    = 0.5f;
+
+/** @brief Borne haute du seuil d'intensité paramétrable (A) — plage ACS770-100U
+ *         (0–100 A) avec marge sous la pleine échelle */
+constexpr float    MOTOR_CURRENT_THRESH_MAX_A    = 80.0f;
+
+/** @brief Seuil de tension batterie basse par défaut en Volts */
+constexpr float    MOTOR_VBAT_LOW_DEFAULT_V      = 14.0f;
+
+/** @brief Borne basse du seuil de tension batterie (V) */
+constexpr float    MOTOR_VBAT_LOW_MIN_V          = 9.0f;
+
+/** @brief Borne haute du seuil de tension batterie (V) */
+constexpr float    MOTOR_VBAT_LOW_MAX_V          = 30.0f;
+
+/* -- Simulateur de test virtuel (établi) : bornes des valeurs injectées -- */
+
+/** @brief Tension simulée par défaut — batterie 1 propulsion (4S LiPo pleine) */
+constexpr float    SIM_VBAT1_DEFAULT_V = 16.8f;
+
+/** @brief Borne haute de la tension simulée batterie 1 (V) — plage registre bus INA3221 (26 V) */
+constexpr float    SIM_VBAT1_MAX_V     = 26.0f;
+
+/** @brief Tension simulée par défaut — batterie 2 électronique de commande & éclairage */
+constexpr float    SIM_VBAT2_DEFAULT_V = 12.0f;
+
+/** @brief Borne haute de la tension simulée batterie 2 (V) — plage bus INA226 */
+constexpr float    SIM_VBAT2_MAX_V     = 30.0f;
+
+/** @brief Borne haute des courants simulés ACS770 (A) — plage de test du seuil de coupure */
+constexpr float    SIM_CURRENT_MAX_A   = 80.0f;
+
+/** @brief Stack de la tâche de gestion moteurs (check + surveillance) */
+constexpr uint32_t STACK_SIZE_MOTORS   = 4096;
+
+/** @brief Priorité de la tâche de gestion moteurs (sous le contrôle/PID) */
+constexpr uint8_t  PRIORITY_MOTORS     = 3;
 
 /* =========================================================================
  * SECTION 5 : CONFIGURATION RÉSEAU WI-FI ET POINT D'ACCÈS

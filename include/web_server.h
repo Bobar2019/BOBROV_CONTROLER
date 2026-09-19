@@ -90,9 +90,23 @@ private:
     void _handleQnhRefreshPost(AsyncWebServerRequest* request);
     float _qnhFetchAndApply();              ///< Requête Open-Meteo + application (tâche QnhFetch uniquement)
     static void _qnhTaskEntry(void* param); ///< Entrée de la tâche détachée QNH
+
+    /* -- Gestion de sécurité moteurs (v1.1.0) : config NVS + relance check -- */
+    void _handleMotorsConfigGet(AsyncWebServerRequest* request);
+    void _handleMotorsConfigPost(AsyncWebServerRequest* request);
+    void _handleMotorsCheckPost(AsyncWebServerRequest* request);
+
+    /* -- Simulateur de test virtuel (établi) : injection capteurs, RAM seule -- */
+    void _handleSimulatorGet(AsyncWebServerRequest* request);
+    void _handleSimulatorPost(AsyncWebServerRequest* request);
+
     void _handleI2CScan(AsyncWebServerRequest* request);
     void _handleI2CConfigGet(AsyncWebServerRequest* request);
     void _handleI2CConfigPost(AsyncWebServerRequest* request);
+
+    /* -- Routage I2C Plug & Play (v1.2.0) : carte module → bus en NVS -- */
+    void _handleI2CRoutingGet(AsyncWebServerRequest* request);
+    void _handleI2CRoutingPost(AsyncWebServerRequest* request);
 
     /* -- Mise à jour OTA (firmware + fichiers Web) -- */
     void _handleSystemStatus(AsyncWebServerRequest* request);
