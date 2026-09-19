@@ -13,7 +13,7 @@
  * et la tâche SerialTx (émission télémétrie) également.
  *
  * @author Didier Dero
- * @version 1.5.0
+ * @version 1.6.0
  * @date Septembre 2026
  */
 
@@ -31,6 +31,7 @@
 #include "web_server.h"
 #include "flight_controller.h"
 #include "motor_manager.h"      /* g_motors : check/surveillance/isolation (v1.1.0) */
+#include "status_io.h"          /* g_statusIo : bandeau LED WS2812 + entrées GPIO (v1.6.0) */
 #include "git_version.h"        /* GIT_VERSION : version Git injectée au build (scripts/git_version.py) */
 
 /* =========================================================================
@@ -157,6 +158,15 @@ static void vTaskControl(void* param) {
     TickType_t lastWake = xTaskGetTickCount();
 
     for (;;) {
+        /* ---- 0. Sécurité voie d'eau (entrée GPIO) ----
+         * Tant que l'entrée « Détecteur Voie d'eau » est active (GND ou
+         * +3,3 V selon la polarité configurée), l'override force le Retour
+         * Surface : le bit MODE_BIT_SURFACE est superposé à chaque setMode()
+         * (y compris les trames descendantes RPi 5 à 100 Hz) et le bit
+         * STATUS_BIT_SURFACE (0x80) remonte automatiquement via
+         * isSurfaceReturnActive(). */
+        g_flightCtrl.setSurfaceOverride(g_statusIo.isWaterAlarm());
+
         /* ---- 1. Vérification du watchdog série ---- */
         if (g_serial.isWatchdogTriggered()) {
             /* Le watchdog a déjà forcé le neutre dans serial_comm.cpp */
@@ -386,6 +396,13 @@ void setup() {
      * surintensité continue, identification/isolement et remontée d'urgence.
      * Aucune attente dans setup() — le boot reste instantané. */
     g_motors.begin();
+
+    /* ---- 7d. Signalisation LED WS2812 + entrées numériques (v1.6.0) ----
+     * Tâche dédiée (Core 0) : échantillonnage anti-rebond des entrées
+     * Armement / Voie d'eau (polarité configurable) et rendu non bloquant
+     * du bandeau LED selon l'état réel du contrôleur (millis()). Aucune
+     * attente ici. */
+    g_statusIo.begin();
 
     /* ---- 8. Lancement de la tâche de contrôle sur Core 1 ---- */
     xTaskCreatePinnedToCore(

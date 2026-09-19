@@ -114,6 +114,21 @@ public:
     bool setModeFromWeb(uint8_t mode);
 
     /**
+     * @brief Force (ou relâche) le retour surface d'urgence (voie d'eau).
+     *
+     * Quand l'override est actif, le bit MODE_BIT_SURFACE est superposé à
+     * CHAQUE appel de setMode() (y compris les trames descendantes RPi 5),
+     * ce qui garantit que le mode Retour Surface reste prioritaire tant que
+     * l'alarme n'est pas relâchée. Le bit STATUS_BIT_SURFACE (0x80) de la
+     * trame montante suit automatiquement (isSurfaceReturnActive()).
+     * @param active true = forcer le Retour Surface, false = relâcher.
+     */
+    void setSurfaceOverride(bool active);
+
+    /** @brief true si le retour surface d'urgence (voie d'eau) est forcé */
+    bool isSurfaceOverrideActive() const;
+
+    /**
      * @brief Boucle principale de contrôle PID + mixage (appelée à 100 Hz).
      *
      * Applique les corrections PID des assistances actives (superposables)
@@ -149,6 +164,12 @@ private:
     volatile uint8_t  _activeMode;          ///< Masque d'assistances actif (MODE_BIT_*)
     volatile bool     _rpiMaster;           ///< true = RPi 5 est maître
     unsigned long     _lastRPi5FrameTime;   ///< Timestamp dernière trame RPi 5 valide
+
+    /** @brief Mode demandé par la source (RPi 5 ou Web), sans l'override voie d'eau */
+    volatile uint8_t  _requestedMode;
+
+    /** @brief true = Retour Surface forcé par l'alarme voie d'eau (prioritaire) */
+    volatile bool     _surfaceOverride;
 
     /** @brief Cible du PID profondeur (profondeur capturée à l'activation) */
     float _altTarget;

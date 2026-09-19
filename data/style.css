@@ -125,7 +125,7 @@ html[data-theme="light"] .rov-schematic-wrap .thr-value { fill: #aaaebc; }
 html[data-theme="light"] .rov-3d-status { color: #9aa0ad; }
 html[data-theme="light"] .wiring-ascii { color: #4fd6f2; }
 
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; scroll-padding-top: 72px; /* hauteur barre de statut : tout défilement ciblé s'arrête sous la barre */ }
 
 body {
     font-family: var(--font-body);
@@ -697,6 +697,71 @@ html[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
     color: var(--success);
     border: 1px solid rgba(0, 230, 118, 0.5);
 }
+/* Pastille d'alarme (voie d'eau en alarme, avarie affichée par le bandeau) */
+.gpio-st-alarm {
+    background: rgba(255, 59, 48, 0.18);
+    color: var(--danger);
+    border: 1px solid rgba(255, 59, 48, 0.55);
+}
+
+/* Matrice de configuration du bandeau LED WS2812 (5 états ROV, v1.6.0) */
+.led-states {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 14px 0 18px;
+}
+.led-state-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.led-state-name {
+    flex: 1 1 190px;
+    min-width: 170px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+.led-state-row select {
+    width: 160px;
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 0.82rem;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.3s;
+}
+.led-state-row select:focus { border-color: var(--accent-cyan); }
+.led-color-input {
+    width: 46px;
+    height: 30px;
+    padding: 2px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.led-color-input::-webkit-color-swatch-wrapper { padding: 0; }
+.led-color-input::-webkit-color-swatch { border: none; border-radius: 4px; }
+
+/* Curseur de luminosité par état (matrice LED, v1.6.0) */
+.led-bri-range {
+    flex: 1 1 110px;
+    min-width: 90px;
+    accent-color: var(--accent-cyan);
+    cursor: pointer;
+}
+.led-bri-val {
+    min-width: 46px;
+    text-align: right;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
 
 /* Boutons de test des 4 sorties ON/OFF (carte Paramètres) */
 .gpio-test-item { display: inline-flex; align-items: center; gap: 8px; }
@@ -952,6 +1017,15 @@ html[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
 
 /* ===== PARAMÈTRES ===== */
 .settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; margin-bottom: 20px; }
+/* Variante 2 colonnes fixes : cartes à 4 champs larges où auto-fill produirait
+   3-4 colonnes écrasées sur grand écran. */
+.settings-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* Variante empilée : libellé au-dessus, sélecteur pleine largeur de cellule.
+   Pour les libellés longs (~200 px) : dans une colonne de ~420 px (desktop) ou
+   ~330 px (natel), le couple texte + select 200 px ne tient pas — le texte se
+   replie sur 2 lignes et désaligne les selects. Ici, rien ne peut déborder. */
+.settings-grid.stack label { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 6px; }
+.settings-grid.stack label select { width: 100%; }
 .settings-grid label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 0.85rem; color: var(--text-secondary); gap: 10px; }
 .settings-grid input[type="number"] {
     width: 110px; padding: 8px 10px;
@@ -1006,8 +1080,9 @@ html[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
 .acc[open] > .acc-sum::after { transform: rotate(45deg); }
 /* espace bandeau ↔ contenu une fois déplié */
 .acc[open] > .acc-sum { margin-bottom: 14px; }
-/* hint d'intro collé au bandeau (même rôle que la compensation sous le h3 des cartes) */
-.acc > .acc-sum + .card-hint { margin-top: -0.5rem; }
+/* Espacement du texte explicatif sous le bandeau de titre : le tassement
+   d'origine (marge négative −0.5 rem) le collait contre la barre du haut. */
+.acc > .acc-sum + .card-hint { margin-top: 0.25rem; }
 /* ouverture en douceur (tous navigateurs) : le contenu apparaît en fondu glissé */
 .acc[open] > *:not(.acc-sum) { animation: accReveal 0.35s ease; }
 @keyframes accReveal {
@@ -1125,7 +1200,7 @@ footer #app-version { color: var(--text-secondary); font-weight: 600; }
     h1 { font-size: 1.4rem; letter-spacing: 2px; }
     .page-container { padding: 20px 12px 80px; }
     .pwm-grid, .slider-grid { grid-template-columns: 1fr 1fr; }
-    .settings-grid { grid-template-columns: 1fr; }
+    .settings-grid, .settings-grid.cols-2 { grid-template-columns: 1fr; }
     .back-top-btn { top: 65px; right: 12px; width: 44px; height: 44px; }
 
     /* Simulateur de test virtuel : inaccessible sur natel/GSM — panneau ET

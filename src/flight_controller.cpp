@@ -30,6 +30,8 @@ FlightController::FlightController()
     , _activeMode(MODE_PASSIF)
     , _rpiMaster(false)
     , _lastRPi5FrameTime(0)
+    , _requestedMode(MODE_PASSIF)
+    , _surfaceOverride(false)
     , _altTarget(0.0f)
     , _depthHoldValid(false)
     , _yawSetpoint(0.0f)
@@ -47,6 +49,8 @@ void FlightController::begin(AutopilotConfig* cfg, SemaphoreHandle_t mutex) {
     _activeMode = MODE_PASSIF;
     _rpiMaster  = false;
     _lastRPi5FrameTime = 0;
+    _requestedMode = MODE_PASSIF;
+    _surfaceOverride = false;
     _altTarget = 0.0f;
     _depthHoldValid = false;
     _yawSetpoint = 0.0f;
@@ -61,8 +65,12 @@ void FlightController::begin(AutopilotConfig* cfg, SemaphoreHandle_t mutex) {
  * ========================================================================= */
 
 void FlightController::setMode(uint8_t mode) {
-    /* Masque de bits : ignorer les bits inconnus (4-7) */
-    mode &= MODE_MASK_ALL;
+    /* Mémoriser le mode demandé par la source (RPi 5 ou Web), sans l'override,
+     * puis dériver le mode effectif : le Retour Surface d'urgence (voie d'eau)
+     * est superposé à CHAQUE appel — y compris les trames descendantes RPi 5
+     * reçues à 100 Hz — tant que l'alarme n'est pas relâchée. */
+    _requestedMode = mode & MODE_MASK_ALL;
+    mode = _requestedMode | (_surfaceOverride ? MODE_BIT_SURFACE : 0);
 
     if (mode != _activeMode) {
         resetPID();
@@ -140,6 +148,29 @@ bool FlightController::setModeFromWeb(uint8_t mode) {
 
     setMode(mode);
     return true;
+}
+
+void FlightController::setSurfaceOverride(bool active) {
+    /* Ne rien faire si l'état ne change pas : cette méthode est appelée à
+     * 100 Hz depuis vTaskControl (les rescans de mode seraient inutiles). */
+    if (active == _surfaceOverride) {
+        return;
+    }
+    _surfaceOverride = active;
+
+    if (active) {
+        Serial.println("[FLIGHT] Retour Surface FORCÉ (alarme voie d'eau) — priorité sur le mode demandé");
+    } else {
+        Serial.println("[FLIGHT] Retour Surface forcé relâché — retour au mode demandé 0x"
+                       + String(_requestedMode, HEX));
+    }
+
+    /* Réappliquer immédiatement le mode demandé avec/sans l'override */
+    setMode(_requestedMode);
+}
+
+bool FlightController::isSurfaceOverrideActive() const {
+    return _surfaceOverride;
 }
 
 void FlightController::_checkRPi5Timeout() {

@@ -531,6 +531,145 @@
                     <p class="card-hint" id="gpio-test-hint">Boutons de test (établi) : forcent l'état des sorties — le firmware relit et renvoie l'état réel. Écrasés par le watchdog, l'E-Stop ou une trame RPi 5 maître.</p>
                 </details>
 
+                <!-- Signalisation LED d'état (WS2812, v1.6.0) — matrice des 5
+                     états du ROV : effet + couleur, persistée en NVS. -->
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Signalisation LED (WS2812)</h3></summary>
+                    <p class="card-hint">Bandeau WS2812 d'état à bord (NEO_GRB / 800 kHz). Cinq états du ROV,
+                        du plus informatif au plus critique : Avarie &gt; Retour Surface &gt; Autopilote &gt; RPi5
+                        connecté &gt; Attente Réseau. La broche et le nombre de LEDs sont appliqués au démarrage
+                        (redémarrage 3 s si changement) ; les effets, couleurs et luminosités par état s'appliquent à chaud.</p>
+                    <div class="settings-grid">
+                        <label>Ligne de données (Data Pin)
+                            <select id="led-data-pin">
+                                <option value="-1">— Non assigné —</option>
+                            </select>
+                        </label>
+                        <label>Nombre de LEDs
+                            <input type="number" id="led-count" min="1" max="100" value="8">
+                        </label>
+                    </div>
+                    <p class="card-hint">GPIO 19/20 (USB natif), GPIO 35-37 (bus mémoire interne des modules
+                        octaux), broches I2C actives, UART1 et broches déjà utilisées (sorties ON/OFF, entrées)
+                        sont exclus de la liste.</p>
+                    <div class="led-states">
+                        <div class="led-state-row">
+                            <span class="led-state-name">1 · Attente Réseau</span>
+                            <select id="led-fx-0">
+                                <option value="0">Fixe</option>
+                                <option value="1" selected>Pulsation</option>
+                                <option value="2">Stroboscope</option>
+                                <option value="3">Éteint</option>
+                            </select>
+                            <input type="color" id="led-color-0" class="led-color-input" value="#0080ff" title="Couleur — Attente Réseau">
+                            <input type="range" id="led-bri-0" class="led-bri-range" min="1" max="100" value="100"
+                                   title="Luminosité — Attente Réseau">
+                            <span class="led-bri-val" id="led-bri-val-0">100 %</span>
+                        </div>
+                        <div class="led-state-row">
+                            <span class="led-state-name">2 · RPi5 Connecté</span>
+                            <select id="led-fx-1">
+                                <option value="0" selected>Fixe</option>
+                                <option value="1">Pulsation</option>
+                                <option value="2">Stroboscope</option>
+                                <option value="3">Éteint</option>
+                            </select>
+                            <input type="color" id="led-color-1" class="led-color-input" value="#00e676" title="Couleur — RPi5 Connecté">
+                            <input type="range" id="led-bri-1" class="led-bri-range" min="1" max="100" value="100"
+                                   title="Luminosité — RPi5 Connecté">
+                            <span class="led-bri-val" id="led-bri-val-1">100 %</span>
+                        </div>
+                        <div class="led-state-row">
+                            <span class="led-state-name">3 · Autopilote actif</span>
+                            <select id="led-fx-2">
+                                <option value="0" selected>Fixe</option>
+                                <option value="1">Pulsation</option>
+                                <option value="2">Stroboscope</option>
+                                <option value="3">Éteint</option>
+                            </select>
+                            <input type="color" id="led-color-2" class="led-color-input" value="#00d9ff" title="Couleur — Autopilote actif">
+                            <input type="range" id="led-bri-2" class="led-bri-range" min="1" max="100" value="100"
+                                   title="Luminosité — Autopilote actif">
+                            <span class="led-bri-val" id="led-bri-val-2">100 %</span>
+                        </div>
+                        <div class="led-state-row">
+                            <span class="led-state-name">4 · Retour Surface d'urgence</span>
+                            <select id="led-fx-3">
+                                <option value="0">Fixe</option>
+                                <option value="1" selected>Pulsation</option>
+                                <option value="2">Stroboscope</option>
+                                <option value="3">Éteint</option>
+                            </select>
+                            <input type="color" id="led-color-3" class="led-color-input" value="#ffb300" title="Couleur — Retour Surface d'urgence">
+                            <input type="range" id="led-bri-3" class="led-bri-range" min="1" max="100" value="100"
+                                   title="Luminosité — Retour Surface d'urgence">
+                            <span class="led-bri-val" id="led-bri-val-3">100 %</span>
+                        </div>
+                        <div class="led-state-row">
+                            <span class="led-state-name">5 · Avarie (Surintensité/Erreur)</span>
+                            <select id="led-fx-4">
+                                <option value="0">Fixe</option>
+                                <option value="1">Pulsation</option>
+                                <option value="2" selected>Stroboscope</option>
+                                <option value="3">Éteint</option>
+                            </select>
+                            <input type="color" id="led-color-4" class="led-color-input" value="#ff3b30" title="Couleur — Avarie">
+                            <input type="range" id="led-bri-4" class="led-bri-range" min="1" max="100" value="100"
+                                   title="Luminosité — Avarie">
+                            <span class="led-bri-val" id="led-bri-val-4">100 %</span>
+                        </div>
+                    </div>
+                    <button id="btn-save-led" class="btn btn-primary">Sauvegarder la signalisation LED</button>
+                    <div class="gpio-states">
+                        <span class="gpio-test-item">État affiché <span class="gpio-st gpio-st-off" id="led-active-st">—</span></span>
+                    </div>
+                </details>
+
+                <!-- Entrées numériques de sécurité (v1.6.0) — armement
+                     magnétique + détecteur voie d'eau, polarité par entrée. -->
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Entrées Numériques (Capteurs)</h3></summary>
+                    <p class="card-hint">Polarité configurable par entrée : « Contact vers GND » (INPUT_PULLUP,
+                        active à la masse) ou « Signal +3,3 V » (INPUT_PULLDOWN, active au niveau haut). L'alarme
+                        « Voie d'eau » écrase le mode de vol et force le Retour Surface (status 0x80) tant qu'elle
+                        est active. Broches et polarités appliquées au démarrage — redémarrage différé 3 s si
+                        changement.</p>
+                    <div class="settings-grid cols-2 stack">
+                        <label>Broche — Armement / Allumage
+                            <select id="in-arm-pin">
+                                <option value="-1">— Non assigné —</option>
+                            </select>
+                        </label>
+                        <label>Polarité — Armement / Allumage
+                            <select id="in-arm-pol"
+                                    title="INPUT_PULLUP : déclenche quand la broche est mise à la masse — INPUT_PULLDOWN : déclenche quand la broche passe à +3,3 V">
+                                <option value="0" selected>Contact vers GND</option>
+                                <option value="1">Signal +3,3 V</option>
+                            </select>
+                        </label>
+                        <label>Broche — Détecteur Voie d'eau
+                            <select id="in-water-pin">
+                                <option value="-1">— Non assigné —</option>
+                            </select>
+                        </label>
+                        <label>Polarité — Détecteur Voie d'eau
+                            <select id="in-water-pol"
+                                    title="INPUT_PULLUP : déclenche quand la broche est mise à la masse — INPUT_PULLDOWN : déclenche quand la broche passe à +3,3 V">
+                                <option value="0" selected>Contact vers GND</option>
+                                <option value="1">Signal +3,3 V</option>
+                            </select>
+                        </label>
+                    </div>
+                    <p class="card-hint">GPIO 19/20 (USB natif), GPIO 35-37 (bus mémoire interne des modules
+                        octaux), broches I2C actives, UART1 et broches déjà utilisées (sorties ON/OFF, bandeau LED)
+                        sont exclus des listes.</p>
+                    <button id="btn-save-gpio-inputs" class="btn btn-primary">Sauvegarder &amp; redémarrer</button>
+                    <div class="gpio-states">
+                        <span class="gpio-test-item">Interrupteur armement <span class="gpio-st gpio-st-off" id="in-arm-st">OUVERT</span></span>
+                        <span class="gpio-test-item">Détecteur voie d'eau <span class="gpio-st gpio-st-off" id="in-water-st">SEC</span></span>
+                    </div>
+                </details>
+
                 <!-- Noms personnalisés des sorties (16 PWM + 4 GPIO, NVS) -->
                 <details class="card acc">
                     <summary class="acc-sum"><h3>Noms des sorties</h3></summary>
@@ -973,7 +1112,7 @@
     <!-- Pied de page global : version Git réelle du firmware (renseignée par app.js
          depuis /api/system/status) + mentions auteur / licence -->
     <footer class="app-footer">
-        <span>BOB-CONTROL <span id="app-version">v1.5.0</span></span>
+        <span>BOB-CONTROL <span id="app-version">v1.6.0</span></span>
         <span aria-hidden="true"> | </span>
         <span>Auteur : Dero Didier</span>
         <span aria-hidden="true"> | </span>

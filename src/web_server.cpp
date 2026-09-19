@@ -5,9 +5,10 @@
  * Gère le point d'accès Wi-Fi, le portail captif DNS, les endpoints REST
  * (/api/wifi/scan, /api/wifi/connect, /api/settings/save, /api/comm/config,
  * /api/pwm/output-enable, /api/pwm/config, /api/gpio/config, /api/gpio/test,
- * /api/names, /api/i2c/scan, /api/i2c/config, /api/i2c/routing, /api/ota/firmware,
- * /api/ota/filesystem, /api/system/status, /api/qnh/config, /api/qnh/refresh,
- * /api/calibrate_qnh, /api/motors/config, /api/motors/check)
+ * /api/gpio-inputs/config, /api/led/config, /api/names, /api/i2c/scan,
+ * /api/i2c/config, /api/i2c/routing, /api/ota/firmware, /api/ota/filesystem,
+ * /api/system/status, /api/qnh/config, /api/qnh/refresh, /api/calibrate_qnh,
+ * /api/motors/config, /api/motors/check)
  * et le serveur WebSocket diffusant la télémétrie temps réel en JSON.
  *
  * @author Didier Dero
@@ -23,6 +24,7 @@
 #include "protocol.h"
 #include "flight_controller.h"
 #include "motor_manager.h"      /* g_motors : config NVS + check + télémétrie (v1.1.0) */
+#include "status_io.h"          /* g_statusIo : entrées sécurité + bandeau LED WS2812 (v1.6.0) */
 #include "simulator.h"          /* g_sim : simulateur de test virtuel (établi) */
 #include "i2c_router.h"         /* g_i2cRouter : carte de routage Plug & Play (v1.2.0) */
 
@@ -304,6 +306,23 @@ void BobWebServer::_setupRoutes() {
     /* REST : Test manuel des 4 sorties GPIO ON/OFF (masque 4 bits, établi) */
     _server.on("/api/gpio/test", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handleGpioTestPost(request); });
+
+    /* REST : Entrées numériques (v1.6.0) — Armement / Voie d'eau (GET + POST).
+     * Broches et polarités (actif GND / actif +3,3 V) appliquées au boot →
+     * redémarrage différé 3 s si changement ; l'alarme voie d'eau force le
+     * Retour Surface côté firmware. */
+    _server.on("/api/gpio-inputs/config", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleGpioInputsConfigGet(request); });
+    _server.on("/api/gpio-inputs/config", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleGpioInputsConfigPost(request); });
+
+    /* REST : Signalisation LED WS2812 (v1.6.0) — ligne de données et nombre
+     * de LEDs (boot) + matrice 5 états (effet, couleur, luminosité par état)
+     * appliquée à chaud, GET + POST. */
+    _server.on("/api/led/config", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleLedConfigGet(request); });
+    _server.on("/api/led/config", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleLedConfigPost(request); });
 
     /* REST : Noms personnalisés des sorties (16 PWM + 4 GPIO, NVS — GET + POST) */
     _server.on("/api/names", HTTP_GET,
@@ -1198,11 +1217,17 @@ void BobWebServer::_handleGpioConfigPost(AsyncWebServerRequest* request) {
         return;
     }
 
-    /* Broches réservées : bus I2C actifs + UART1 (liaison RPi 5) */
+    /* Broches réservées : bus I2C actifs + UART1 (liaison RPi 5) + entrées
+     * numériques et ligne de données du bandeau LED déjà assignés (v1.6.0 —
+     * exclusions croisées ; la sentinelle 0xFF « non assigné » ne peut
+     * jamais égaler un GPIO valide). */
     const uint8_t reserved[] = {
         g_sensors.getCurrentSDA(),  g_sensors.getCurrentSCL(),
         g_sensors.getCurrent2SDA(), g_sensors.getCurrent2SCL(),
-        UART1_RX_PIN, UART1_TX_PIN
+        UART1_RX_PIN, UART1_TX_PIN,
+        (uint8_t)g_statusIo.getArmPin(),
+        (uint8_t)g_statusIo.getWaterPin(),
+        (uint8_t)g_statusIo.getLedPin()
     };
 
     uint8_t pins[GPIO_NUM_OUTPUTS];
@@ -1298,6 +1323,336 @@ void BobWebServer::_handleGpioTestPost(AsyncWebServerRequest* request) {
     resp["gpio_state"]  = g_gpio.getState();
     resp["rpi5_master"] = g_flightCtrl.isRPi5Master();
     serializeJson(resp, response);
+    request->send(200, "application/json", response);
+}
+
+/* =========================================================================
+ * ENTRÉES NUMÉRIQUES DE SÉCURITÉ + BANDEAU LED WS2812 (v1.6.0)
+ * =========================================================================
+ *
+ * Endpoints des deux blocs de l'onglet Paramètres :
+ * - /api/gpio-inputs/config : entrées « Armement » (interrupteur magnétique)
+ *   et « Détecteur Voie d'eau », à polarité configurable par entrée (contact
+ *   vers GND = active, INPUT_PULLUP — défaut ; signal actif +3,3 V,
+ *   INPUT_PULLDOWN) ; l'alarme voie d'eau force le Retour Surface (override
+ *   FlightController).
+ * - /api/led/config : ligne de données WS2812, nombre de LEDs et matrice
+ *   des 5 états (effet + couleur RGB + luminosité par état), consommée par
+ *   la tâche StatusIO.
+ *
+ * Persistance NVS dans le module StatusIO (namespace « statusio »). Les
+ * BROCHES et la POLARITÉ des entrées sont appliquées au boot (pull-up ou
+ * pull-down / instance NeoPixel) : tout changement programme un redémarrage
+ * différé de 3 s. La MATRICE LED (effets, couleurs et luminosités par état)
+ * est appliquée à chaud, sans redémarrage.
+ *
+ * Exclusions croisées : une broche déjà utilisée par les sorties ON/OFF,
+ * l'autre entrée ou le bandeau est refusée, comme les broches des bus I2C
+ * actifs, l'UART1, les GPIO 19/20 (USB natif) et les GPIO 35-37 (bus SPI
+ * flash/PSRAM interne des modules octaux). Valeur -1 = « non assigné ».
+ * ========================================================================= */
+
+/**
+ * @brief Valide une broche GPIO assignable par l'utilisateur (v1.6.0).
+ *
+ * Refuse hors 0-48, les GPIO 19/20 (USB natif), les GPIO 35-37 (bus SPI
+ * flash/PSRAM interne des modules octaux), les broches des bus I2C actifs
+ * et de l'UART1 (liaison RPi 5), plus toute broche présente dans extra[]
+ * (exclusions croisées entre modules). Les valeurs -1 et STATUS_IO_PIN_NONE
+ * (0xFF) = « non assigné » sont acceptées.
+ *
+ * @return nullptr si la broche est valide, sinon le motif d'erreur.
+ */
+static const char* _userPinCheck(int pin, const uint8_t* extra, uint8_t numExtra) {
+    if (pin == -1 || pin == (int)STATUS_IO_PIN_NONE) return nullptr;   /* non assigné */
+
+    const uint8_t reserved[] = {
+        g_sensors.getCurrentSDA(),  g_sensors.getCurrentSCL(),
+        g_sensors.getCurrent2SDA(), g_sensors.getCurrent2SCL(),
+        UART1_RX_PIN, UART1_TX_PIN
+    };
+    if (pin < 0 || pin > 48 || pin == 19 || pin == 20) {
+        return "GPIO invalide (0-48, hors 19/20 USB)";
+    }
+    if (isMemoryBusPin((uint8_t)pin)) {
+        return "GPIO reserve (bus flash/PSRAM interne 35-37)";
+    }
+    for (uint8_t k = 0; k < sizeof(reserved); k++) {
+        if ((uint8_t)pin == reserved[k]) {
+            return "GPIO reserve (I2C actif ou UART1)";
+        }
+    }
+    for (uint8_t k = 0; k < numExtra; k++) {
+        if (extra[k] != STATUS_IO_PIN_NONE && (uint8_t)pin == extra[k]) {
+            return "GPIO deja utilise (entree/sortie ou bandeau LED)";
+        }
+    }
+    return nullptr;
+}
+
+/* Handler GET /api/gpio-inputs/config — broches assignées + états live des
+ * deux entrées (interrupteur d'armement fermé, alarme voie d'eau). */
+void BobWebServer::_handleGpioInputsConfigGet(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    doc["arm_pin"]           = g_statusIo.getArmPin();
+    doc["water_pin"]         = g_statusIo.getWaterPin();
+    doc["arm_active_high"]   = g_statusIo.getArmActiveHigh();
+    doc["water_active_high"] = g_statusIo.getWaterActiveHigh();
+    doc["arm_closed"]        = g_statusIo.isArmClosed();
+    doc["water_alarm"]       = g_statusIo.isWaterAlarm();
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* Handler POST /api/gpio-inputs/config — enregistre les deux broches
+ * d'entrée et leurs polarités (NVS vérifiée par relecture côté StatusIO).
+ * Champs absents = valeur courante. Redémarrage différé de 3 s UNIQUEMENT
+ * si une broche ou une polarité change (appliquées au boot).
+ *
+ * Form : arm_pin=4&water_pin=5&arm_active_high=0&water_active_high=1
+ * JSON : {"arm_pin":4,"water_pin":5,"arm_active_high":0} */
+void BobWebServer::_handleGpioInputsConfigPost(AsyncWebServerRequest* request) {
+    StatusIOConfig cfg;
+    g_statusIo.getConfig(cfg);   /* base : champs absents conservent la valeur courante */
+
+    auto readPin = [&request](const char* name, int8_t& out) {
+        if (request->hasParam(name, true)) {
+            out = (int8_t)request->getParam(name, true)->value().toInt();
+        } else if (request->hasParam(name)) {
+            out = (int8_t)request->getParam(name)->value().toInt();
+        }
+    };
+    readPin("arm_pin",   cfg.armPin);
+    readPin("water_pin", cfg.waterPin);
+
+    /* Polarités : 0 = actif GND (défaut), 1 = actif +3,3 V */
+    auto readFlag = [&request](const char* name, uint8_t& out) {
+        int v = out;
+        if (request->hasParam(name, true)) {
+            v = request->getParam(name, true)->value().toInt();
+        } else if (request->hasParam(name)) {
+            v = request->getParam(name)->value().toInt();
+        }
+        out = (v != 0) ? 1 : 0;
+    };
+    readFlag("arm_active_high",   cfg.armActiveHigh);
+    readFlag("water_active_high", cfg.waterActiveHigh);
+
+    /* Exclusions croisées : sorties ON/OFF + bandeau LED + l'autre entrée */
+    uint8_t outPins[GPIO_NUM_OUTPUTS];
+    g_gpio.getPins(outPins);
+
+    const char* err = nullptr;
+    {
+        uint8_t extra[GPIO_NUM_OUTPUTS + 2];
+        memcpy(extra, outPins, GPIO_NUM_OUTPUTS);
+        extra[GPIO_NUM_OUTPUTS]     = (uint8_t)(cfg.ledPin   < 0 ? STATUS_IO_PIN_NONE : cfg.ledPin);
+        extra[GPIO_NUM_OUTPUTS + 1] = (uint8_t)(cfg.waterPin < 0 ? STATUS_IO_PIN_NONE : cfg.waterPin);
+        err = _userPinCheck(cfg.armPin, extra, sizeof(extra));
+    }
+    if (err == nullptr) {
+        uint8_t extra[GPIO_NUM_OUTPUTS + 2];
+        memcpy(extra, outPins, GPIO_NUM_OUTPUTS);
+        extra[GPIO_NUM_OUTPUTS]     = (uint8_t)(cfg.ledPin < 0 ? STATUS_IO_PIN_NONE : cfg.ledPin);
+        extra[GPIO_NUM_OUTPUTS + 1] = (uint8_t)(cfg.armPin < 0 ? STATUS_IO_PIN_NONE : cfg.armPin);
+        err = _userPinCheck(cfg.waterPin, extra, sizeof(extra));
+    }
+    if (err != nullptr) {
+        String body = "{\"error\":\"" + String(err) + "\"}";
+        request->send(400, "application/json", body);
+        return;
+    }
+
+    /* Changement de broche ou de polarité = redémarrage différé (appliqués au boot) */
+    const bool pinsChanged = (cfg.armPin != g_statusIo.getArmPin())
+                          || (cfg.waterPin != g_statusIo.getWaterPin())
+                          || ((cfg.armActiveHigh   != 0) != g_statusIo.getArmActiveHigh())
+                          || ((cfg.waterActiveHigh != 0) != g_statusIo.getWaterActiveHigh());
+
+    if (!g_statusIo.setConfig(cfg)) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (configuration non enregistree)\"}");
+        return;
+    }
+
+    String response;
+    JsonDocument resp;
+    resp["status"]            = "ok";
+    resp["arm_pin"]           = cfg.armPin;
+    resp["water_pin"]         = cfg.waterPin;
+    resp["arm_active_high"]   = cfg.armActiveHigh;
+    resp["water_active_high"] = cfg.waterActiveHigh;
+    resp["restart_ms"]        = pinsChanged ? 3000 : 0;
+    serializeJson(resp, response);
+
+    if (pinsChanged) {
+        Serial.println("[WEB] Entrées numériques : arm=" + String(cfg.armPin)
+                       + (cfg.armActiveHigh ? " (actif +3,3 V)" : " (actif GND)")
+                       + ", water=" + String(cfg.waterPin)
+                       + (cfg.waterActiveHigh ? " (actif +3,3 V)" : " (actif GND)")
+                       + " — redémarrage dans 3 s");
+        _scheduleRestart(3000);
+    } else {
+        Serial.println("[WEB] Entrées numériques : broches et polarités inchangées (NVS à jour, sans redémarrage)");
+    }
+    request->send(200, "application/json", response);
+}
+
+/* Handler GET /api/led/config — broche, nombre de LEDs, bornes des champs
+ * et matrice des 5 états (effet + couleur RGB + luminosité par état).
+ * « active_state » = état actuellement affiché (255 = bandeau inactif). */
+void BobWebServer::_handleLedConfigGet(AsyncWebServerRequest* request) {
+    StatusIOConfig cfg;
+    g_statusIo.getConfig(cfg);
+
+    JsonDocument doc;
+    doc["led_pin"]      = cfg.ledPin;
+    doc["led_count"]    = cfg.ledCount;
+    doc["count_min"]    = LED_WS2812_NUM_MIN;
+    doc["count_max"]    = LED_WS2812_NUM_MAX;
+    doc["active_state"] = g_statusIo.getActiveLedState();
+    JsonArray arr = doc["states"].to<JsonArray>();
+    for (uint8_t i = 0; i < LED_STATE_COUNT; i++) {
+        JsonObject st = arr.add<JsonObject>();
+        st["effect"]     = cfg.led[i].effect;
+        st["r"]          = cfg.led[i].r;
+        st["g"]          = cfg.led[i].g;
+        st["b"]          = cfg.led[i].b;
+        st["brightness"] = cfg.led[i].brightness;
+    }
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* Handler POST /api/led/config — enregistre la configuration du bandeau
+ * (NVS vérifiée par relecture côté StatusIO). Champs absents = valeur
+ * courante. Exclusions croisées identiques aux entrées. Redémarrage différé
+ * de 3 s si la broche ou le nombre de LEDs change (instance NeoPixel créée
+ * au boot) ; la matrice effets/couleurs/luminosités est appliquée à chaud.
+ *
+ * Form : led_pin=38&led_count=8&s0_effect=1&s0_color=0080ff&s0_bri=100&... */
+void BobWebServer::_handleLedConfigPost(AsyncWebServerRequest* request) {
+    StatusIOConfig cfg;
+    g_statusIo.getConfig(cfg);   /* base : champs absents conservent la valeur courante */
+
+    auto readStr = [&request](const char* name) -> String {
+        if (request->hasParam(name, true)) return request->getParam(name, true)->value();
+        if (request->hasParam(name))       return request->getParam(name)->value();
+        return String();
+    };
+    auto readInt = [&request](const char* name, int fallback) -> int {
+        if (request->hasParam(name, true)) return request->getParam(name, true)->value().toInt();
+        if (request->hasParam(name))       return request->getParam(name)->value().toInt();
+        return fallback;
+    };
+
+    /* Ligne de données (-1 = non assigné) */
+    cfg.ledPin = (int8_t)readInt("led_pin", cfg.ledPin);
+
+    /* Nombre de LEDs : bornes 1-100 */
+    {
+        int n = readInt("led_count", cfg.ledCount);
+        if (n < LED_WS2812_NUM_MIN || n > LED_WS2812_NUM_MAX) {
+            request->send(400, "application/json",
+                          "{\"error\":\"Nombre de LEDs invalide (1-100)\"}");
+            return;
+        }
+        cfg.ledCount = (uint8_t)n;
+    }
+
+    /* Validation de la broche (exclusions croisées : sorties + entrées) */
+    {
+        uint8_t outPins[GPIO_NUM_OUTPUTS];
+        g_gpio.getPins(outPins);
+        uint8_t extra[GPIO_NUM_OUTPUTS + 2];
+        memcpy(extra, outPins, GPIO_NUM_OUTPUTS);
+        extra[GPIO_NUM_OUTPUTS]     = (uint8_t)(cfg.armPin   < 0 ? STATUS_IO_PIN_NONE : cfg.armPin);
+        extra[GPIO_NUM_OUTPUTS + 1] = (uint8_t)(cfg.waterPin < 0 ? STATUS_IO_PIN_NONE : cfg.waterPin);
+        const char* err = _userPinCheck(cfg.ledPin, extra, sizeof(extra));
+        if (err != nullptr) {
+            String body = "{\"error\":\"" + String(err) + "\"}";
+            request->send(400, "application/json", body);
+            return;
+        }
+    }
+
+    /* Matrice des 5 états : effet (0-3) + couleur hex « rrggbb » + luminosité % */
+    static const char* const FX_KEYS[LED_STATE_COUNT] = {
+        "s0_effect", "s1_effect", "s2_effect", "s3_effect", "s4_effect"
+    };
+    static const char* const COLOR_KEYS[LED_STATE_COUNT] = {
+        "s0_color", "s1_color", "s2_color", "s3_color", "s4_color"
+    };
+    static const char* const BRI_KEYS[LED_STATE_COUNT] = {
+        "s0_bri", "s1_bri", "s2_bri", "s3_bri", "s4_bri"
+    };
+    for (uint8_t i = 0; i < LED_STATE_COUNT; i++) {
+        int fx = readInt(FX_KEYS[i], (int)cfg.led[i].effect);
+        if (fx < LED_EFFECT_SOLID || fx > LED_EFFECT_OFF) {
+            request->send(400, "application/json",
+                          "{\"error\":\"Effet invalide (0-3)\"}");
+            return;
+        }
+        cfg.led[i].effect = (uint8_t)fx;
+
+        int bri = readInt(BRI_KEYS[i], (int)cfg.led[i].brightness);
+        if (bri < LED_WS2812_BRI_MIN || bri > LED_WS2812_BRI_MAX) {
+            request->send(400, "application/json",
+                          "{\"error\":\"Luminosite invalide (1-100)\"}");
+            return;
+        }
+        cfg.led[i].brightness = (uint8_t)bri;
+
+        String col = readStr(COLOR_KEYS[i]);
+        if (col.length() > 0) {
+            if (col[0] == '#') col.remove(0, 1);
+            if (col.length() != 6) {
+                request->send(400, "application/json",
+                              "{\"error\":\"Couleur invalide (format rrggbb)\"}");
+                return;
+            }
+            char* end = nullptr;
+            long v = strtol(col.c_str(), &end, 16);
+            if (end == col.c_str() || *end != '\0' || v < 0 || v > 0xFFFFFF) {
+                request->send(400, "application/json",
+                              "{\"error\":\"Couleur invalide (format rrggbb)\"}");
+                return;
+            }
+            cfg.led[i].r = (uint8_t)((v >> 16) & 0xFF);
+            cfg.led[i].g = (uint8_t)((v >> 8)  & 0xFF);
+            cfg.led[i].b = (uint8_t)( v        & 0xFF);
+        }
+    }
+
+    /* Changement de broche ou de nombre de LEDs = redémarrage différé
+     * (instance NeoPixel créée au boot) ; la matrice s'applique à chaud. */
+    const bool pinsChanged = (cfg.ledPin != g_statusIo.getLedPin())
+                          || (cfg.ledCount != g_statusIo.getLedCount());
+
+    if (!g_statusIo.setConfig(cfg)) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (configuration non enregistree)\"}");
+        return;
+    }
+
+    String response;
+    JsonDocument resp;
+    resp["status"]       = "ok";
+    resp["led_pin"]      = cfg.ledPin;
+    resp["led_count"]    = cfg.ledCount;
+    resp["active_state"] = g_statusIo.getActiveLedState();
+    resp["restart_ms"]   = pinsChanged ? 3000 : 0;
+    serializeJson(resp, response);
+
+    if (pinsChanged) {
+        Serial.println("[WEB] Bandeau LED : pin=" + String(cfg.ledPin)
+                       + ", count=" + String(cfg.ledCount) + " — redémarrage dans 3 s");
+        _scheduleRestart(3000);
+    } else {
+        Serial.println("[WEB] Bandeau LED : matrice appliquée à chaud (broches inchangées)");
+    }
     request->send(200, "application/json", response);
 }
 
@@ -2332,6 +2687,17 @@ void BobWebServer::_taskLoop() {
                 /* Contrôleur de vol (mode + maître) */
                 doc["flight_mode"] = g_flightCtrl.getActiveMode();
                 doc["rpi_master"]  = g_flightCtrl.isRPi5Master();
+
+                /* Signalisation LED + entrées numériques (v1.6.0) : états
+                 * débouncés des deux entrées, index de l'état affiché par le
+                 * bandeau (255 = bandeau non configuré) et override actif. */
+                {
+                    JsonObject sio = doc["status_io"].to<JsonObject>();
+                    sio["arm"]       = g_statusIo.isArmClosed();
+                    sio["water"]     = g_statusIo.isWaterAlarm();
+                    sio["led_state"] = g_statusIo.getActiveLedState();
+                    sio["override"]  = g_flightCtrl.isSurfaceOverrideActive();
+                }
 
                 /* Sérialisation et envoi */
                 String json;

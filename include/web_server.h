@@ -81,6 +81,13 @@ private:
     void _handleGpioConfigGet(AsyncWebServerRequest* request);
     void _handleGpioConfigPost(AsyncWebServerRequest* request);
     void _handleGpioTestPost(AsyncWebServerRequest* request);
+
+    /* -- Signalisation LED WS2812 + entrées numériques (v1.6.0) -- */
+    void _handleGpioInputsConfigGet(AsyncWebServerRequest* request);
+    void _handleGpioInputsConfigPost(AsyncWebServerRequest* request);
+    void _handleLedConfigGet(AsyncWebServerRequest* request);
+    void _handleLedConfigPost(AsyncWebServerRequest* request);
+
     void _handleNamesGet(AsyncWebServerRequest* request);
     void _handleNamesPost(AsyncWebServerRequest* request);
 

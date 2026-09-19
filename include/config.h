@@ -502,6 +502,98 @@ constexpr uint32_t STACK_SIZE_MOTORS   = 4096;
 constexpr uint8_t  PRIORITY_MOTORS     = 3;
 
 /* =========================================================================
+ * SECTION 4e : ENTRÉES NUMÉRIQUES DE SÉCURITÉ ET BANDEAU LED WS2812
+ *
+ * Deux entrées numériques à polarité configurable — défaut : INPUT_PULLUP,
+ * contact vers GND = active ; au choix : signal actif +3,3 V (INPUT_PULLDOWN)
+ * — configurables depuis l'onglet Paramètres et persistées en NVS
+ * (namespace « statusio ») :
+ *  - « Armement / Allumage » (interrupteur magnétique) : état exposé à
+ *    l'interface Web et à la télémétrie WebSocket ;
+ *  - « Auxiliaire / Détecteur Voie d'eau » : quand elle devient active, le
+ *    firmware écrase le mode de vol pour forcer le Retour Surface
+ *    (MODE_BIT_SURFACE → STATUS_BIT_SURFACE 0x80 remonté au RPi 5).
+ *
+ * Bandeau LED d'état WS2812 (Adafruit_NeoPixel, rendu non bloquant dans une
+ * tâche dédiée à 40 Hz) : matrice de 5 états (effet + couleur RGB) :
+ *  0. Attente Réseau   1. RPi5 Connecté   2. Autopilote actif
+ *  3. Retour Surface d'urgence             4. Avarie (surintensité/erreur)
+ * Priorité d'affichage : Avarie > Retour Surface > Autopilote > RPi5 > Attente.
+ * Broches non assignées par défaut (STATUS_IO_PIN_NONE) : chaque entrée et le
+ * bandeau s'activent en choisissant leur GPIO dans l'interface.
+ * ========================================================================= */
+
+/** @brief Valeur NVS d'une broche non assignée (entrées + ligne de données LED) */
+constexpr uint8_t  STATUS_IO_PIN_NONE = 0xFF;
+
+/**
+ * @brief true si la broche appartient au bus SPI flash/PSRAM interne des
+ *        modules ESP32-S3-WROOM-1 à mémoire octale (N8R8/N16R8) : GPIO35,
+ *        GPIO36 et GPIO37 y sont réservés (doc Espressif DevKitC-1) et
+ *        refusés comme E/S utilisateur dans toute l'interface.
+ */
+constexpr bool isMemoryBusPin(uint8_t pin) { return pin >= 35 && pin <= 37; }
+
+/**
+ * @brief Polarité d'une entrée numérique : contact vers GND (actif bas,
+ *        INPUT_PULLUP — défaut) ou signal actif +3,3 V (actif haut,
+ *        INPUT_PULLDOWN). Persistée en NVS (in_arm_hi / in_water_hi).
+ */
+constexpr uint8_t  STATUS_IO_ACTIVE_LOW  = 0;
+constexpr uint8_t  STATUS_IO_ACTIVE_HIGH = 1;
+
+/**
+ * @brief Anti-rebond des entrées : nombre d'échantillons identiques consécutifs
+ *        (3 × 25 ms ≈ 75 ms) avant validation d'un changement d'état.
+ */
+constexpr uint8_t  STATUS_IO_DEBOUNCE_SAMPLES = 3;
+
+/** @brief Période de la tâche entrées + bandeau LED en ms (40 Hz) */
+constexpr uint32_t TASK_STATUSIO_PERIOD_MS    = 25;
+
+/** @brief Cadence maximale des effets animés (20 fps — borne le coût du bit-bang) */
+constexpr uint32_t LED_ANIM_FRAME_MS          = 50;
+
+/** @brief Période du cycle de pulsation (ms) — respiration de 1,5 s */
+constexpr uint32_t LED_PULSE_PERIOD_MS        = 1500;
+
+/** @brief Période du cycle de stroboscope (ms) et durée de la phase allumée */
+constexpr uint32_t LED_STROBE_PERIOD_MS       = 300;
+constexpr uint32_t LED_STROBE_ON_MS           = 150;
+
+/** @brief Nombre de LEDs du bandeau : bornes de validation et défaut */
+constexpr uint8_t  LED_WS2812_NUM_MIN         = 1;
+constexpr uint8_t  LED_WS2812_NUM_MAX         = 100;
+constexpr uint8_t  LED_WS2812_NUM_DEFAULT     = 8;
+
+/** @brief Luminosité PAR ÉTAT du bandeau (%) : bornes de validation et défaut.
+ *         100 % = pleine puissance ; atténue la couleur de l'état au rendu
+ *         (économie d'énergie), appliquée à chaud sans redémarrage. */
+constexpr uint8_t  LED_WS2812_BRI_MIN         = 1;
+constexpr uint8_t  LED_WS2812_BRI_MAX         = 100;
+constexpr uint8_t  LED_WS2812_BRI_DEFAULT     = 100;
+
+/** @brief Nombre d'états de la matrice LED (cf. LedStateId dans status_io.h) */
+constexpr uint8_t  LED_STATE_COUNT            = 5;
+
+/** @brief Effets par défaut des 5 états — LEDEffect : 0=Fixe 1=Pulsation
+ *         2=Stroboscope 3=Éteint (cf. status_io.h) */
+constexpr uint8_t  LED_DEFAULT_EFFECT[LED_STATE_COUNT] = { 1, 0, 0, 1, 2 };
+
+/** @brief Couleurs RVB par défaut des 5 états (bleu, vert, cyan BOB, orange, rouge) */
+constexpr uint8_t  LED_DEFAULT_RGB[LED_STATE_COUNT][3] = {
+    {   0, 128, 255 },   /* 0 · Attente Réseau — bleu (pulsation) */
+    {   0, 230, 118 },   /* 1 · RPi5 Connecté — vert (fixe) */
+    {   0, 217, 255 },   /* 2 · Autopilote actif — cyan BOB (fixe) */
+    { 255, 179,   0 },   /* 3 · Retour Surface — orange (pulsation) */
+    { 255,  59,  48 }    /* 4 · Avarie — rouge (stroboscope) */
+};
+
+/** @brief Stack et priorité de la tâche entrées + LED (sous le web, Core Wi-Fi) */
+constexpr uint32_t STACK_SIZE_STATUSIO        = 4096;
+constexpr uint8_t  PRIORITY_STATUSIO          = 2;
+
+/* =========================================================================
  * SECTION 5 : CONFIGURATION RÉSEAU WI-FI ET POINT D'ACCÈS
  * ========================================================================= */
 

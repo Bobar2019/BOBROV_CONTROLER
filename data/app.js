@@ -675,20 +675,30 @@ function initTileNav() {
         });
     }
 
+    /* Remontée INSTANTANÉE malgré html { scroll-behavior: smooth } : une animation
+       de retour serait interrompue par le premier geste de l'utilisateur et la
+       vue resterait arrêtée au milieu du contenu, sous la barre de statut. */
+    function resetScrollTop() {
+        const root = document.documentElement;
+        root.style.scrollBehavior = 'auto';
+        window.scrollTo(0, 0);
+        root.style.scrollBehavior = '';
+    }
+
     function showSection(id) {
         dashboard.style.display = 'none';
         sections.forEach(s => s.style.display = 'none');
         const target = document.getElementById(id);
         if (target) target.style.display = 'block';
         if (btnBack) btnBack.style.display = 'flex';
-        window.scrollTo(0, 0);
+        resetScrollTop();
     }
 
     function showDashboard() {
         sections.forEach(s => s.style.display = 'none');
         dashboard.style.display = 'flex';
         if (btnBack) btnBack.style.display = 'none';
-        window.scrollTo(0, 0);
+        resetScrollTop();
     }
 }
 
@@ -1136,6 +1146,12 @@ function processTelemetry(data) {
         updateGpioStateUI(data.gpio_state);
     }
 
+    /* Signalisation LED + entrées numériques (v1.6.0) : pastilles live
+     * (armement, voie d'eau) et état affiché par le bandeau WS2812. */
+    if (data.status_io) {
+        updateStatusIOUI(data.status_io.arm, data.status_io.water, data.status_io.led_state);
+    }
+
     if (data.pwm && Array.isArray(data.pwm)) {
         for (let i = 0; i < 16 && i < data.pwm.length; i++) {
             pwmValues[i] = data.pwm[i];
@@ -1444,6 +1460,56 @@ function updateGpioStateUI(mask) {
             if (!btn) continue;
             if (btn.textContent !== label) btn.textContent = label;
             if (btn.classList.contains('on') !== on) btn.classList.toggle('on', on);
+        }
+    }
+}
+
+/**
+ * Libellés des états du bandeau LED WS2812 (ordre du firmware LedStateId,
+ * v1.6.0) — pastille « État affiché » de l'onglet Paramètres.
+ */
+const STATUS_IO_LED_STATE_NAMES = [
+    'Attente Réseau', 'RPi5 Connecté', 'Autopilote actif',
+    'Retour Surface', 'Avarie'
+];
+
+/**
+ * Met à jour les pastilles live des entrées numériques et du bandeau LED
+ * (source : télémétrie WebSocket « status_io » — états débouncés côté
+ * firmware). arm/water = entrée active (GND ou +3,3 V selon polarité) ;
+ * ledState = index affiché, 255 = bandeau non configuré.
+ */
+function updateStatusIOUI(arm, water, ledState) {
+    if (arm !== undefined) {
+        const el = getEl('in-arm-st');
+        if (el) {
+            const txt = arm ? 'FERMÉ' : 'OUVERT';
+            const cls = 'gpio-st ' + (arm ? 'gpio-st-on' : 'gpio-st-off');
+            if (el.textContent !== txt) el.textContent = txt;
+            if (el.className !== cls) el.className = cls;
+        }
+    }
+    if (water !== undefined) {
+        const el = getEl('in-water-st');
+        if (el) {
+            const txt = water ? 'ALARME EAU' : 'SEC';
+            const cls = 'gpio-st ' + (water ? 'gpio-st-alarm' : 'gpio-st-off');
+            if (el.textContent !== txt) el.textContent = txt;
+            if (el.className !== cls) el.className = cls;
+        }
+    }
+    if (ledState !== undefined) {
+        const el = getEl('led-active-st');
+        if (el) {
+            const idx = Number(ledState);
+            let txt = '—';
+            let cls = 'gpio-st gpio-st-off';
+            if (idx >= 0 && idx < STATUS_IO_LED_STATE_NAMES.length) {
+                txt = STATUS_IO_LED_STATE_NAMES[idx];
+                cls = 'gpio-st ' + (idx === 4 ? 'gpio-st-alarm' : 'gpio-st-on');
+            }
+            if (el.textContent !== txt) el.textContent = txt;
+            if (el.className !== cls) el.className = cls;
         }
     }
 }
@@ -2697,6 +2763,42 @@ function showGpioRestartOverlay(seconds, pins) {
 }
 
 /**
+ * Overlay de redémarrage générique (v1.6.0) : compte à rebours puis attente
+ * de la preuve du reboot via verifyFn() (recharge la page lorsqu'elle passe
+ * à true) — même principe que showGpioRestartOverlay, avec message et
+ * vérification paramétrables (entrées numériques / bandeau LED).
+ * @param {number} seconds Décompte avant redémarrage de l'ESP32
+ * @param {string} message Détail affiché sous le titre
+ * @param {Function} verifyFn Promise résolue à true quand le firmware a relu
+ */
+function showGenericRestartOverlay(seconds, message, verifyFn) {
+    let s = seconds;
+    const overlay = document.createElement('div');
+    overlay.className = 'restart-overlay';
+    const render = () => {
+        overlay.innerHTML = '<div class="restart-box">'
+            + '<h3>Redémarrage du contrôleur</h3>'
+            + '<p>' + message + '<br>'
+            + 'L\'ESP32 redémarre dans <span class="restart-count">' + s + '</span> s…</p>'
+            + '</div>';
+    };
+    render();
+    document.body.appendChild(overlay);
+
+    const countdown = setInterval(() => {
+        if (s > 1) { s--; render(); return; }
+        clearInterval(countdown);
+        overlay.innerHTML = '<div class="restart-box">'
+            + '<h3>Reconnexion…</h3><p>Attente du retour du contrôleur.</p></div>';
+        const ping = setInterval(async () => {
+            try {
+                if (await verifyFn()) { clearInterval(ping); location.reload(); }
+            } catch (_) { /* ESP32 pas encore prêt : nouvelle tentative */ }
+        }, 2000);
+    }, 1000);
+}
+
+/**
  * Charge la configuration I2C actuelle (broches SDA/SCL des deux bus) depuis
  * l'API, met à jour l'affichage, les champs de saisie et la page Câblage.
  */
@@ -2988,6 +3090,273 @@ async function loadGpioConfig() {
         }
         if (data.state !== undefined) updateGpioStateUI(data.state);
     } catch (_) { /* silencieux si pas de connexion */ }
+}
+
+/* =========================================================================
+ * SIGNALISATION LED WS2812 + ENTRÉES NUMÉRIQUES (v1.6.0)
+ * =========================================================================
+ *
+ * Deux cartes de l'onglet Paramètres, persistées en NVS (namespace
+ * « statusio ») : entrées à polarité configurable (armement magnétique +
+ * détecteur voie d'eau, actif GND ou actif +3,3 V) et bandeau LED d'état
+ * (ligne de données, nombre de LEDs, matrice 5 états effet/couleur). Les
+ * selects n'exposent que les GPIO réellement disponibles : 19/20 (USB
+ * natif), 35-37 (bus mémoire interne), broches I2C actives, UART1, sorties
+ * ON/OFF et affectations croisées exclus.
+ * ========================================================================= */
+
+/**
+ * Reconstruit la liste d'un sélecteur GPIO (entrées + ligne de données LED)
+ * en excluant les broches réservées (I2C/Série/USB), les sorties ON/OFF et
+ * les autres affectations de la carte, puis sélectionne la valeur courante.
+ * La valeur courante hors liste est conservée et signalée « (réservé) » —
+ * l'affichage reste honnête vis-à-vis de la NVS. -1 = « Non assigné ».
+ * @param {string} id Identifiant du <select>
+ * @param {Set<number>} reserved Broches à exclure (base + sorties ON/OFF)
+ * @param {number[]} others Autres affectations à exclure (croisées)
+ * @param {number} current Valeur courante (-1 = non assigné)
+ */
+function buildStatusIOPinSelect(id, reserved, others, current) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const ex = new Set(reserved);
+    others.forEach((p) => { if (Number(p) >= 0) ex.add(Number(p)); });
+
+    sel.innerHTML = '';
+    const optNone = document.createElement('option');
+    optNone.value = '-1';
+    optNone.textContent = '— Non assigné —';
+    sel.appendChild(optNone);
+    for (let gpio = 0; gpio <= 48; gpio++) {
+        if (ex.has(gpio)) continue;
+        const opt = document.createElement('option');
+        opt.value = String(gpio);
+        opt.textContent = 'GPIO ' + gpio;
+        sel.appendChild(opt);
+    }
+
+    sel.value = String(current);
+    if (sel.value !== String(current) && current >= 0) {
+        const opt = document.createElement('option');
+        opt.value = String(current);
+        opt.textContent = 'GPIO ' + current + ' (réservé)';
+        sel.appendChild(opt);
+        sel.value = String(current);
+    }
+}
+
+/** Composantes RGB (0-255) → « #rrggbb » (valeur d'un <input type="color">). */
+function rgbToHex(r, g, b) {
+    const h = (n) => Math.max(0, Math.min(255, Number(n) || 0)).toString(16).padStart(2, '0');
+    return '#' + h(r) + h(g) + h(b);
+}
+
+/**
+ * Charge la configuration des entrées numériques et du bandeau LED depuis
+ * l'API (4 fetchs parallèles), reconstruit les trois sélecteurs GPIO avec
+ * exclusions croisées et remplit nombre de LEDs, effets, couleurs,
+ * luminosités par état et pastilles live.
+ */
+async function loadStatusIOConfig() {
+    try {
+        const [resI2C, resGpio, resIn, resLed] = await Promise.all([
+            fetch('/api/i2c/config'),
+            fetch('/api/gpio/config'),
+            fetch('/api/gpio-inputs/config'),
+            fetch('/api/led/config')
+        ]);
+        const i2c  = await resI2C.json();
+        const gpio = await resGpio.json();
+        const inp  = await resIn.json();
+        const led  = await resLed.json();
+
+        /* Exclusion de base : USB natif (19/20), UART1 (1/2), bus I2C actifs
+           et bus mémoire interne des modules octaux (35-37) */
+        const reserved = new Set([19, 20, 1, 2, 35, 36, 37]);
+        [i2c.sda, i2c.scl, i2c.sda2, i2c.scl2].forEach((p) => {
+            const n = Number(p);
+            if (!isNaN(n)) reserved.add(n);
+        });
+        (gpio.pins || []).forEach((p) => reserved.add(Number(p)));
+
+        const armPin   = (inp.arm_pin   !== undefined) ? Number(inp.arm_pin)   : -1;
+        const waterPin = (inp.water_pin !== undefined) ? Number(inp.water_pin) : -1;
+        const ledPin   = (led.led_pin   !== undefined) ? Number(led.led_pin)   : -1;
+
+        /* Polarités par entrée (0 = actif GND, 1 = actif +3,3 V) */
+        const polArm = getEl('in-arm-pol');
+        if (polArm) polArm.value = Number(inp.arm_active_high) ? '1' : '0';
+        const polWater = getEl('in-water-pol');
+        if (polWater) polWater.value = Number(inp.water_active_high) ? '1' : '0';
+
+        buildStatusIOPinSelect('in-arm-pin',   reserved, [waterPin, ledPin], armPin);
+        buildStatusIOPinSelect('in-water-pin', reserved, [armPin,   ledPin], waterPin);
+        buildStatusIOPinSelect('led-data-pin', reserved, [armPin, waterPin], ledPin);
+
+        /* Nombre de LEDs (bornes servies par le firmware) */
+        const cnt = getEl('led-count');
+        if (cnt) {
+            if (led.count_min !== undefined) cnt.min = led.count_min;
+            if (led.count_max !== undefined) cnt.max = led.count_max;
+            if (led.led_count !== undefined) cnt.value = led.led_count;
+        }
+
+        /* Matrice des 5 états : effet (0-3) + couleur + luminosité par état */
+        if (Array.isArray(led.states)) {
+            led.states.forEach((st, i) => {
+                const fx = getEl('led-fx-' + i);
+                if (fx && st.effect !== undefined) fx.value = String(st.effect);
+                const co = getEl('led-color-' + i);
+                if (co) co.value = rgbToHex(st.r, st.g, st.b);
+                const sl = getEl('led-bri-' + i);
+                if (sl && st.brightness !== undefined) {
+                    sl.value = st.brightness;
+                    const v = getEl('led-bri-val-' + i);
+                    if (v) v.textContent = st.brightness + ' %';
+                }
+            });
+        }
+
+        /* Pastilles live (états débouncés relus du firmware) */
+        updateStatusIOUI(inp.arm_closed, inp.water_alarm, led.active_state);
+    } catch (_) { /* silencieux si pas de connexion */ }
+}
+
+/**
+ * Branche les boutons de sauvegarde des deux nouvelles cartes Paramètres
+ * puis charge leur configuration. Le redémarrage n'est déclenché par le
+ * firmware que si une broche (ou le nombre de LEDs) change — la matrice
+ * LED (effets, couleurs, luminosités) s'applique à chaud, sans overlay.
+ */
+function initStatusIO() {
+    const btnIn = getEl('btn-save-gpio-inputs');
+    if (btnIn) {
+        btnIn.addEventListener('click', async () => {
+            const arm     = parseInt(getEl('in-arm-pin').value, 10);
+            const water   = parseInt(getEl('in-water-pin').value, 10);
+            const ahArm   = parseInt(getEl('in-arm-pol').value, 10) ? 1 : 0;
+            const ahWater = parseInt(getEl('in-water-pol').value, 10) ? 1 : 0;
+            if (arm >= 0 && arm === water) {
+                alert('Les deux entrées ne peuvent pas partager le même GPIO.');
+                return;
+            }
+            if (!confirm('Sauvegarder les entrées numériques (Armement='
+                        + (arm >= 0 ? 'GPIO ' + arm : 'non assigné')
+                        + (ahArm ? ' [actif +3,3 V]' : ' [actif GND]') + ', Voie d\'eau='
+                        + (water >= 0 ? 'GPIO ' + water : 'non assigné')
+                        + (ahWater ? ' [actif +3,3 V]' : ' [actif GND]') + ') ?\n'
+                        + 'Un redémarrage n\'a lieu que si une broche ou une polarité change.')) {
+                return;
+            }
+            btnIn.disabled = true;
+            try {
+                const res = await fetch('/api/gpio-inputs/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'arm_pin=' + arm + '&water_pin=' + water
+                        + '&arm_active_high=' + ahArm + '&water_active_high=' + ahWater
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    if (Number(data.restart_ms) > 0) {
+                        showGenericRestartOverlay(3,
+                            'Entrées numériques enregistrées.', async () => {
+                                const r = await fetch('/api/gpio-inputs/config', { cache: 'no-store' });
+                                if (!r.ok) return false;
+                                const d = await r.json();
+                                return Number(d.arm_pin) === arm && Number(d.water_pin) === water
+                                    && Number(d.arm_active_high) === ahArm
+                                    && Number(d.water_active_high) === ahWater;
+                            });
+                    } else {
+                        alert('Entrées numériques enregistrées (broches et polarités inchangées, sans redémarrage).');
+                        loadStatusIOConfig();
+                        btnIn.disabled = false;
+                    }
+                } else {
+                    alert('Erreur : ' + (data.error || 'inconnue'));
+                    btnIn.disabled = false;
+                }
+            } catch (e) {
+                alert('Erreur réseau : ' + e.message);
+                btnIn.disabled = false;
+            }
+        });
+    }
+
+    const btnLed = getEl('btn-save-led');
+    if (btnLed) {
+        btnLed.addEventListener('click', async () => {
+            const ledPin = parseInt(getEl('led-data-pin').value, 10);
+            const count  = parseInt(getEl('led-count').value, 10);
+            if (isNaN(count) || count < 1 || count > 100) {
+                alert('Nombre de LEDs invalide (1 à 100).');
+                return;
+            }
+            /* Luminosité par état : validation 1-100 % avant envoi */
+            for (let i = 0; i < STATUS_IO_LED_STATE_NAMES.length; i++) {
+                const b = parseInt(getEl('led-bri-' + i).value, 10);
+                if (isNaN(b) || b < 1 || b > 100) {
+                    alert('Luminosité invalide (1 à 100 %) pour l\'état « '
+                          + STATUS_IO_LED_STATE_NAMES[i] + ' ».');
+                    return;
+                }
+            }
+            if (!confirm('Sauvegarder la signalisation LED'
+                        + (ledPin >= 0 ? ' (GPIO ' + ledPin + ', ' + count + ' LEDs)' : '')
+                        + ' ?\nEffets, couleurs et luminosités appliqués à chaud ; redémarrage uniquement '
+                        + 'si la broche ou le nombre de LEDs change.')) {
+                return;
+            }
+            let body = 'led_pin=' + ledPin + '&led_count=' + count;
+            for (let i = 0; i < STATUS_IO_LED_STATE_NAMES.length; i++) {
+                body += '&s' + i + '_effect=' + getEl('led-fx-' + i).value;
+                body += '&s' + i + '_color=' + getEl('led-color-' + i).value.replace('#', '');
+                body += '&s' + i + '_bri=' + getEl('led-bri-' + i).value;
+            }
+            btnLed.disabled = true;
+            try {
+                const res = await fetch('/api/led/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    if (Number(data.restart_ms) > 0) {
+                        showGenericRestartOverlay(3,
+                            'Signalisation LED enregistrée.', async () => {
+                                const r = await fetch('/api/led/config', { cache: 'no-store' });
+                                if (!r.ok) return false;
+                                const d = await r.json();
+                                return Number(d.led_pin) === ledPin && Number(d.led_count) === count;
+                            });
+                    } else {
+                        alert('Effets, couleurs et luminosités LED appliqués à chaud (broches inchangées).');
+                        loadStatusIOConfig();
+                        btnLed.disabled = false;
+                    }
+                } else {
+                    alert('Erreur : ' + (data.error || 'inconnue'));
+                    btnLed.disabled = false;
+                }
+            } catch (e) {
+                alert('Erreur réseau : ' + e.message);
+                btnLed.disabled = false;
+            }
+        });
+    }
+
+    /* Curseurs de luminosité par état : libellé mis à jour en direct */
+    for (let i = 0; i < STATUS_IO_LED_STATE_NAMES.length; i++) {
+        const sl = getEl('led-bri-' + i);
+        const v  = getEl('led-bri-val-' + i);
+        if (sl && v) {
+            sl.addEventListener('input', () => { v.textContent = sl.value + ' %'; });
+        }
+    }
+
+    loadStatusIOConfig();
 }
 
 /**
@@ -4212,6 +4581,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initSimulator();
     initWiFi();
     initSettings();
+    initStatusIO();   /* bandeau LED WS2812 + entrées numériques (v1.6.0) */
     initAviationInstruments();
     initRov3D();
     initFlightModeButtons();
