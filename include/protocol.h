@@ -3,12 +3,14 @@
  * @brief Définition du protocole série binaire RPi5 ↔ ESP32-S3.
  *
  * Structures packed des trames descendante (40 octets) et montante (73 octets),
- * constantes de protocole, et fonctions de calcul/vérification CRC16-CCITT.
+ * trames de configuration des noms (0x03/0x04 — 27 octets) et requête de
+ * synchronisation (0xFF), constantes de protocole, et fonctions de
+ * calcul/vérification CRC16-CCITT.
  *
  * Polynôme CRC : 0x1021 (CCITT), valeur initiale : 0xFFFF.
  *
  * @author Didier Dero
- * @version 1.4.0
+ * @version 1.5.0
  * @date Septembre 2026
  */
 
@@ -35,6 +37,39 @@
 
 /** @brief Identifiant de type pour la trame montante */
 #define UL_FRAME_TYPE   0x02
+
+/* =========================================================================
+ * TRAMES DE SYNCHRONISATION DE CONFIGURATION (v1.5.0)
+ * =========================================================================
+ *
+ * Source unique de vérité : l'ESP32 détient la configuration matérielle
+ * (noms personnalisés des sorties, NVS) et la transmet au RPi 5, qui adapte
+ * son cockpit sans aucune valeur codée en dur.
+ *
+ * - Trame descendante 0xFF « requête de synchronisation » : envoyée par le
+ *   RPi 5 (à son démarrage notamment) — trame de 40 octets, contenu ignoré,
+ *   elle déclenche le renvoi de la configuration.
+ * - Trames montantes 0x03/0x04 « configuration des noms » : une trame de
+ *   27 octets par sortie (une par canal PWM 10-15, une par sortie TOR 1-4).
+ *
+ * Déclencheurs d'envoi (identiques côté firmware) : requête 0xFF, première
+ * commande reçue après (re)connexion, ou modification des noms depuis
+ * l'interface Web (push à chaud). */
+
+/** @brief Type de trame descendante « requête de synchronisation » (contenu ignoré) */
+#define DL_FRAME_TYPE_SYNC  0xFF
+
+/** @brief Type de trame montante : noms des canaux PWM auxiliaires (10-15) */
+#define UL_FRAME_TYPE_CFG_PWM   0x03
+
+/** @brief Type de trame montante : noms des 4 sorties tout-ou-rien (TOR) */
+#define UL_FRAME_TYPE_CFG_GPIO  0x04
+
+/** @brief Longueur max du nom embarqué dans une trame de configuration (octets UTF-8) */
+#define CFG_NAME_MAX_LEN    20
+
+/** @brief Taille totale d'une trame de configuration des noms (octets) */
+#define CFG_FRAME_SIZE      27
 
 /* =========================================================================
  * TAILLES DES TRAMES
@@ -137,6 +172,28 @@ typedef struct {
     uint16_t crc16;                         ///< CRC16-CCITT sur octets [2..70] — offsets 71 (hi) / 72 (lo)
 } UplinkFrame_t;
 
+/**
+ * @brief Trame montante de configuration des noms : ESP32-S3 → RPi 5 (27 octets).
+ *
+ * Émise une fois par sortie nommée (rafale lissée : une trame par cycle de
+ * 10 ms, sans perturber la télémétrie 100 Hz) en réponse à : requête de
+ * synchronisation 0xFF du RPi 5, première commande reçue après
+ * (re)connexion, ou modification des noms via l'interface Web.
+ * Une chaîne vide (name_len = 0) signifie « nom par défaut » : le RPi 5
+ * applique alors son libellé par défaut pour la sortie concernée.
+ *
+ * Format : [0x55][0xAA][TYPE][ID][LEN][NAME ×20][CRC16_HI][CRC16_LO]
+ */
+typedef struct {
+    uint8_t  header1;                   ///< 0x55
+    uint8_t  header2;                   ///< 0xAA
+    uint8_t  type;                      ///< 0x03 (config PWM) / 0x04 (config sorties TOR)
+    uint8_t  id;                        ///< 0x03 : numéro de canal PWM (10-15) ; 0x04 : numéro de sortie TOR (1-4)
+    uint8_t  name_len;                  ///< Longueur utile du nom en octets (0-20) — offset 4
+    char     name[CFG_NAME_MAX_LEN];    ///< Nom UTF-8, complété par des 0x00 — offsets 5..24
+    uint16_t crc16;                     ///< CRC16-CCITT sur octets [2..24] — offsets 25 (hi) / 26 (lo)
+} ConfigFrame_t;
+
 #pragma pack(pop)
 
 /* =========================================================================
@@ -160,6 +217,12 @@ static_assert(offsetof(UplinkFrame_t, gpio_state) == 70,
               "gpio_state doit etre a l'offset 70 (trame montante)");
 static_assert(offsetof(UplinkFrame_t, crc16) == 71,
               "CRC16 montant doit demarrer a l'offset 71");
+static_assert(sizeof(ConfigFrame_t) == CFG_FRAME_SIZE,
+              "ConfigFrame_t doit faire exactement CFG_FRAME_SIZE octets");
+static_assert(offsetof(ConfigFrame_t, name) == 5,
+              "name doit etre a l'offset 5 (trame de configuration)");
+static_assert(offsetof(ConfigFrame_t, crc16) == 25,
+              "CRC16 de configuration doit demarrer a l'offset 25");
 
 /* =========================================================================
  * FONCTIONS CRC16-CCITT

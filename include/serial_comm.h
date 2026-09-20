@@ -20,6 +20,9 @@
 #include "protocol.h"
 #include "config.h"
 
+/** @brief Nombre de trames de configuration (6 canaux PWM 10-15 + 4 sorties TOR) */
+constexpr uint8_t CFG_SYNC_FRAMES = (NUM_PWM_CHANNELS - PWM_TYPE_FIRST_CHANNEL) + GPIO_NUM_OUTPUTS;
+
 /** @brief Données reçues via la trame descendante (consignes RPi → ESP32) */
 struct DownlinkData {
     uint16_t pwm[NUM_PWM_CHANNELS]; ///< Consignes PWM en µs
@@ -73,6 +76,19 @@ public:
     /** @brief Met à jour les données de télémétrie pour l'émission montante */
     void updateTelemetry(const uint8_t* uplink_buffer, size_t len);
 
+    /**
+     * @brief Demande la (re)synchronisation de la configuration matérielle vers le RPi 5.
+     *
+     * Source unique de vérité : l'ESP32 lit la NVS (noms personnalisés des
+     * canaux PWM 10-15 et des 4 sorties TOR) et pousse les trames 0x03/0x04.
+     * Appelée à la première commande reçue après (re)connexion, sur requête
+     * de synchronisation 0xFF du RPi 5, et après modification des noms via
+     * l'interface Web. NON BLOQUANT : pose un simple drapeau — la lecture NVS
+     * et l'émission (une trame de 27 octets par cycle) sont assurées par la
+     * tâche SerialTx, sans perturber la télémétrie 100 Hz.
+     */
+    void sendHardwareConfigToRPi();
+
 private:
     /* -- Abstraction de l'interface physique -- */
     Stream*             _commStream;    ///< Pointeur vers le flux actif (Serial ou Serial1)
@@ -102,9 +118,25 @@ private:
     volatile uint32_t _watchdogTimeout;             ///< Timeout en ms
     volatile bool   _watchdogTriggered;             ///< Flag watchdog déclenché
 
+    /* -- Synchronisation de configuration matérielle (protocole v1.5.0) -- */
+    volatile bool _cfgSyncPending;                  ///< Demande de synchronisation en attente
+    uint8_t  _cfgBurst[CFG_SYNC_FRAMES][CFG_FRAME_SIZE]; ///< Rafale pré-construite depuis la NVS
+    uint8_t  _cfgBurstCount;                        ///< Nombre de trames dans la rafale
+    uint8_t  _cfgBurstIdx;                          ///< Prochaine trame à émettre
+    void _loadHardwareConfig();                     ///< NVS → rafale (exécutée par la tâche TX)
+
     /* -- Traitement -- */
     void _processByte(uint8_t b);                   ///< Traitement d'un octet reçu
-    bool _validateFrame();                          ///< Validation CRC de la trame
+
+    /** @brief Résultat du traitement d'une trame descendante complète */
+    enum FrameResult : uint8_t {
+        FRAME_INVALID = 0,  ///< CRC invalide — trame ignorée
+        FRAME_COMMAND,      ///< Commande de pilotage (0x01) — livrée à la tâche Control
+        FRAME_SYNCREQ,      ///< Requête de synchronisation (0xFF) — configuration renvoyée
+        FRAME_IGNORED,      ///< Type inconnu — ignorée
+    };
+
+    FrameResult _validateFrame();                   ///< Validation CRC + dispatch par type
 
     /* -- Tâches FreeRTOS -- */
     static void _taskRxEntry(void* param);

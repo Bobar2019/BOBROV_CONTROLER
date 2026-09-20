@@ -13,7 +13,7 @@
  * et la tâche SerialTx (émission télémétrie) également.
  *
  * @author Didier Dero
- * @version 1.6.0
+ * @version 1.7.0
  * @date Septembre 2026
  */
 

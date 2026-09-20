@@ -12,10 +12,11 @@
 | :--- | :--- |
 | Topologie | Liaison point à point RPi 5 ↔ ESP32-S3 (full-duplex) |
 | Débit | **921 600 bauds**, 8 bits, sans parité, 1 stop (8N1) |
-| Trames | **Taille fixe** — descendante : **40 octets**, montante : **73 octets** |
+| Trames | **Tailles fixes** — descendante : **40 octets** ; montantes : **73 octets** (télémétrie) et **27 octets** (configuration des noms, §5.6) |
 | Intégrité | **CRC16-CCITT-FALSE** (polynôme `0x1021`, init `0xFFFF`) sur chaque trame |
 | Trame descendante | 20–50 Hz recommandé (commande : masque d'assistances, armement, 16 consignes PWM, masque GPIO ON/OFF) |
 | Trame montante | **100 Hz fixe** (télémétrie : IMU, pression, température, puissance, PWM, état des sorties ON/OFF) |
+| Synchronisation | Requête descendante `0xFF` (§4.4) ⇒ l'ESP32 renvoie les **noms personnalisés** des sorties (rafale de 10 trames de **27 octets**, §5.6). Aussi poussée automatiquement à la première commande reçue après (re)connexion, et après chaque modification via l'interface Web |
 | Sorties ON/OFF | 4 sorties numériques (GPIO 15/16/17/18 par défaut) pilotées par `gpio_cmd`, état réel dans `gpio_state` — forcées à OFF sur watchdog ou E-Stop |
 | Failsafe | Watchdog **500 ms** par défaut : perte de liaison ⇒ tous les actionneurs à leur position de sécurité + 4 sorties ON/OFF à OFF |
 | Endianness | Tous les champs multi-octets en **little-endian**, **sauf le CRC** (big-endian) |
@@ -46,7 +47,10 @@ Le firmware embarque **deux interfaces physiques** pour le protocole binaire. Le
 | Sens | En-tête (2 octets) | Type (offset 2) | Taille totale |
 | :--- | :--- | :--- | :--- |
 | RPi 5 → ESP32-S3 (descendante) | `0xAA` `0x55` | `0x01` | **40 octets** |
+| RPi 5 → ESP32-S3 (descendante) | `0xAA` `0x55` | `0xFF` | **40 octets** — requête de synchronisation, contenu ignoré (§4.4) |
 | ESP32-S3 → RPi 5 (montante) | `0x55` `0xAA` | `0x02` | **73 octets** |
+| ESP32-S3 → RPi 5 (montante) | `0x55` `0xAA` | `0x03` | **27 octets** — nom d'un canal PWM auxiliaire 10–15 (§5.6) |
+| ESP32-S3 → RPi 5 (montante) | `0x55` `0xAA` | `0x04` | **27 octets** — nom d'une sortie tout-ou-rien 1–4 (§5.6) |
 
 Les en-têtes ont des motifs **opposés** (`AA 55` vs `55 AA`) : un simple `find` sur la séquence correcte suffit à se resynchroniser dans un flux bruité.
 
@@ -58,6 +62,7 @@ Le CRC couvre les octets **de l'offset 2 jusqu'à l'avant-dernier octet de la tr
 | :--- | :--- | :--- |
 | Descendante (40 octets) | `[2..37]` | `[38]` = octet **fort**, `[39]` = octet **faible** |
 | Montante (73 octets) | `[2..70]` | `[71]` = octet **fort**, `[72]` = octet **faible** |
+| Configuration des noms (27 octets) | `[2..24]` | `[25]` = octet **fort**, `[26]` = octet **faible** |
 
 Paramètres : polynôme `0x1021`, valeur initiale `0xFFFF`, ni réflexion d'entrée/sortie, ni XOR final.
 **Valeur de contrôle** : `crc16_ccitt(b"123456789") == 0x29B1`.
@@ -66,7 +71,9 @@ Paramètres : polynôme `0x1021`, valeur initiale `0xFFFF`, ni réflexion d'entr
 
 ### 3.3 Résynchronisation
 
-Une trame descendante invalide (CRC KO) est **silencieusement ignorée** par le firmware : la machine à états repart en attente d'en-tête. Côté RPi 5, appliquer la même stratégie : chercher `0x55 0xAA`, tenter de décoder 73 octets, en cas de CRC invalide **avancer d'un seul octet** et recommencer (jamais sauter 73 octets d'un bloc).
+Une trame descendante invalide (CRC KO) est **silencieusement ignorée** par le firmware : la machine à états repart en attente d'en-tête. Côté RPi 5, appliquer la même stratégie : chercher `0x55 0xAA`, tenter de décoder la trame, en cas de CRC invalide **avancer d'un seul octet** et recommencer (jamais sauter la trame d'un bloc).
+
+**Depuis la v1.5.0, la trame montante n'a plus une taille unique** : la longueur attendue se déduit du **type à l'offset 2** — `0x02` ⇒ 73 octets, `0x03`/`0x04` ⇒ 27 octets, tout autre octet ⇒ faux en-tête, avancer d'un octet (voir la classe `UplinkReader` du §7).
 
 ---
 
@@ -116,6 +123,22 @@ Chaque canal 10 à 15 est configurable **individuellement** depuis l'onglet Para
 | **Unidirectionnel** (pleine échelle) | 1000 µs = 0 % → 2000 µs = 100 % | **1000 µs (0 %)** |
 
 Configuration par défaut : CH10/11 (pinces/outils) et CH14/15 (auxiliaires) en **Bidirectionnel**, CH12/13 (gradateurs LED) en **Unidirectionnel**. Le firmware borne toujours les consignes à 1000–2000 µs quel que soit le type ; le type ne change que la **position de sécurité** appliquée par le failsafe (et l'affichage côté interface Web).
+
+### 4.4 Requête de synchronisation — type `0xFF` (v1.5.0)
+
+Trame descendante de **40 octets** au **format identique** à la commande standard (§4) — seul le champ `type` vaut `0xFF`. **Tout le contenu (offsets 3 à 37) est ignoré** : envoyer des zéros suffit (CRC calculé normalement sur `[2..37]`).
+
+Effets à la réception côté firmware :
+
+* l'ESP32 renvoie immédiatement les **noms personnalisés** des sorties (rafale de trames montantes `0x03`/`0x04`, §5.6) — **sans modifier** les consignes en cours (PWM, GPIO, armement) ;
+* la trame **réarme le watchdog** (elle vaut preuve de liaison, comme une commande valide) et efface le bit `0x08` de la télémétrie.
+
+**À envoyer par le cockpit :**
+
+1. **au démarrage** (avant la première trame de commande) — le cockpit récupère les libellés des sorties avant d'afficher quoi que ce soit ;
+2. après toute **reprise de liaison** — en pratique redondant : le firmware resynchronise déjà automatiquement à la première commande reçue après (re)connexion (§5.6.2), mais l'envoi explicite est inoffensif.
+
+> Le firmware renvoie **toujours la configuration complète** (6 canaux PWM + 4 sorties TOR, 10 trames), que des noms soient personnalisés ou non : une trame à `name_len = 0` signifie « nom par défaut » — le RPi 5 applique alors son propre libellé.
 
 ---
 
@@ -209,6 +232,50 @@ Profondeur (le firmware n'envoie que la pression absolue ; à convertir côté R
 * Les broches sont assignées par défaut à **GPIO 15/16/17/18** (reconfigurables dans l'onglet Paramètres de l'interface Web, appliquées au redémarrage) et initialisées **à OFF** au boot.
 * Les sorties ON/OFF sont indépendantes du **dry-run** (§6.4) : le dry-run ne concerne que les sorties PWM/PCA9685.
 
+### 5.6 Trames de configuration des noms — types `0x03` / `0x04` (v1.5.0)
+
+**Source unique de vérité :** l'ESP32-S3 détient les **noms personnalisés** des sorties (saisis dans l'interface Web, persistés en NVS) et les transmet au RPi 5 — le cockpit n'a **aucune valeur codée en dur** : il affiche les libellés reçus, ou son propre libellé par défaut quand `name_len = 0`.
+
+#### 5.6.1 Format — 27 octets par sortie
+
+Format : `[0x55][0xAA][TYPE][ID][LEN][NAME ×20][CRC_HI][CRC_LO]`
+
+| Offset | Taille | Champ | Type | Valeurs | Description |
+| ---: | ---: | :--- | :--- | :--- | :--- |
+| 0 | 1 | `header1` | `uint8_t` | `0x55` | En-tête 1 |
+| 1 | 1 | `header2` | `uint8_t` | `0xAA` | En-tête 2 |
+| 2 | 1 | `type` | `uint8_t` | `0x03` `0x04` | `0x03` = nom d'un canal PWM auxiliaire (10–15) ; `0x04` = nom d'une sortie tout-ou-rien |
+| 3 | 1 | `id` | `uint8_t` | 10–15 / 1–4 | Numéro de **canal PWM** (`0x03`) ou de **sortie TOR** (`0x04`) — voir §5.6.3 |
+| 4 | 1 | `name_len` | `uint8_t` | 0–20 | Longueur **utile** du nom en octets UTF-8. **0 = nom par défaut** (le RPi 5 applique son libellé par défaut) |
+| 5 | 20 | `name` | `char[20]` | UTF-8 | Nom, complété par des `0x00` au-delà de `name_len` — lire exactement `name_len` octets |
+| 25 | 1 | `crc16_hi` | `uint8_t` | — | CRC16 sur `[2..24]` — octet **fort** |
+| 26 | 1 | `crc16_lo` | `uint8_t` | — | CRC16 — octet **faible** |
+
+#### 5.6.2 Déclencheurs d'envoi (comportement du firmware)
+
+Les **10 trames** (6 PWM + 4 TOR) sont émises en **rafale lissée** : **une trame par cycle de télémétrie (10 ms)**, intercalée entre deux trames `0x02` complètes — la cadence de télémétrie **100 Hz reste intacte**. La rafale complète s'étale sur ~100 ms.
+
+| Déclencheur | Quand |
+| :--- | :--- |
+| **Requête `0xFF`** | À réception de la trame descendante `0xFF` (§4.4) — cas nominal au démarrage du cockpit |
+| **Première commande après (re)connexion** | À la première trame `0x01` valide reçue après le boot de l'ESP32 **ou** après un déclenchement du watchdog — le cockpit reçoit les noms même s'il n'émet jamais de requête `0xFF` |
+| **Modification dans l'interface Web** | À chaque sauvegarde des noms (`POST /api/names`) — mise à jour du cockpit en temps réel, sans redémarrage |
+
+#### 5.6.3 Sémantique des `id`
+
+| `type` | `id` | Sortie concernée |
+| :--- | :--- | :--- |
+| `0x03` | 10–15 | Canaux PWM auxiliaires 10 à 15 (pinces/outils, gradateurs, auxiliaires — voir §4.1) |
+| `0x04` | 1–4 | Sorties tout-ou-rien 1 à 4 (**id = bit + 1**, cohérent avec `gpio_cmd`/`gpio_state` §4/§5.5) |
+
+Les canaux **0 à 9** (propulseurs M1–M8, servos caméra) ne sont **pas** transmis : ce sont des affectations fixes du véhicule.
+
+#### 5.6.4 Traitement recommandé côté RPi 5
+
+* **Au démarrage** : envoyer `build_sync_request()` (§7), puis émettre les commandes normales ; attendre la rafale (~100 ms) avant d'afficher les libellés.
+* **À chaud** : chaque trame `0x03`/`0x04` remplace le libellé de la sortie `id` — appliquer immédiatement, sans redémarrer.
+* `name_len = 0` ⇒ appliquer votre libellé par défaut. Nota : le **pilotage** utilise toujours `id`/masques (`gpio_cmd`, index PWM) — jamais le nom `name`.
+
 ---
 
 ## 6. Comportements du firmware (règles de sécurité et de priorité)
@@ -268,7 +335,8 @@ Code autonome, sans dépendance autre que **pyserial** (`pip install pyserial`).
 
 ```python
 #!/usr/bin/env python3
-"""Cockpit minimal BOB-ROV — liaison binaire avec BOB-CONTROL (ESP32-S3)."""
+"""Cockpit minimal BOB-ROV — liaison binaire avec BOB-CONTROL (ESP32-S3).
+Télémétrie 100 Hz + synchronisation des noms de sorties au démarrage."""
 import struct
 import time
 import serial
@@ -287,6 +355,11 @@ ARM_DISARMED, ARM_ARMED, ARM_ESTOP = 0, 1, 2
 
 STATUS_ARMED, STATUS_RT, STATUS_WDG, STATUS_DRYRUN = 0x02, 0x04, 0x08, 0x10
 STATUS_DEPTH, STATUS_CAP, STATUS_SURFACE = 0x20, 0x40, 0x80
+
+# Trames (v1.5.0) : type à l'offset 2 + taille fixe associée
+UL_TELEMETRY, UL_CFG_PWM, UL_CFG_GPIO = 0x02, 0x03, 0x04
+DL_SYNC = 0xFF             # requête de synchronisation (descendante, 40 octets)
+FRAME_SIZES = {UL_TELEMETRY: 73, UL_CFG_PWM: 27, UL_CFG_GPIO: 27}
 
 # ==================== CRC16-CCITT-FALSE ====================
 
@@ -308,6 +381,14 @@ def build_downlink_frame(mode: int, arm_state: int, pwm_us, gpio_cmd: int = 0) -
     pwm_us : séquence de 16 valeurs en microsecondes (1000-2000).
     gpio_cmd : masque 4 bits des sorties ON/OFF (bit 0 = sortie 1, 1 = ON)."""
     payload = struct.pack('<BBB16HB', 0x01, mode, arm_state, *pwm_us, gpio_cmd)
+    crc = crc16_ccitt(payload)                 # CRC sur [2..37]
+    return bytes((0xAA, 0x55)) + payload + struct.pack('>H', crc)   # CRC big-endian
+
+def build_sync_request() -> bytes:
+    """Requête de synchronisation (40 octets, contenu ignoré par le firmware).
+    À envoyer au démarrage du cockpit : l'ESP32 renvoie alors les noms
+    personnalisés des sorties (trames montantes 0x03/0x04, voir §5.6)."""
+    payload = struct.pack('<B35x', DL_SYNC)    # type 0xFF + 35 octets à zéro
     crc = crc16_ccitt(payload)                 # CRC sur [2..37]
     return bytes((0xAA, 0x55)) + payload + struct.pack('>H', crc)   # CRC big-endian
 
@@ -341,15 +422,35 @@ def parse_uplink_frame(frame: bytes) -> dict:
         'gpio_state': rest[22],                                 # masque réel des 4 sorties ON/OFF
     }
 
+# ==================== Trame de configuration des noms (27 octets) ====================
+
+def parse_config_frame(frame: bytes) -> dict:
+    """Valide et décode une trame de configuration des noms (types 0x03/0x04)."""
+    if len(frame) != 27:
+        raise ValueError(f'trame de {len(frame)} octets (attendu 27)')
+    if frame[0] != 0x55 or frame[1] != 0xAA or frame[2] not in (UL_CFG_PWM, UL_CFG_GPIO):
+        raise ValueError('en-tête ou type invalide')
+    if (frame[25] << 8 | frame[26]) != crc16_ccitt(frame[2:25]):   # CRC sur [2..24]
+        raise ValueError('CRC16 invalide')
+    name_len = frame[4]
+    if name_len > 20:
+        raise ValueError('name_len > 20')
+    return {
+        'kind': 'pwm' if frame[2] == UL_CFG_PWM else 'gpio',
+        'id': frame[3],                                            # canal 10-15 | sortie 1-4
+        'name': frame[5:5 + name_len].decode('utf-8', errors='replace'),
+        'default_name': name_len == 0,                             # → appliquer votre libellé
+    }
+
 class UplinkReader:
-    """Réassemble les trames 73 octets dans un flux d'octets bruité
-    (resynchronisation automatique sur 0x55 0xAA, ignore le bruit et le debug)."""
+    """Réassemble les trames montantes (73 ou 27 octets) dans un flux bruité :
+    resynchronisation sur 0x55 0xAA, taille déduite du type (offset 2)."""
 
     def __init__(self):
         self.buf = bytearray()
 
     def feed(self, data: bytes):
-        """Ajoute des octets reçus ; retourne la liste des trames valides."""
+        """Ajoute des octets reçus ; retourne la liste des trames valides (bytes)."""
         self.buf.extend(data)
         frames = []
         while True:
@@ -358,14 +459,20 @@ class UplinkReader:
                 del self.buf[:-1]          # conserve au plus 1 octet (préfixe possible)
                 break
             del self.buf[:idx]
-            if len(self.buf) < 73:
+            if len(self.buf) < 3:
                 break
-            frame = bytes(self.buf[:73])
-            if frame[2] == 0x02 and (frame[71] << 8 | frame[72]) == crc16_ccitt(frame[2:71]):
+            size = FRAME_SIZES.get(self.buf[2])
+            if size is None:               # type inconnu : faux en-tête probable
+                del self.buf[:1]
+                continue
+            if len(self.buf) < size:
+                break
+            frame = bytes(self.buf[:size])
+            if (frame[size - 2] << 8 | frame[size - 1]) == crc16_ccitt(frame[2:size - 2]):
                 frames.append(frame)
-                del self.buf[:73]
+                del self.buf[:size]
             else:
-                del self.buf[:1]           # faux en-tête : avancer d'un octet
+                del self.buf[:1]           # CRC invalide : avancer d'un octet
         return frames
 
 # ==================== Boucle principale ====================
@@ -373,9 +480,12 @@ class UplinkReader:
 def main():
     port = serial.Serial(PORT, BAUD, timeout=0)   # lecture non bloquante
     reader = UplinkReader()
+    names = {}                                     # libellés reçus de l'ESP32 (v1.5.0)
     pwm = [1500] * 16                              # toutes voies au neutre
     pwm[0] = 1600                                  # exemple : M1 en avant (µs)
     gpio = 0b0000                                  # sorties ON/OFF (bit 0 = sortie 1)
+
+    port.write(build_sync_request())               # demande les noms (trames 0x03/0x04)
 
     next_tx = time.monotonic()
     try:
@@ -386,11 +496,16 @@ def main():
                 port.write(build_downlink_frame(MODE_PASSIF, ARM_ARMED, pwm, gpio))
 
             for frame in reader.feed(port.read(port.in_waiting or 4096)):
-                t = parse_uplink_frame(frame)      # --- décodage télémétrie ---
-                print('quat=(%.3f, %.3f, %.3f, %.3f)  P=%.1f mbar  T=%.1f C  '
-                      'pwm0=%d  gpio=0x%X  wdg=%s  dry=%s'
-                      % (*t['quat'], t['pressure_mbar'], t['temperature_c'],
-                         t['pwm_us'][0], t['gpio_state'], t['watchdog'], t['dry_run']))
+                if frame[2] == UL_TELEMETRY:       # --- télémétrie (73 octets) ---
+                    t = parse_uplink_frame(frame)
+                    print('quat=(%.3f, %.3f, %.3f, %.3f)  P=%.1f mbar  T=%.1f C  '
+                          'pwm0=%d  gpio=0x%X  wdg=%s  dry=%s'
+                          % (*t['quat'], t['pressure_mbar'], t['temperature_c'],
+                             t['pwm_us'][0], t['gpio_state'], t['watchdog'], t['dry_run']))
+                else:                              # --- config noms (27 octets) ---
+                    c = parse_config_frame(frame)
+                    names[(c['kind'], c['id'])] = c['name'] or f"<défaut {c['kind']}{c['id']}>"
+                    print('config :', c['kind'], c['id'], '->', names[(c['kind'], c['id'])])
             time.sleep(0.001)
     finally:
         port.close()
@@ -451,6 +566,60 @@ Décodage attendu :
 
 Injecter du bruit texte, couper une trame en deux, insérer un faux en-tête `55 AA 02 00`, puis vérifier que `UplinkReader.feed()` restitue exactement **2 trames valides**. Le code du §7 (classe `UplinkReader`) est conçu pour ce cas : validé sur la séquence `bruit + moitié1`, puis `moitié2 + faux en-tête + trame complète + bruit`.
 
+Le même test avec une **trame de configuration intercalée** (27 octets) entre deux trames de télémétrie doit restituer **3 trames valides** (2× `0x02` + 1× `0x03`/`0x04`) — c'est le cas réel sur le fil dès qu'une synchronisation est en cours.
+
+### 8.5 Trame de configuration PWM de référence — type `0x03`
+
+Canal **11** nommé « Treuil avant » (`name_len = 0x0C` = 12 octets) :
+
+```
+55 AA 03 0B 0C 54 72 65 75 69 6C 20 61 76 61 6E
+74 00 00 00 00 00 00 00 00 38 54
+```
+
+* 27 octets. `id = 0x0B` = canal 11 ; nom `54 72 65 75 69 6C 20 61 76 61 6E 74` = « Treuil avant », complété de `00` (offsets 17–24) ; CRC `0x3854` sur `[2..24]`.
+* Vérification :
+
+```python
+assert parse_config_frame(bytes.fromhex(
+    '55aa030b0c' + '54726575696c206176616e74' + '00' * 8 + '3854')) \
+    == {'kind': 'pwm', 'id': 11, 'name': 'Treuil avant', 'default_name': False}
+```
+
+### 8.6 Trame de configuration TOR de référence — nom par défaut
+
+Sortie **2** sans nom personnalisé (`name_len = 0` ⇒ le RPi 5 applique son libellé par défaut) :
+
+```
+55 AA 04 02 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 99 EB
+```
+
+* 27 octets. `id = 0x02` = sortie 2 ; `name_len = 0` ; CRC `0x99EB`.
+* Vérification :
+
+```python
+assert parse_config_frame(bytes.fromhex('55aa0402' + '00' * 21 + '99eb')) \
+    == {'kind': 'gpio', 'id': 2, 'name': '', 'default_name': True}
+```
+
+### 8.7 Requête de synchronisation de référence — type `0xFF`
+
+Trame descendante minimale (contenu à zéro — ignoré par le firmware) :
+
+```
+AA 55 FF 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 CA 33
+```
+
+* 40 octets. `type = 0xFF` à l'offset 2 ; CRC `0xCA33` sur `[2..37]`.
+* Vérification :
+
+```python
+assert build_sync_request().hex() == 'aa55ff' + '00' * 35 + 'ca33'
+```
+
 ---
 
 ## 9. Dépannage côté RPi 5
@@ -498,6 +667,15 @@ Si vous observez des trames de **71 octets** sur le fil, le firmware en place es
 * **Montante** : `status` confirme l'activation **réelle et combinée** des boucles au moment de l'émission — bit 2 (`0x04`) Auto R/T, bit 5 (`0x20`) Tenue de Profondeur, bit 6 (`0x40`) Auto Cap, bit 7 (`0x80`) Retour Surface.
 * **Sémantique de capture** : l'activation de la tenue de profondeur capture la **profondeur courante** comme consigne (maintien sur place) ; l'activation de l'Auto Cap capture le **cap courant**. Ces consignes sont recapturées à chaque changement de masque.
 * ⚠️ **Incompatibilité sémantique** : un code conçu pour l'ancien protocole qui envoie `mode = 2` (ex-Auto Full) n'active plus que la **tenue de profondeur**. L'équivalent de l'ancien Auto Full est désormais `0x07` (R/T + profondeur + cap).
+
+### 10.4 v1.5.0 — synchronisation des noms (source unique de vérité)
+
+**Tailles des trames principales inchangées** (40 descendante / 73 montante) : la v1.5.0 ajoute des types de trames nouveaux — un parseur existant continue de fonctionner (voir compatibilité ci-dessous).
+
+* **Nouvelle trame descendante `0xFF`** — requête de synchronisation (40 octets, contenu ignoré) : le RPi 5 l'envoie au démarrage pour récupérer les noms personnalisés (§4.4). Elle réarme le watchdog et ne modifie aucune consigne.
+* **Nouvelles trames montantes `0x03`** (noms des canaux PWM 10–15, `id` = canal) et **`0x04`** (noms des sorties TOR 1–4, `id` = sortie) — **27 octets chacune**, émises une fois par sortie en **rafale lissée** (une trame par cycle de 10 ms, intercalée entre deux télémétries complètes) sur trois déclencheurs : requête `0xFF`, première commande reçue après (re)connexion, ou modification des noms via l'interface Web (§5.6).
+* **Compatibilité ascendante** : un ancien parseur qui filtre `type == 0x02` et la taille 73 ignore naturellement les trames `0x03`/`0x04` (la resynchronisation octet par octet retrouve la télémétrie suivante). Il est toutefois **recommandé** d'étendre le lecteur au dispatch par taille (§3.3 / §7) pour exploiter la synchronisation.
+* **Compatibilité descendante** : un ancien firmware (avant v1.5.0) qui reçoit une requête `0xFF` la rejette comme type inconnu (CRC valide requis) — sans effet de bord. Le cockpit peut donc émettre la requête inconditionnellement au démarrage.
 
 ---
 

@@ -1,6 +1,6 @@
 # BOB-CONTROL — Firmware ESP32-S3 pour ROV
 
-![Version](https://img.shields.io/badge/version-v1.6.0-00d9ff?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-v1.7.0-00d9ff?style=for-the-badge)
 
 Firmware temps réel embarqué sur **ESP32-S3** pour le contrôle basse couche du sous-marin **BOB-ROV**.
 

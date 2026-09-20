@@ -1819,6 +1819,11 @@ void BobWebServer::_handleNamesPost(AsyncWebServerRequest* request) {
     Serial.println("[WEB] Noms des sorties : " + String(custom)
                    + " nom(s) personnalise(s) — enregistres en NVS");
 
+    /* Source unique de vérité (protocole v1.5.0) : pousser les nouveaux noms
+     * vers le RPi 5 (trames 0x03/0x04) pour que le cockpit s'adapte en temps
+     * réel. Non bloquant : pose un simple drapeau lu par la tâche SerialTx. */
+    g_serial.sendHardwareConfigToRPi();
+
     out["status"]  = "ok";
     out["max_len"] = NAMES_MAX_LEN;
     String response;

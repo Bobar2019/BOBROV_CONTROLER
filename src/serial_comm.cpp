@@ -16,6 +16,7 @@
 #include "config.h"
 #include "protocol.h"
 #include <Preferences.h>
+#include <ArduinoJson.h>
 
 /* =========================================================================
  * INSTANCE GLOBALE
@@ -23,6 +24,39 @@
 
 /** @brief Instance globale du gestionnaire série */
 SerialComm g_serial;
+
+/* =========================================================================
+ * HELPERS DE SYNCHRONISATION DE CONFIGURATION (protocole v1.5.0)
+ * ========================================================================= */
+
+/** @brief Taille max du JSON des noms en NVS (alignée sur web_server.cpp) */
+static constexpr size_t CFG_NAMES_JSON_MAX = 1024;
+
+/**
+ * @brief Empaquette une trame de configuration des noms (27 octets).
+ *
+ * @param[out] out  Buffer de CFG_FRAME_SIZE octets à remplir.
+ * @param[in]  type UL_FRAME_TYPE_CFG_PWM (0x03) ou UL_FRAME_TYPE_CFG_GPIO (0x04).
+ * @param[in]  id   Numéro de canal PWM (10-15) ou de sortie TOR (1-4).
+ * @param[in]  name Nom UTF-8 (NVS, déjà nettoyé/borné par le serveur web) ou nullptr.
+ */
+static void _fillNameFrame(uint8_t* out, uint8_t type, uint8_t id, const char* name) {
+    ConfigFrame_t* f = reinterpret_cast<ConfigFrame_t*>(out);
+    f->header1 = UL_HEADER_1;
+    f->header2 = UL_HEADER_2;
+    f->type    = type;
+    f->id      = id;
+
+    size_t len = (name != nullptr) ? strlen(name) : 0;
+    if (len > CFG_NAME_MAX_LEN) len = CFG_NAME_MAX_LEN;   /* garde-fou */
+    f->name_len = (uint8_t)len;
+    memset(f->name, 0, CFG_NAME_MAX_LEN);
+    if (len > 0) {
+        memcpy(f->name, name, len);
+    }
+
+    crc16_fill(out, CFG_FRAME_SIZE);
+}
 
 /* =========================================================================
  * CONSTRUCTEUR
@@ -42,10 +76,14 @@ SerialComm::SerialComm()
     , _lastFrameTime(0)
     , _watchdogTimeout(SERIAL_TIMEOUT_DEFAULT_MS)
     , _watchdogTriggered(false)
+    , _cfgSyncPending(false)
+    , _cfgBurstCount(0)
+    , _cfgBurstIdx(0)
 {
     memset(&_lastData, 0, sizeof(_lastData));
     memset(_rxBuf, 0, sizeof(_rxBuf));
     memset(_txBuf, 0, sizeof(_txBuf));
+    memset(_cfgBurst, 0, sizeof(_cfgBurst));
 }
 
 /* =========================================================================
@@ -220,6 +258,66 @@ void SerialComm::updateTelemetry(const uint8_t* uplink_buffer, size_t len) {
 }
 
 /* =========================================================================
+ * SYNCHRONISATION DE CONFIGURATION MATÉRIELLE (protocole v1.5.0)
+ * =========================================================================
+ *
+ * Source unique de vérité : la NVS de l'ESP32 (namespace « config », clé
+ * « names » — même format que le serveur web : {"ch":[…16…],"gpio":[…4…]}).
+ * Les noms sont transmis au RPi 5 par trames 0x03 (canaux PWM 10-15, id =
+ * numéro de canal) et 0x04 (sorties TOR, id = numéro de sortie 1-4) — une
+ * trame de 27 octets par sortie, émise à raison d'une par cycle de 10 ms. */
+
+/**
+ * @brief Demande la (re)synchronisation de la configuration vers le RPi 5.
+ *
+ * Non bloquant : positionne uniquement un drapeau consommé par la tâche
+ * SerialTx, qui lit la NVS, construit la rafale et l'émet — la télémétrie
+ * 100 Hz reste totalement intacte.
+ */
+void SerialComm::sendHardwareConfigToRPi() {
+    _cfgSyncPending = true;
+}
+
+/**
+ * @brief Construit la rafale de trames de configuration depuis la NVS.
+ *
+ * Exécutée par la tâche SerialTx uniquement. Un JSON absent ou corrompu
+ * produit des trames à nom vide (name_len = 0 = « nom par défaut » côté
+ * RPi 5) : la synchronisation reste toujours possible.
+ */
+void SerialComm::_loadHardwareConfig() {
+    static char json[CFG_NAMES_JSON_MAX + 1];
+
+    /* Lecture NVS (même namespace/clé que le serveur web) */
+    Preferences prefs;
+    size_t len = 0;
+    if (prefs.begin("config", true)) {
+        len = prefs.getString("names", json, sizeof(json));
+        prefs.end();
+    }
+
+    JsonDocument doc;
+    const bool ok = (len > 0) && !deserializeJson(doc, json, len);
+
+    uint8_t n = 0;
+    /* Canaux PWM auxiliaires 10-15 → type 0x03, id = numéro de canal */
+    for (uint8_t ch = PWM_TYPE_FIRST_CHANNEL; ch < NUM_PWM_CHANNELS; ch++) {
+        const char* nm = ok ? (doc["ch"][ch] | "") : "";
+        _fillNameFrame(_cfgBurst[n++], UL_FRAME_TYPE_CFG_PWM, ch, nm);
+    }
+    /* 4 sorties tout-ou-rien → type 0x04, id = numéro de sortie (1-4) */
+    for (uint8_t i = 0; i < GPIO_NUM_OUTPUTS; i++) {
+        const char* nm = ok ? (doc["gpio"][i] | "") : "";
+        _fillNameFrame(_cfgBurst[n++], UL_FRAME_TYPE_CFG_GPIO, (uint8_t)(i + 1), nm);
+    }
+
+    _cfgBurstCount = n;
+    _cfgBurstIdx   = 0;
+    Serial.println("[SERIAL] Synchronisation configuration → RPi5 : " +
+                   String(_cfgBurstCount) + " trames (noms NVS)");
+}
+
+/* =========================================================================
  * MACHINE À ÉTATS DE PARSING
  * ========================================================================= */
 
@@ -262,8 +360,10 @@ void SerialComm::_processByte(uint8_t b) {
             /* Accumulation des octets de payload + CRC */
             _rxBuf[_rxIdx++] = b;
             if (_rxIdx >= DL_FRAME_SIZE) {
-                /* Trame complète reçue, validation CRC */
-                if (_validateFrame()) {
+                /* Trame complète reçue : validation CRC + dispatch par type.
+                 * Seules les commandes de pilotage (0x01) déclenchent le
+                 * traitement par la tâche Control (_newFrame). */
+                if (_validateFrame() == FRAME_COMMAND) {
                     _newFrame = true;
                 }
                 /* Retour à l'état initial quel que soit le résultat */
@@ -275,25 +375,52 @@ void SerialComm::_processByte(uint8_t b) {
 }
 
 /**
- * @brief Valide la trame reçue par vérification CRC16 et extraction des données.
+ * @brief Valide la trame reçue (CRC16) et la distribue selon son type.
  *
- * Vérifie le CRC16-CCITT sur l'ensemble de la trame et, si valide,
- * extrait les champs mode, arm_state, gpio_cmd et les 16 canaux PWM.
+ * - 0x01 (commande) : extraction des champs mode, arm_state, gpio_cmd et des
+ *   16 canaux PWM, réarmement du watchdog. Si c'est la première commande
+ *   depuis le boot ou depuis un déclenchement du watchdog (liaison qui
+ *   reprend), une synchronisation de la configuration est demandée.
+ * - 0xFF (requête de synchronisation) : réarme le watchdog (preuve de
+ *   liaison) et déclenche le renvoi des noms (trames 0x03/0x04). Aucune
+ *   consigne n'est modifiée.
+ * - Autres types : ignorés.
  *
- * @return true si la trame est valide et les données extraites.
+ * @return FRAME_COMMAND si consignes extraites, FRAME_SYNCREQ sur requête de
+ *         synchronisation, FRAME_IGNORED si type inconnu, FRAME_INVALID si CRC KO.
  */
-bool SerialComm::_validateFrame() {
+SerialComm::FrameResult SerialComm::_validateFrame() {
     /* Vérification du CRC16 sur la trame complète */
     if (!crc16_verify(_rxBuf, DL_FRAME_SIZE)) {
         Serial.println("[SERIAL] CRC16 invalide sur trame descendante");
-        return false;
+        return FRAME_INVALID;
     }
+
+    const DownlinkFrame_t* frame = reinterpret_cast<const DownlinkFrame_t*>(_rxBuf);
+
+    /* ---- Requête de synchronisation (0xFF) : config renvoyée, pas de consigne ---- */
+    if (frame->type == DL_FRAME_TYPE_SYNC) {
+        _lastFrameTime = millis();   /* preuve de liaison : réarme le watchdog */
+        _watchdogTriggered = false;
+        sendHardwareConfigToRPi();
+        Serial.println("[SERIAL] Requête de synchronisation 0xFF reçue — configuration renvoyée");
+        return FRAME_SYNCREQ;
+    }
+
+    /* ---- Type inconnu : ignoré ---- */
+    if (frame->type != DL_FRAME_TYPE) {
+        Serial.println("[SERIAL] Trame descendante de type inconnu 0x" +
+                       String(frame->type, HEX) + " — ignorée");
+        return FRAME_IGNORED;
+    }
+
+    /* ---- Commande de pilotage (0x01) ----
+     * Première trame depuis le boot ou depuis une perte de liaison : le
+     * RPi 5 vient de (re)démarrer ou la liaison reprend — resynchroniser. */
+    const bool resyncNeeded = (_lastFrameTime == 0) || _watchdogTriggered;
 
     /* Extraction des données sous mutex */
     if (xSemaphoreTake(_mutexRx, pdMS_TO_TICKS(10)) == pdTRUE) {
-        /* Cast de la structure packed sur le buffer reçu */
-        DownlinkFrame_t* frame = reinterpret_cast<DownlinkFrame_t*>(_rxBuf);
-
         _lastData.mode      = frame->mode;
         _lastData.arm_state = frame->arm_state;
         _lastData.gpio_cmd  = frame->gpio_cmd;
@@ -310,7 +437,11 @@ bool SerialComm::_validateFrame() {
         xSemaphoreGive(_mutexRx);
     }
 
-    return true;
+    if (resyncNeeded) {
+        sendHardwareConfigToRPi();
+    }
+
+    return FRAME_COMMAND;
 }
 
 /* =========================================================================
@@ -365,16 +496,20 @@ void SerialComm::_taskTxEntry(void* param) {
 }
 
 /**
- * @brief Boucle de la tâche d'émission de télémétrie (Core 0).
+ * @brief Boucle de la tâche d'émission (Core 0) : télémétrie + configuration.
  *
- * Envoie périodiquement la trame montante (télémétrie) vers le RPi 5
- * via l'interface active (_commStream) à la fréquence définie par TASK_SERIAL_TX_PERIOD_MS.
+ * Envoie périodiquement la trame montante (télémétrie) vers le RPi 5 via
+ * l'interface active (_commStream) à la fréquence définie par
+ * TASK_SERIAL_TX_PERIOD_MS, puis — si demandé — prépare et émet la rafale de
+ * configuration des noms (trames 0x03/0x04) à raison d'UNE trame de
+ * 27 octets par cycle : la cadence de télémétrie 100 Hz reste intacte
+ * (~100 octets par cycle contre ~1150 possibles à 921 600 bauds).
  */
 void SerialComm::_taskTxLoop() {
     TickType_t lastWake = xTaskGetTickCount();
 
     for (;;) {
-        /* Copie thread-safe du buffer de télémétrie */
+        /* ---- 1. Télémétrie : priorité de cadence ---- */
         uint8_t localBuf[UL_FRAME_SIZE];
         if (xSemaphoreTake(_mutexTx, pdMS_TO_TICKS(10)) == pdTRUE) {
             memcpy(localBuf, _txBuf, UL_FRAME_SIZE);
@@ -384,6 +519,20 @@ void SerialComm::_taskTxLoop() {
             if (_commStream) {
                 _commStream->write(localBuf, UL_FRAME_SIZE);
             }
+        }
+
+        /* ---- 2. Synchronisation de configuration demandée ? ----
+         * La lecture NVS et la construction de la rafale s'exécutent ici
+         * (jamais dans la tâche appelante : Web, Rx série ou Control). */
+        if (_cfgSyncPending) {
+            _cfgSyncPending = false;
+            _loadHardwareConfig();
+        }
+
+        /* ---- 3. Rafale en cours : une trame de configuration par cycle ---- */
+        if (_cfgBurstIdx < _cfgBurstCount && _commStream) {
+            _commStream->write(_cfgBurst[_cfgBurstIdx], CFG_FRAME_SIZE);
+            _cfgBurstIdx++;
         }
 
         /* Attente périodique précise via vTaskDelayUntil */
