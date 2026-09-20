@@ -670,6 +670,37 @@
                     </div>
                 </details>
 
+                <!-- Acoustique / Buzzer (v1.8.0) — mélodie de démarrage
+                     « Rencontres du 3ème type » sur buzzer passif (LEDC). -->
+                <details class="card acc">
+                    <summary class="acc-sum"><h3>Acoustique / Buzzer</h3></summary>
+                    <p class="card-hint">Signature sonore de démarrage sur buzzer passif (5 notes — thème « Rencontres
+                        du 3ᵉ type »), générée par le timer matériel LEDC et jouée une seule fois au démarrage dans
+                        une tâche dédiée non bloquante (le boot et la télémétrie 100 Hz ne sont jamais retardés).</p>
+                    <div class="settings-grid">
+                        <label>Broche du Buzzer (GPIO)
+                            <select id="buzzer-pin">
+                                <option value="-1">— Non assigné —</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="led-state-row">
+                        <span class="led-state-name">Volume de la mélodie</span>
+                        <input type="range" id="melody-volume" class="led-bri-range" min="1" max="100" value="50"
+                               title="Volume du buzzer (1-100 %) — 1 % = son très doux, 100 % = maximum">
+                        <span class="led-bri-val" id="melody-volume-val">50 %</span>
+                    </div>
+                    <label class="qnh-toggle-row">
+                        <input type="checkbox" id="melody-enable">
+                        <span>Activer la mélodie de démarrage</span>
+                    </label>
+                    <p class="card-hint">GPIO 19/20 (USB natif), GPIO 35-37 (bus mémoire interne des modules
+                        octaux), broches I2C actives, UART1 et toutes les affectations existantes (sorties ON/OFF,
+                        entrées, bandeau LED) sont exclus de la liste. Paramètres appliqués au prochain démarrage
+                        (sauvegarde NVS à chaud, sans redémarrage immédiat).</p>
+                    <button id="btn-save-audio" class="btn btn-primary">Sauvegarder l'acoustique</button>
+                </details>
+
                 <!-- Noms personnalisés des sorties (16 PWM + 4 GPIO, NVS) -->
                 <details class="card acc">
                     <summary class="acc-sum"><h3>Noms des sorties</h3></summary>
@@ -1112,7 +1143,7 @@
     <!-- Pied de page global : version Git réelle du firmware (renseignée par app.js
          depuis /api/system/status) + mentions auteur / licence -->
     <footer class="app-footer">
-        <span>BOB-CONTROL <span id="app-version">v1.7.0</span></span>
+        <span>BOB-CONTROL <span id="app-version">v1.8.0</span></span>
         <span aria-hidden="true"> | </span>
         <span>Auteur : Dero Didier</span>
         <span aria-hidden="true"> | </span>

@@ -25,6 +25,7 @@
 #include "flight_controller.h"
 #include "motor_manager.h"      /* g_motors : config NVS + check + télémétrie (v1.1.0) */
 #include "status_io.h"          /* g_statusIo : entrées sécurité + bandeau LED WS2812 (v1.6.0) */
+#include "audio_manager.h"      /* g_audio : mélodie de démarrage buzzer LEDC (v1.8.0) */
 #include "simulator.h"          /* g_sim : simulateur de test virtuel (établi) */
 #include "i2c_router.h"         /* g_i2cRouter : carte de routage Plug & Play (v1.2.0) */
 
@@ -323,6 +324,15 @@ void BobWebServer::_setupRoutes() {
         [this](AsyncWebServerRequest* request) { _handleLedConfigGet(request); });
     _server.on("/api/led/config", HTTP_POST,
         [this](AsyncWebServerRequest* request) { _handleLedConfigPost(request); });
+
+    /* REST : Acoustique / Buzzer (v1.8.0) — GPIO du buzzer et activation de
+     * la mélodie de démarrage (GET + POST). Paramètres appliqués au prochain
+     * démarrage, sans redémarrage immédiat : la mélodie ne joue qu'au boot
+     * et relit la NVS à ce moment. */
+    _server.on("/api/audio/config", HTTP_GET,
+        [this](AsyncWebServerRequest* request) { _handleAudioConfigGet(request); });
+    _server.on("/api/audio/config", HTTP_POST,
+        [this](AsyncWebServerRequest* request) { _handleAudioConfigPost(request); });
 
     /* REST : Noms personnalisés des sorties (16 PWM + 4 GPIO, NVS — GET + POST) */
     _server.on("/api/names", HTTP_GET,
@@ -1218,16 +1228,17 @@ void BobWebServer::_handleGpioConfigPost(AsyncWebServerRequest* request) {
     }
 
     /* Broches réservées : bus I2C actifs + UART1 (liaison RPi 5) + entrées
-     * numériques et ligne de données du bandeau LED déjà assignés (v1.6.0 —
-     * exclusions croisées ; la sentinelle 0xFF « non assigné » ne peut
-     * jamais égaler un GPIO valide). */
+     * numériques, ligne de données du bandeau LED et GPIO du buzzer déjà
+     * assignés (v1.6.0/v1.8.0 — exclusions croisées ; la sentinelle 0xFF
+     * « non assigné » ne peut jamais égaler un GPIO valide). */
     const uint8_t reserved[] = {
         g_sensors.getCurrentSDA(),  g_sensors.getCurrentSCL(),
         g_sensors.getCurrent2SDA(), g_sensors.getCurrent2SCL(),
         UART1_RX_PIN, UART1_TX_PIN,
         (uint8_t)g_statusIo.getArmPin(),
         (uint8_t)g_statusIo.getWaterPin(),
-        (uint8_t)g_statusIo.getLedPin()
+        (uint8_t)g_statusIo.getLedPin(),
+        (uint8_t)g_audio.getBuzzerPin()
     };
 
     uint8_t pins[GPIO_NUM_OUTPUTS];
@@ -1439,23 +1450,26 @@ void BobWebServer::_handleGpioInputsConfigPost(AsyncWebServerRequest* request) {
     readFlag("arm_active_high",   cfg.armActiveHigh);
     readFlag("water_active_high", cfg.waterActiveHigh);
 
-    /* Exclusions croisées : sorties ON/OFF + bandeau LED + l'autre entrée */
+    /* Exclusions croisées : sorties ON/OFF + bandeau LED + buzzer + l'autre entrée */
     uint8_t outPins[GPIO_NUM_OUTPUTS];
     g_gpio.getPins(outPins);
+    const uint8_t buzzPin = (uint8_t)g_audio.getBuzzerPin();
 
     const char* err = nullptr;
     {
-        uint8_t extra[GPIO_NUM_OUTPUTS + 2];
+        uint8_t extra[GPIO_NUM_OUTPUTS + 3];
         memcpy(extra, outPins, GPIO_NUM_OUTPUTS);
         extra[GPIO_NUM_OUTPUTS]     = (uint8_t)(cfg.ledPin   < 0 ? STATUS_IO_PIN_NONE : cfg.ledPin);
         extra[GPIO_NUM_OUTPUTS + 1] = (uint8_t)(cfg.waterPin < 0 ? STATUS_IO_PIN_NONE : cfg.waterPin);
+        extra[GPIO_NUM_OUTPUTS + 2] = buzzPin;
         err = _userPinCheck(cfg.armPin, extra, sizeof(extra));
     }
     if (err == nullptr) {
-        uint8_t extra[GPIO_NUM_OUTPUTS + 2];
+        uint8_t extra[GPIO_NUM_OUTPUTS + 3];
         memcpy(extra, outPins, GPIO_NUM_OUTPUTS);
         extra[GPIO_NUM_OUTPUTS]     = (uint8_t)(cfg.ledPin < 0 ? STATUS_IO_PIN_NONE : cfg.ledPin);
         extra[GPIO_NUM_OUTPUTS + 1] = (uint8_t)(cfg.armPin < 0 ? STATUS_IO_PIN_NONE : cfg.armPin);
+        extra[GPIO_NUM_OUTPUTS + 2] = buzzPin;
         err = _userPinCheck(cfg.waterPin, extra, sizeof(extra));
     }
     if (err != nullptr) {
@@ -1562,14 +1576,15 @@ void BobWebServer::_handleLedConfigPost(AsyncWebServerRequest* request) {
         cfg.ledCount = (uint8_t)n;
     }
 
-    /* Validation de la broche (exclusions croisées : sorties + entrées) */
+    /* Validation de la broche (exclusions croisées : sorties + entrées + buzzer) */
     {
         uint8_t outPins[GPIO_NUM_OUTPUTS];
         g_gpio.getPins(outPins);
-        uint8_t extra[GPIO_NUM_OUTPUTS + 2];
+        uint8_t extra[GPIO_NUM_OUTPUTS + 3];
         memcpy(extra, outPins, GPIO_NUM_OUTPUTS);
         extra[GPIO_NUM_OUTPUTS]     = (uint8_t)(cfg.armPin   < 0 ? STATUS_IO_PIN_NONE : cfg.armPin);
         extra[GPIO_NUM_OUTPUTS + 1] = (uint8_t)(cfg.waterPin < 0 ? STATUS_IO_PIN_NONE : cfg.waterPin);
+        extra[GPIO_NUM_OUTPUTS + 2] = (uint8_t)g_audio.getBuzzerPin();
         const char* err = _userPinCheck(cfg.ledPin, extra, sizeof(extra));
         if (err != nullptr) {
             String body = "{\"error\":\"" + String(err) + "\"}";
@@ -1653,6 +1668,122 @@ void BobWebServer::_handleLedConfigPost(AsyncWebServerRequest* request) {
     } else {
         Serial.println("[WEB] Bandeau LED : matrice appliquée à chaud (broches inchangées)");
     }
+    request->send(200, "application/json", response);
+}
+
+/* =========================================================================
+ * ACOUSTIQUE / BUZZER — SIGNATURE SONORE DE DÉMARRAGE (v1.8.0)
+ * =========================================================================
+ *
+ * Buzzer passif piloté par le timer LEDC : mélodie du thème « Rencontres du
+ * 3ème type » (5 notes) jouée une seule fois au démarrage dans une tâche
+ * éphémère (cf. audio_manager.h). GPIO et activation persistés en NVS
+ * (namespace « audio », clés buzz_pin / melody_en), écriture vérifiée par
+ * relecture côté AudioManager. Contrairement aux autres E/S, aucun
+ * redémarrage n'est programmé après sauvegarde : la broche n'est sollicitée
+ * qu'au moment de jouer la mélodie (prochain démarrage), la configuration
+ * étant relue au boot.
+ * ========================================================================= */
+
+/* Handler GET /api/audio/config — GPIO du buzzer, activation et volume de
+ * la mélodie de démarrage (relus de la NVS au boot). */
+void BobWebServer::_handleAudioConfigGet(AsyncWebServerRequest* request) {
+    AudioConfig cfg;
+    g_audio.getConfig(cfg);
+    JsonDocument doc;
+    doc["buzzer_pin"]     = cfg.buzzerPin;
+    doc["melody_enabled"] = (cfg.melodyEnabled != 0);
+    doc["melody_volume"]  = cfg.melodyVolume;
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+/* Handler POST /api/audio/config — enregistre le GPIO du buzzer, l'activation
+ * et le volume de la mélodie de démarrage (NVS vérifiée par relecture).
+ * Champs absents = valeur courante. Aucun redémarrage : appliqué au
+ * prochain démarrage (la mélodie relit la NVS au boot).
+ *
+ * Form : buzzer_pin=25&melody_enabled=1&melody_volume=50  |  JSON : {...} */
+void BobWebServer::_handleAudioConfigPost(AsyncWebServerRequest* request) {
+    AudioConfig cfg;
+    g_audio.getConfig(cfg);   /* base : champs absents conservent la valeur courante */
+
+    auto readPin = [&request](const char* name, int8_t& out) {
+        if (request->hasParam(name, true)) {
+            out = (int8_t)request->getParam(name, true)->value().toInt();
+        } else if (request->hasParam(name)) {
+            out = (int8_t)request->getParam(name)->value().toInt();
+        }
+    };
+    readPin("buzzer_pin", cfg.buzzerPin);
+
+    /* Activation de la mélodie : 0 = désactivée, 1 = activée */
+    {
+        int v = cfg.melodyEnabled;
+        if (request->hasParam("melody_enabled", true)) {
+            v = request->getParam("melody_enabled", true)->value().toInt();
+        } else if (request->hasParam("melody_enabled")) {
+            v = request->getParam("melody_enabled")->value().toInt();
+        }
+        cfg.melodyEnabled = (v != 0) ? 1 : 0;
+    }
+
+    /* Volume de la mélodie : bornes 1-100 % (valeur invalide refusée) */
+    {
+        int v = cfg.melodyVolume;
+        if (request->hasParam("melody_volume", true)) {
+            v = request->getParam("melody_volume", true)->value().toInt();
+        } else if (request->hasParam("melody_volume")) {
+            v = request->getParam("melody_volume")->value().toInt();
+        }
+        if (v < AUDIO_VOLUME_MIN || v > AUDIO_VOLUME_MAX) {
+            request->send(400, "application/json",
+                          "{\"error\":\"Volume invalide (1-100)\"}");
+            return;
+        }
+        cfg.melodyVolume = (uint8_t)v;
+    }
+
+    /* Exclusions croisées : sorties ON/OFF + entrées + bandeau LED */
+    uint8_t outPins[GPIO_NUM_OUTPUTS];
+    g_gpio.getPins(outPins);
+    StatusIOConfig ioCfg;
+    g_statusIo.getConfig(ioCfg);
+
+    uint8_t extra[GPIO_NUM_OUTPUTS + 3];
+    memcpy(extra, outPins, GPIO_NUM_OUTPUTS);
+    extra[GPIO_NUM_OUTPUTS]     = (uint8_t)(ioCfg.armPin   < 0 ? STATUS_IO_PIN_NONE : ioCfg.armPin);
+    extra[GPIO_NUM_OUTPUTS + 1] = (uint8_t)(ioCfg.waterPin < 0 ? STATUS_IO_PIN_NONE : ioCfg.waterPin);
+    extra[GPIO_NUM_OUTPUTS + 2] = (uint8_t)(ioCfg.ledPin   < 0 ? STATUS_IO_PIN_NONE : ioCfg.ledPin);
+
+    const char* err = _userPinCheck(cfg.buzzerPin, extra, sizeof(extra));
+    if (err != nullptr) {
+        String body = "{\"error\":\"" + String(err) + "\"}";
+        request->send(400, "application/json", body);
+        return;
+    }
+
+    if (!g_audio.setConfig(cfg)) {
+        request->send(500, "application/json",
+                      "{\"error\":\"Ecriture NVS impossible (configuration non enregistree)\"}");
+        return;
+    }
+
+    String response;
+    JsonDocument resp;
+    resp["status"]         = "ok";
+    resp["buzzer_pin"]     = cfg.buzzerPin;
+    resp["melody_enabled"] = (cfg.melodyEnabled != 0);
+    resp["melody_volume"]  = cfg.melodyVolume;
+    serializeJson(resp, response);
+
+    const String pinStr = (cfg.buzzerPin < 0) ? String("non assigné")
+                                              : "GPIO " + String(cfg.buzzerPin);
+    Serial.println("[WEB] Acoustique / Buzzer : buzzer=" + pinStr
+                   + ", mélodie de démarrage=" + (cfg.melodyEnabled ? "activée" : "désactivée")
+                   + ", volume=" + String(cfg.melodyVolume) + " %"
+                   + " — appliqué au prochain démarrage");
     request->send(200, "application/json", response);
 }
 

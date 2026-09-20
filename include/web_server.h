@@ -88,6 +88,10 @@ private:
     void _handleLedConfigGet(AsyncWebServerRequest* request);
     void _handleLedConfigPost(AsyncWebServerRequest* request);
 
+    /* -- Acoustique / Buzzer (v1.8.0) : mélodie de démarrage LEDC -- */
+    void _handleAudioConfigGet(AsyncWebServerRequest* request);
+    void _handleAudioConfigPost(AsyncWebServerRequest* request);
+
     void _handleNamesGet(AsyncWebServerRequest* request);
     void _handleNamesPost(AsyncWebServerRequest* request);
 

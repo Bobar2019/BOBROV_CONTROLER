@@ -13,7 +13,7 @@
  * et la tâche SerialTx (émission télémétrie) également.
  *
  * @author Didier Dero
- * @version 1.7.0
+ * @version 1.8.0
  * @date Septembre 2026
  */
 
@@ -32,6 +32,7 @@
 #include "flight_controller.h"
 #include "motor_manager.h"      /* g_motors : check/surveillance/isolation (v1.1.0) */
 #include "status_io.h"          /* g_statusIo : bandeau LED WS2812 + entrées GPIO (v1.6.0) */
+#include "audio_manager.h"      /* g_audio : mélodie de démarrage buzzer LEDC (v1.8.0) */
 #include "git_version.h"        /* GIT_VERSION : version Git injectée au build (scripts/git_version.py) */
 
 /* =========================================================================
@@ -404,6 +405,12 @@ void setup() {
      * attente ici. */
     g_statusIo.begin();
 
+    /* ---- 7e. Acoustique / buzzer (v1.8.0) ----
+     * Charge la configuration NVS du buzzer (GPIO + mélodie de démarrage).
+     * N'émet aucun son ici : la mélodie est lancée en toute fin de setup()
+     * par une tâche éphémère. */
+    g_audio.begin();
+
     /* ---- 8. Lancement de la tâche de contrôle sur Core 1 ---- */
     xTaskCreatePinnedToCore(
         vTaskControl,           /* Fonction de la tâche */
@@ -414,6 +421,14 @@ void setup() {
         nullptr,                /* Handle */
         CORE_RT                 /* Core 1 (temps réel) */
     );
+
+    /* ---- 9. Signature sonore de démarrage (v1.8.0) ----
+     * Si la mélodie est cochée en NVS et qu'un GPIO de buzzer est assigné,
+     * la lecture des 5 notes (« Rencontres du 3ème type ») est encapsulée
+     * dans une tâche FreeRTOS éphémère (Core 0, priorité basse) qui se
+     * détruit après la dernière note : ce setup() n'attend jamais et la
+     * télémétrie 100 Hz du Core 1 n'est pas retardée. */
+    g_audio.playStartupMelodyIfEnabled();
 
     Serial.println("[MAIN] Initialisation complète - système opérationnel\n");
 }

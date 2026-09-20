@@ -594,6 +594,55 @@ constexpr uint32_t STACK_SIZE_STATUSIO        = 4096;
 constexpr uint8_t  PRIORITY_STATUSIO          = 2;
 
 /* =========================================================================
+ * SECTION 4f : SIGNATURE SONORE DE DÉMARRAGE (BUZZER) — v1.8.0
+ *
+ * Mélodie de démarrage sur buzzer passif piloté par le timer matériel LEDC
+ * (aucun CPU consommé pendant la lecture) : thème « Rencontres du 3ème
+ * type », 5 notes (Ré5, Mi5, Do5, Do4, Sol4) séparées par 50 ms de silence
+ * (rapport cyclique ramené à 0). GPIO, activation et volume configurables
+ * depuis l'onglet Paramètres, persistés en NVS (namespace « audio », clés
+ * buzz_pin / melody_en / buzz_vol). La lecture est encapsulée dans une tâche
+ * FreeRTOS éphémère
+ * (Core Wi-Fi, priorité basse) créée à la fin de setup() et auto-détruite
+ * après la dernière note : le démarrage et la télémétrie 100 Hz du Core 1
+ * ne sont jamais bloqués.
+ * ========================================================================= */
+
+/** @brief Résolution du PWM LEDC en bits (canal du timer alloué
+ *         automatiquement par ledcAttach — API Arduino ESP32 core 3.x).
+ *         Fixe le rapport cyclique maximal : 2^10 - 1 = 1023. */
+constexpr uint8_t  BUZZER_LEDC_RESOLUTION = 10;
+
+/** @brief Silence entre deux notes (ms) — rapport cyclique mis à 0 pour bien
+ *         détacher les notes */
+constexpr uint32_t BUZZER_SILENCE_MS      = 50;
+
+/** @brief Bornes et défaut du volume de la mélodie (% du rapport cyclique
+ *         maximal autorisé par la résolution). ledcWriteTone force le
+ *         rapport cyclique à 50 % : le volume est appliqué juste après par
+ *         ledcWrite (API core 3.x). 1 % = son très doux, 100 % = rapport
+ *         cyclique maximal (2^10 - 1) */
+constexpr uint8_t  AUDIO_VOLUME_MIN     = 1;
+constexpr uint8_t  AUDIO_VOLUME_MAX     = 100;
+constexpr uint8_t  AUDIO_VOLUME_DEFAULT = 50;
+
+/** @brief Nombre de notes de la mélodie de démarrage */
+constexpr uint8_t  AUDIO_MELODY_NOTES     = 5;
+
+/** @brief Fréquences (Hz) des 5 notes du thème « Rencontres du 3ème type » :
+ *         Ré5, Mi5, Do5, Do4, Sol4 */
+constexpr uint16_t AUDIO_MELODY_FREQ_HZ[AUDIO_MELODY_NOTES] = { 587, 659, 523, 261, 392 };
+
+/** @brief Durées (ms) des 5 notes — la dernière est tenue (1000 ms), comme
+ *         la phrase du film */
+constexpr uint16_t AUDIO_MELODY_DUR_MS[AUDIO_MELODY_NOTES]  = { 400, 400, 400, 400, 1000 };
+
+/** @brief Stack et priorité de la tâche éphémère de la mélodie (Core Wi-Fi,
+ *         sous toutes les tâches permanentes ; ~2,9 s de vie) */
+constexpr uint32_t STACK_SIZE_AUDIO       = 4096;
+constexpr uint8_t  PRIORITY_AUDIO         = 1;
+
+/* =========================================================================
  * SECTION 5 : CONFIGURATION RÉSEAU WI-FI ET POINT D'ACCÈS
  * ========================================================================= */
 

@@ -3093,24 +3093,27 @@ async function loadGpioConfig() {
 }
 
 /* =========================================================================
- * SIGNALISATION LED WS2812 + ENTRÉES NUMÉRIQUES (v1.6.0)
+ * SIGNALISATION LED WS2812 + ENTRÉES NUMÉRIQUES + BUZZER (v1.6.0/v1.8.0)
  * =========================================================================
  *
- * Deux cartes de l'onglet Paramètres, persistées en NVS (namespace
- * « statusio ») : entrées à polarité configurable (armement magnétique +
- * détecteur voie d'eau, actif GND ou actif +3,3 V) et bandeau LED d'état
- * (ligne de données, nombre de LEDs, matrice 5 états effet/couleur). Les
- * selects n'exposent que les GPIO réellement disponibles : 19/20 (USB
- * natif), 35-37 (bus mémoire interne), broches I2C actives, UART1, sorties
- * ON/OFF et affectations croisées exclus.
+ * Cartes de l'onglet Paramètres, persistées en NVS (namespaces « statusio »
+ * et « audio ») : entrées à polarité configurable (armement magnétique +
+ * détecteur voie d'eau, actif GND ou actif +3,3 V), bandeau LED d'état
+ * (ligne de données, nombre de LEDs, matrice 5 états effet/couleur) et
+ * acoustique (GPIO du buzzer + mélodie de démarrage « Rencontres du 3ème
+ * type », jouée au boot par une tâche non bloquante). Les selects n'exposent
+ * que les GPIO réellement disponibles : 19/20 (USB natif), 35-37 (bus
+ * mémoire interne), broches I2C actives, UART1, sorties ON/OFF et
+ * affectations croisées exclus.
  * ========================================================================= */
 
 /**
- * Reconstruit la liste d'un sélecteur GPIO (entrées + ligne de données LED)
- * en excluant les broches réservées (I2C/Série/USB), les sorties ON/OFF et
- * les autres affectations de la carte, puis sélectionne la valeur courante.
- * La valeur courante hors liste est conservée et signalée « (réservé) » —
- * l'affichage reste honnête vis-à-vis de la NVS. -1 = « Non assigné ».
+ * Reconstruit la liste d'un sélecteur GPIO (entrées + ligne de données LED
+ * + buzzer) en excluant les broches réservées (I2C/Série/USB), les sorties
+ * ON/OFF et les autres affectations de la carte, puis sélectionne la valeur
+ * courante. La valeur courante hors liste est conservée et signalée
+ * « (réservé) » — l'affichage reste honnête vis-à-vis de la NVS.
+ * -1 = « Non assigné ».
  * @param {string} id Identifiant du <select>
  * @param {Set<number>} reserved Broches à exclure (base + sorties ON/OFF)
  * @param {number[]} others Autres affectations à exclure (croisées)
@@ -3152,23 +3155,26 @@ function rgbToHex(r, g, b) {
 }
 
 /**
- * Charge la configuration des entrées numériques et du bandeau LED depuis
- * l'API (4 fetchs parallèles), reconstruit les trois sélecteurs GPIO avec
- * exclusions croisées et remplit nombre de LEDs, effets, couleurs,
- * luminosités par état et pastilles live.
+ * Charge la configuration des entrées numériques, du bandeau LED et du
+ * buzzer depuis l'API (5 fetchs parallèles), reconstruit les quatre
+ * sélecteurs GPIO avec exclusions croisées et remplit nombre de LEDs,
+ * effets, couleurs, luminosités par état, mélodie de démarrage et pastilles
+ * live.
  */
 async function loadStatusIOConfig() {
     try {
-        const [resI2C, resGpio, resIn, resLed] = await Promise.all([
+        const [resI2C, resGpio, resIn, resLed, resAud] = await Promise.all([
             fetch('/api/i2c/config'),
             fetch('/api/gpio/config'),
             fetch('/api/gpio-inputs/config'),
-            fetch('/api/led/config')
+            fetch('/api/led/config'),
+            fetch('/api/audio/config')
         ]);
         const i2c  = await resI2C.json();
         const gpio = await resGpio.json();
         const inp  = await resIn.json();
         const led  = await resLed.json();
+        const aud  = await resAud.json();
 
         /* Exclusion de base : USB natif (19/20), UART1 (1/2), bus I2C actifs
            et bus mémoire interne des modules octaux (35-37) */
@@ -3182,6 +3188,7 @@ async function loadStatusIOConfig() {
         const armPin   = (inp.arm_pin   !== undefined) ? Number(inp.arm_pin)   : -1;
         const waterPin = (inp.water_pin !== undefined) ? Number(inp.water_pin) : -1;
         const ledPin   = (led.led_pin   !== undefined) ? Number(led.led_pin)   : -1;
+        const buzzPin  = (aud.buzzer_pin !== undefined) ? Number(aud.buzzer_pin) : -1;
 
         /* Polarités par entrée (0 = actif GND, 1 = actif +3,3 V) */
         const polArm = getEl('in-arm-pol');
@@ -3189,9 +3196,20 @@ async function loadStatusIOConfig() {
         const polWater = getEl('in-water-pol');
         if (polWater) polWater.value = Number(inp.water_active_high) ? '1' : '0';
 
-        buildStatusIOPinSelect('in-arm-pin',   reserved, [waterPin, ledPin], armPin);
-        buildStatusIOPinSelect('in-water-pin', reserved, [armPin,   ledPin], waterPin);
-        buildStatusIOPinSelect('led-data-pin', reserved, [armPin, waterPin], ledPin);
+        buildStatusIOPinSelect('in-arm-pin',   reserved, [waterPin, ledPin, buzzPin], armPin);
+        buildStatusIOPinSelect('in-water-pin', reserved, [armPin,   ledPin, buzzPin], waterPin);
+        buildStatusIOPinSelect('led-data-pin', reserved, [armPin, waterPin, buzzPin], ledPin);
+        buildStatusIOPinSelect('buzzer-pin',   reserved, [armPin, waterPin, ledPin],  buzzPin);
+
+        /* Mélodie de démarrage : case à cocher et volume relus en NVS */
+        const melody = getEl('melody-enable');
+        if (melody) melody.checked = !!aud.melody_enabled;
+        const volSlider = getEl('melody-volume');
+        if (volSlider && aud.melody_volume !== undefined) {
+            volSlider.value = aud.melody_volume;
+            const volLabel = getEl('melody-volume-val');
+            if (volLabel) volLabel.textContent = aud.melody_volume + ' %';
+        }
 
         /* Nombre de LEDs (bornes servies par le firmware) */
         const cnt = getEl('led-count');
@@ -3223,10 +3241,11 @@ async function loadStatusIOConfig() {
 }
 
 /**
- * Branche les boutons de sauvegarde des deux nouvelles cartes Paramètres
- * puis charge leur configuration. Le redémarrage n'est déclenché par le
- * firmware que si une broche (ou le nombre de LEDs) change — la matrice
- * LED (effets, couleurs, luminosités) s'applique à chaud, sans overlay.
+ * Branche les boutons de sauvegarde des cartes Paramètres (entrées, LED,
+ * buzzer) puis charge leur configuration. Le redémarrage n'est déclenché
+ * par le firmware que si une broche (ou le nombre de LEDs) change — la
+ * matrice LED (effets, couleurs, luminosités) s'applique à chaud et
+ * l'acoustique sans redémarrage (relue au prochain démarrage).
  */
 function initStatusIO() {
     const btnIn = getEl('btn-save-gpio-inputs');
@@ -3347,6 +3366,47 @@ function initStatusIO() {
         });
     }
 
+    /* Bouton d'acoustique : sauvegarde NVS sans redémarrage (la mélodie
+       ne joue qu'au prochain boot, la config est relue à ce moment) */
+    const btnAudio = getEl('btn-save-audio');
+    if (btnAudio) {
+        btnAudio.addEventListener('click', async () => {
+            const buzzer  = parseInt(getEl('buzzer-pin').value, 10);
+            const enabled = getEl('melody-enable').checked ? 1 : 0;
+            const volume  = parseInt(getEl('melody-volume').value, 10);
+            if (isNaN(volume) || volume < 1 || volume > 100) {
+                alert('Volume invalide (1 à 100 %).');
+                return;
+            }
+            if (!confirm('Sauvegarder l\'acoustique / buzzer'
+                        + (buzzer >= 0 ? ' (GPIO ' + buzzer + ')' : ' (buzzer non assigné)')
+                        + (enabled ? ' — mélodie de démarrage activée' : ' — mélodie de démarrage désactivée')
+                        + ', volume ' + volume + ' %'
+                        + ' ?\nAucun redémarrage : les paramètres s\'appliquent au prochain démarrage.')) {
+                return;
+            }
+            btnAudio.disabled = true;
+            try {
+                const res = await fetch('/api/audio/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'buzzer_pin=' + buzzer + '&melody_enabled=' + enabled
+                          + '&melody_volume=' + volume
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    alert('Acoustique enregistrée (NVS) — appliquée au prochain démarrage.');
+                    loadStatusIOConfig();
+                } else {
+                    alert('Erreur : ' + (data.error || 'inconnue'));
+                }
+            } catch (e) {
+                alert('Erreur réseau : ' + e.message);
+            }
+            btnAudio.disabled = false;
+        });
+    }
+
     /* Curseurs de luminosité par état : libellé mis à jour en direct */
     for (let i = 0; i < STATUS_IO_LED_STATE_NAMES.length; i++) {
         const sl = getEl('led-bri-' + i);
@@ -3354,6 +3414,13 @@ function initStatusIO() {
         if (sl && v) {
             sl.addEventListener('input', () => { v.textContent = sl.value + ' %'; });
         }
+    }
+
+    /* Curseur de volume de la mélodie : libellé mis à jour en direct */
+    const volSlider = getEl('melody-volume');
+    const volLabel  = getEl('melody-volume-val');
+    if (volSlider && volLabel) {
+        volSlider.addEventListener('input', () => { volLabel.textContent = volSlider.value + ' %'; });
     }
 
     loadStatusIOConfig();
